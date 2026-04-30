@@ -16,7 +16,8 @@ authors = [
 
 dependencies = [
     "kivy>=2.3.0",
-    "kivyfn"
+    "kivyfn",
+    "uuid6"
 ]
 
 

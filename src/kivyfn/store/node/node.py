@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING, Any, Callable, ClassVar
 import uuid
 import copy
 
-from kivyfn.state.constants import InstructionOpCode
 
 from .index import IndexManager
 
+from ..constants import InstructionOpCode
 from ..address import Address
 from ..errors import NodeError
 from ..events.event import NodeEvent

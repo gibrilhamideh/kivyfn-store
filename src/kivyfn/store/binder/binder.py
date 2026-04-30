@@ -4,16 +4,16 @@ from typing import TYPE_CHECKING
 from kivy.event import EventDispatcher
 from kivy.properties import StringProperty, ObjectProperty
 
-from kivyfn.state import InstructionOpCode
 
-from ...state import store
+from ..constants import InstructionOpCode
+from ...store import store
 
 if TYPE_CHECKING:
-    from ...state import Address
-    from ...state.events.event import NodeEvent
-    from ...state.events.subscription import Subscription
+    from kivyfn.widget import FnWidget
 
-    from ..widget import FnWidget
+    from ..address import Address
+    from ..events.event import NodeEvent
+    from ..events.subscription import Subscription
     from ..behaviors.state import FnStateBehavior
 
 
@@ -69,7 +69,7 @@ class FnBinder(EventDispatcher):
             self.subscribe()
 
     def on_name(self, *_):
-        self.owner._register_binder(self.name, self)
+        self.owner._register_binder(self.name, self)  # pyright: ignore
 
     def on_field(self, *_):
         if self.field is None:
