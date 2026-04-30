@@ -96,6 +96,9 @@ class Store:
 
         return node.snapshot(id=id, key=key, resolve_foreignkeys=resolve_foreignkeys)
 
+    def to_dict(self, address: Address):
+        raise NotImplementedError()
+
     # -------------------------------------------------
     # Visualization APIs (structure, not data)
     # -------------------------------------------------
