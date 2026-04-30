@@ -1,7 +1,7 @@
 from enum import Enum
 
-from .datafield import DataField
-from ....errors import FieldError
+from kivyfn.store.schema.fields.data.datafield import DataField
+from kivyfn.store.errors import FieldError
 
 
 class EnumField(DataField):
@@ -41,4 +41,3 @@ class EnumField(DataField):
                 value=value,
                 metadata=self.metadata,
             )
-

@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from .registry import SchemaRegistry
-from .trigger import Trigger
+from kivyfn.store.schema.registry import SchemaRegistry
+from kivyfn.store.schema.trigger import Trigger
 
-from ..schema.fields import BaseField, ForeignKeyField
-from ..core.registry import ForeignKeyRegistry
-from ..errors import FieldNotFoundError
+from kivyfn.store.schema.fields import BaseField, ForeignKeyField
+from kivyfn.store.core.registry import ForeignKeyRegistry
+from kivyfn.store.errors import FieldNotFoundError
 
 
 IndexKey = tuple[str, ...]

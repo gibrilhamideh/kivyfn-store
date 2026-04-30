@@ -2,8 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from ..address import Address
-from ..constants import InstructionOpCode, InstructionSource
+from kivyfn.store.address import Address
+from kivyfn.store.constants import InstructionOpCode, InstructionSource
 
 
 @dataclass(frozen=True, kw_only=True)

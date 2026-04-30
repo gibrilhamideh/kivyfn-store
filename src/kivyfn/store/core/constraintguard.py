@@ -4,8 +4,8 @@ from .delta import Delta
 from .engine import Engine
 from .registry import ForeignKeyRegistry
 
-from ..errors import ConstraintError
-from ..constants import Policy, ConstraintType
+from kivyfn.store.errors import ConstraintError
+from kivyfn.store.constants import Policy, ConstraintType
 
 
 class ConstraintGuard:

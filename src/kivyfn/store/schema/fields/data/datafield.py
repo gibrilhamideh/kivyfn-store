@@ -1,7 +1,8 @@
 from __future__ import annotations
 from typing import Any
-from ..base import BaseField
-from ....errors import FieldError
+
+from kivyfn.store.schema.fields.base import BaseField
+from kivyfn.store.errors import FieldError
 
 
 class DataField(BaseField):

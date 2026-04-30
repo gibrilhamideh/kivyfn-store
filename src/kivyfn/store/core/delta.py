@@ -1,7 +1,7 @@
 from collections import defaultdict
 
-from ..node import Node
-from ..errors import CompilerError
+from kivyfn.store.node import Node
+from kivyfn.store.errors import CompilerError
 
 from .operations import (
     InsertOperation,

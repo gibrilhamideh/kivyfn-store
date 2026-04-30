@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..errors import ConstraintError, ConstraintType
+from kivyfn.store.errors import ConstraintError, ConstraintType
 
 
 IndexKey = tuple[str, ...]

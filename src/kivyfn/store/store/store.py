@@ -2,17 +2,17 @@ from __future__ import annotations
 from typing import Any, Literal, TYPE_CHECKING
 
 
-from ..core import Engine
-from ..core.transaction import Transaction
-from ..utils.visulization.text import render_state, render_structure
+from kivyfn.store.core import Engine
+from kivyfn.store.core.transaction import Transaction
+from kivyfn.store.utils.visulization.text import render_state, render_structure
 
 
 if TYPE_CHECKING:
-    from ..address import Address
-    from ..node import Node
-    from ..builder.config import StoreConfig
-    from ..events.subscription import Subscription
-    from ..constants import InstructionOpCode
+    from kivyfn.store.address import Address
+    from kivyfn.store.node import Node
+    from kivyfn.store.builder.config import StoreConfig
+    from kivyfn.store.events.subscription import Subscription
+    from kivyfn.store.constants import InstructionOpCode
 
 
 class Store:

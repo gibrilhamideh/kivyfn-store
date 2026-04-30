@@ -1,10 +1,9 @@
 from __future__ import annotations
 from typing import Optional, Set
 
-from .branch import Branch
-from .config import StoreConfig
-
-from ..node import Node
+from kivyfn.store.node import Node
+from kivyfn.store.builder.branch import Branch
+from kivyfn.store.builder.config import StoreConfig
 
 
 class Builder:

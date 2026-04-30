@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Optional
 
-from ..constants import InstructionOpCode
-from ..address import Address
+from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.address import Address
 
 
 @dataclass(frozen=True, slots=True)

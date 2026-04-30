@@ -1,10 +1,10 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from ..errors import SchemaError
+from kivyfn.store.errors import SchemaError
 
 if TYPE_CHECKING:
-    from .schema import Schema
+    from kivyfn.store.schema import Schema
 
 
 class SchemaRegistry:

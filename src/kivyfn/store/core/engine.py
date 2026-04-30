@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from .operations import Operation
-from ..address import Address
+from kivyfn.store.core.operations import Operation
+from kivyfn.store.address import Address
 
 if TYPE_CHECKING:
     from ..node import Node

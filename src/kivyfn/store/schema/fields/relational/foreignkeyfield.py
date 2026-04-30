@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from ..base import BaseField
-from ....constants import Policy
+from kivyfn.store.schema.fields.base import BaseField
+from kivyfn.store.constants import Policy
 
 
 class ForeignKeyField(BaseField):

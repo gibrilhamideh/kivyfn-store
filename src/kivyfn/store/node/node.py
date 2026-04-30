@@ -5,17 +5,17 @@ import uuid
 import copy
 
 
-from .index import IndexManager
+from kivyfn.store.node.index import IndexManager
 
-from ..constants import InstructionOpCode
-from ..address import Address
-from ..errors import NodeError
-from ..events.event import NodeEvent
-from ..events.listener import Listener, ForeignListener
-from ..events.subscription import Subscription
+from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.address import Address
+from kivyfn.store.errors import NodeError
+from kivyfn.store.events.event import NodeEvent
+from kivyfn.store.events.listener import Listener, ForeignListener
+from kivyfn.store.events.subscription import Subscription
 
 if TYPE_CHECKING:
-    from ..schema import Schema
+    from kivyfn.store.schema import Schema
 
 
 class Node:

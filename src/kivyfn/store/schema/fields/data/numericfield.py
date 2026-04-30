@@ -1,5 +1,5 @@
-from .datafield import DataField
-from ....errors import FieldError
+from kivyfn.store.schema.fields.data.datafield import DataField
+from kivyfn.store.errors import FieldError
 
 
 class NumericField(DataField):
@@ -56,4 +56,3 @@ class NumericField(DataField):
                 value=value,
                 metadata=self.metadata,
             )
-

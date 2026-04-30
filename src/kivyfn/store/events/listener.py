@@ -4,11 +4,11 @@ from typing import Callable, Optional, Any, TYPE_CHECKING
 import weakref
 from dataclasses import dataclass
 
-from ..constants import InstructionOpCode
+from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
-    from .event import NodeEvent
-    from ..node import Node
+    from kivyfn.store.events.event import NodeEvent
+    from kivyfn.store.node import Node
 
 
 @dataclass(slots=True)

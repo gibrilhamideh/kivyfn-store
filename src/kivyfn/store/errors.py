@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import Any
-from .constants import ConstraintType
+
+from kivyfn.store.constants import ConstraintType
 
 
 class StoreBaseError(Exception):

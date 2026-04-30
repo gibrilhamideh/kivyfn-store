@@ -1,5 +1,5 @@
-from .datafield import DataField
-from ....errors import FieldError
+from kivyfn.store.schema.fields.data.datafield import DataField
+from kivyfn.store.errors import FieldError
 
 
 class BooleanField(DataField):
@@ -22,4 +22,3 @@ class BooleanField(DataField):
                 value=value,
                 metadata=self.metadata,
             )
-

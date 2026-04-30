@@ -1,15 +1,20 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from .compiler import Compiler
-from .delta import Delta
-from .constraintguard import ConstraintGuard
-from .instruction import Instruction
-from .operations import SetOperation, SetRowOperation, InsertOperation, RemoveOperation
+from kivyfn.store.core.compiler import Compiler
+from kivyfn.store.core.delta import Delta
+from kivyfn.store.core.constraintguard import ConstraintGuard
+from kivyfn.store.core.instruction import Instruction
+from kivyfn.store.core.operations import (
+    SetOperation,
+    SetRowOperation,
+    InsertOperation,
+    RemoveOperation,
+)
 
-from ..constants import InstructionSource
-from ..errors import EngineExecutionError, ConstraintError, CompilerError
-from ..utils.tools.uuid import generate_uuid
+from kivyfn.store.constants import InstructionSource
+from kivyfn.store.errors import EngineExecutionError, ConstraintError, CompilerError
+from kivyfn.store.utils.tools.uuid import generate_uuid
 
 
 if TYPE_CHECKING:

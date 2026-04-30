@@ -2,13 +2,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from collections import deque
 
-from ..node import Node
-from ..errors import CompilerError, FieldError
-from ..constants import Policy, InstructionOpCode, InstructionSource
+from kivyfn.store.node import Node
+from kivyfn.store.errors import CompilerError, FieldError
+from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
 
-from .instruction import Instruction
-from .registry import ForeignKeyRegistry
-from .operations import (
+from kivyfn.store.core.instruction import Instruction
+from kivyfn.store.core.registry import ForeignKeyRegistry
+from kivyfn.store.core.operations import (
     Operation,
     InsertOperation,
     RemoveOperation,

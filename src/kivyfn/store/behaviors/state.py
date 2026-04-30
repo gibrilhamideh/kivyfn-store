@@ -1,7 +1,7 @@
 from __future__ import annotations
 from kivy.properties import DictProperty
 
-from ..binder import FnBinder
+from kivyfn.store.binder import FnBinder
 
 
 class FnStateBehavior:

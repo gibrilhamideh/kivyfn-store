@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
-    from ..storage.protocol import StateStorage
-    from ..builder.policy import BootPolicyMode
+    from kivyfn.store.storage.protocol import StateStorage
+    from kivyfn.store.builder.policy import BootPolicyMode
 
 
 @dataclass(frozen=True)

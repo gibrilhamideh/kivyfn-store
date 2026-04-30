@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Union, Iterator
 
-from ..errors import AddressError
+from kivyfn.store.errors import AddressError
 
 PathPart = Union[str, int]
 

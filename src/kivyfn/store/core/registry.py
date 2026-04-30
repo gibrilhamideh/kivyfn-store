@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-from ..constants import Policy
+from kivyfn.store.constants import Policy
 
 
 @dataclass(frozen=True)

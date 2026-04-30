@@ -2,12 +2,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Callable, TypeVar, Protocol, Any, TYPE_CHECKING
 
-from ..constants import InstructionOpCode
+from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
-    from ..core.instruction import Instruction
-    from ..core.transaction import Transaction
-    from ..node import Node
+    from kivyfn.store.core.instruction import Instruction
+    from kivyfn.store.core.transaction import Transaction
+    from kivyfn.store.node import Node
 
 
 @dataclass(frozen=True)

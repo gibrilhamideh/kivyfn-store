@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import cast, TYPE_CHECKING
 
-from .instruction import Instruction
-from ..events.event import NodeEvent
+from kivyfn.store.core.instruction import Instruction
+from kivyfn.store.events.event import NodeEvent
 
 
 if TYPE_CHECKING:
