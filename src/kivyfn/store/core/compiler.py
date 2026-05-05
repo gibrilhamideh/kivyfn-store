@@ -212,22 +212,24 @@ class Compiler:
 
         triggers = getattr(node.schema, "__triggers__", [])
         # NOTE: must solve hiddne import
-        from .transaction import Transaction
+        from kivyfn.store.core.transaction import TransactionBuilder
 
         for trigger in triggers:
             if not trigger.matches(instruction.opcode, instruction.key):
                 continue
 
             # internal execution context to collect new actions
-            exec_ctx = Transaction(
-                self.engine, _internal=True, _source=InstructionSource.TRIGGER
-            )
+            exec_ctx = TransactionBuilder()
 
             # call trigger
             trigger.fn(node, instruction, exec_ctx)
 
+            instructions = Instruction.construct(
+                exec_ctx.commands, source=InstructionSource.TRIGGER
+            )
+
             # collect generated actions
-            derived.extend(exec_ctx._instructions)
+            derived.extend(instructions)
 
         return derived
 

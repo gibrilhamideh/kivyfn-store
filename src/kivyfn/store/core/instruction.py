@@ -55,11 +55,11 @@ class Instruction:
     def dump(self) -> dict:
         return {
             "opcode": self.opcode.value,
-            "address": list(self.address),
+            "address": self.address.to_list(),
             "value": self.value,
             "id": self.id,
             "key": self.key,
-            "source": self.source,
+            "source": self.source.value,
         }
 
     # ============================================================
@@ -68,7 +68,7 @@ class Instruction:
 
     @staticmethod
     def set(
-        address: Address, key: str, value: Any, source=InstructionSource.COMMAND
+        address: Address, key: str, value: Any, source: InstructionSource
     ) -> Instruction:
         """
         Primitive single-schema field mutation.
@@ -87,7 +87,7 @@ class Instruction:
         id: str,
         key: str,
         value: Any,
-        source: InstructionSource = InstructionSource.COMMAND,
+        source: InstructionSource,
     ) -> Instruction:
         """
         Primitive collection row field mutation.
@@ -106,7 +106,7 @@ class Instruction:
         address: Address,
         id: str,
         value: dict,
-        source: InstructionSource = InstructionSource.COMMAND,
+        source: InstructionSource,
     ) -> Instruction:
         """
         Primitive row insertion into a collection node.
@@ -130,9 +130,7 @@ class Instruction:
         )
 
     @staticmethod
-    def remove(
-        address: Address, id: str, source: InstructionSource = InstructionSource.COMMAND
-    ) -> Instruction:
+    def remove(address: Address, id: str, source: InstructionSource) -> Instruction:
         """
         Primitive row removal from collection.
         """
@@ -142,3 +140,42 @@ class Instruction:
             id=id,
             source=source,
         )
+
+    @classmethod
+    def compile(cls, payload: dict, source: InstructionSource) -> Instruction:
+        opcode: str = InstructionOpCode(payload["opcode"])
+        address = payload["address"]
+        address = Address(*address)
+
+        if opcode is InstructionOpCode.SET:
+            return cls.set(
+                address=address,
+                key=payload["key"],
+                value=payload.get("value"),
+                source=source,
+            )
+
+        if opcode is InstructionOpCode.SETROW:
+            return cls.setrow(
+                address=address,
+                id=payload["id"],
+                key=payload["key"],
+                value=payload.get("value"),
+                source=source,
+            )
+
+        if opcode is InstructionOpCode.INSERT:
+            return cls.insert(
+                address=address, id=payload["id"], value=payload["value"], source=source
+            )
+
+        if opcode is InstructionOpCode.REMOVE:
+            return cls.remove(address=address, id=payload["id"], source=source)
+
+        raise ValueError(f"Unsupported opcode: {opcode}")
+
+    @classmethod
+    def construct(
+        cls, commands: list[dict], source: InstructionSource
+    ) -> list[Instruction]:
+        return [cls.compile(item, source) for item in commands]

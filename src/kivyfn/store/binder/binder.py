@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from kivyfn.store.address import Address
     from kivyfn.store.events.event import NodeEvent
-    from kivyfn.store.events.subscription import Subscription
+    from kivyfn.store.events.subscriptions import ClientSubscription
     from kivyfn.store.behaviors.state import FnStateBehavior
 
 
@@ -31,7 +31,7 @@ class FnBinder(EventDispatcher):
     opcode: InstructionOpCode | None = ObjectProperty(None)
     field: str = StringProperty("", allownone=True)
     callback = StringProperty(None, allownone=True)
-    subscription: Subscription | None = ObjectProperty(None)
+    subscription: ClientSubscription | None = ObjectProperty(None)
 
     _callback = None
     _kv_posted = False

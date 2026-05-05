@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Union, Iterator
+from typing import Any, Mapping, Iterator
 
 from kivyfn.store.errors import AddressError
 
-PathPart = Union[str, int]
+PathPart = str
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class Address:
     parts: tuple[PathPart, ...]
 
@@ -87,3 +87,6 @@ class Address:
             return data
         except Exception:
             raise AddressError
+
+    def to_list(self) -> list[PathPart]:
+        return list(self.parts)

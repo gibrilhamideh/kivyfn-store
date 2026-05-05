@@ -17,7 +17,8 @@ authors = [
 dependencies = [
     "kivy>=2.3.0",
     "kivyfn",
-    "uuid6"
+    "uuid6",
+    "python-socketio[aiohttp]>=5.11,<6"
 ]
 
 

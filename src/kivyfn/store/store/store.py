@@ -1,133 +1,111 @@
 from __future__ import annotations
-from typing import Any, Literal, TYPE_CHECKING
+import asyncio
+from os import wait
+from typing import TYPE_CHECKING, Any
 
-
-from kivyfn.store.core import Engine
+from kivyfn.store.store.server import StoreServer
+from kivyfn.store.store.client import StoreClient
 from kivyfn.store.core.transaction import Transaction
-from kivyfn.store.utils.visulization.text import render_state, render_structure
+from kivyfn.store.events.subscription import SubscriptionEvents
 
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
     from kivyfn.store.node import Node
     from kivyfn.store.builder.config import StoreConfig
-    from kivyfn.store.events.subscription import Subscription
-    from kivyfn.store.constants import InstructionOpCode
+    from kivyfn.store.transport.response import Response
 
 
 class Store:
-    def __init__(self) -> None:
-        self._engine: Engine | None = None
+    def __init__(self, host="127.0.0.1", port=8765) -> None:
+        self.host = host
+        self.port = port
+        self._client: StoreClient | None = None
+        self._server: StoreServer | None = None
 
     # -------------------------------------------------
-    # Boot
+    # Lifecycle
     # -------------------------------------------------
 
-    def configure(self, root: Node, config: StoreConfig):
-        if self._engine is not None:
-            raise RuntimeError("Store is already configured")
+    def start(
+        self,
+        root: Node,
+        config: StoreConfig,
+    ) -> None:
+        if self._server is not None:
+            raise RuntimeError("Store server already started")
 
-        self._engine = Engine(root, config)
+        self._server = StoreServer(root, config, self.host, self.port)
+        self._server.start()
 
-    def boot(self):
-        assert self._engine, "Store must be configured before use"
-        self._engine.boot()
+    async def stop(self) -> None:
+        """
+        Stops the store server and disconnects the client.
 
-    def transaction(self) -> Transaction:
-        assert self._engine, "Store must be configured before use"
-        return Transaction(self._engine)
+        Safe to call once.
+        """
+        # Disconnect client first
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            finally:
+                self._client = None
 
-    def undo(self):
-        assert self._engine, "Store must be configured before use"
-        self._engine.undo()
+        # Then stop server
+        if self._server is not None:
+            try:
+                self._server.stop()
+            finally:
+                self._server = None
 
-    def redo(self):
-        assert self._engine, "Store must be configured before use"
-        self._engine.redo()
+    async def connect(self) -> None:
+        if self._client is not None:
+            raise RuntimeError("Store client already connected")
 
-    def subscribe(
+        host = f"http://{self.host}:{self.port}"
+        self._client = StoreClient(host)
+        await self._client.connect()
+
+    # -------------------------------------------------
+    # Client Access
+    # -------------------------------------------------
+
+    @property
+    def client(self) -> StoreClient:
+        if self._client is None:
+            raise RuntimeError("Store must be connected before use")
+        return self._client
+
+    # -------------------------------------------------
+    # API Delegation
+    # -------------------------------------------------
+    async def undo(self) -> Response[Any]:
+        return await self.client.undo()
+
+    async def redo(self) -> Response[Any]:
+        return await self.client.redo()
+
+    async def snapshot(
         self,
         address: Address,
-        callback,
+        id=None,
+        key=None,
         *,
-        opcode: InstructionOpCode | None = None,
-        id: str | None = None,
-        key: str | None = None,
-        depth: int | None = 0,
         resolve_foreignkeys: bool = False,
-    ) -> Subscription:
-        """
-        Public reactive binding API.
-
-        Developers bind to a specific node via address.
-        """
-
-        assert self._engine, "Store must be configured before use"
-        node = self._engine.resolve(address)
-
-        return node.subscribe(
-            callback,
-            opcode=opcode,
+    ) -> Response[Any]:
+        return await self.client.snapshot(
+            address,
             id=id,
             key=key,
-            depth=depth,
             resolve_foreignkeys=resolve_foreignkeys,
         )
 
-    # -------------------------------------------------
-    # Read APIs
-    # -------------------------------------------------
-    def snapshot(
-        self, address: Address, id=None, key=None, *, resolve_foreignkeys: bool = False
-    ) -> Any:
-        """
-        Return a deep-copied snapshot of the current state.
+    async def to_dict(self, address: Address) -> Response[dict]:
+        return await self.client.to_dict(address)
 
-        - If address is None:
-            returns the entire store state.
-        - If address is provided:
-            returns the state rooted at that address.
+    def transaction(self) -> Transaction:
+        return Transaction(self.client)
 
-        This method MUST NOT mutate store or node data.
-        The returned value is safe for application use.
-        """
-        assert self._engine, "Store must be configured before use"
-        node = self._engine.resolve(address)
-
-        return node.snapshot(id=id, key=key, resolve_foreignkeys=resolve_foreignkeys)
-
-    def to_dict(self, address: Address):
-        raise NotImplementedError()
-
-    # -------------------------------------------------
-    # Visualization APIs (structure, not data)
-    # -------------------------------------------------
-    def view(
-        self,
-        mode: Literal["state", "structure"] = "state",
-        *,
-        start: int = 0,
-        depth: int | None = None,
-    ):
-        """
-        Visualize the current tree (developer-only).
-
-        mode:
-            - 'data'      : JSON-like view of values
-            - 'structure' : node + schema + cardinality
-
-        start:
-            Logical starting depth (default 0)
-
-        depth:
-            Max depth to render (None = unlimited)
-        """
-        assert self._engine, "Store must be configured before use"
-        root = self._engine.root
-
-        if mode == "state":
-            render_state(root, start=start, depth=depth)
-        elif mode == "structure":
-            render_structure(root, start=start, depth=depth)
-        else:
-            raise ValueError(f"Unknown view mode: {mode!r}")
+    @property
+    def subscription(self) -> SubscriptionEvents:
+        return SubscriptionEvents(self.client)
