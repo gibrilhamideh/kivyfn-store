@@ -1,6 +1,8 @@
 from __future__ import annotations
-from typing import Type
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from kivyfn.store.schema import Schema
 
 class Branch:
     """
@@ -13,11 +15,11 @@ class Branch:
 
     __slots__ = ("schema", "_children")
 
-    def __init__(self, schema: Type):
+    def __init__(self, schema: type[Schema]):
         if schema is None:
             raise ValueError("Branch requires a schema")
 
-        self.schema: Type = schema
+        self.schema = schema
         self._children: dict[str, Branch] = {}
 
     # ------------------------------------------------------------------

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Callable
 
 import asyncio
 import socketio
@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from kivyfn.store.address import Address
 from kivyfn.store.core import Engine
-from kivyfn.store.core.transaction import EngineTransaction
+from kivyfn.store.core.execution import Execution
 from kivyfn.store.events import NodeEvent
 from kivyfn.store.events.subscription import EngineSubscription
 from kivyfn.store.constants import InstructionOpCode
@@ -21,12 +21,14 @@ if TYPE_CHECKING:
 
 
 class SocketIOServer:
-    def __init__(self, root: Node, config: StoreConfig, host: str, port: int) -> None:
+    def __init__(
+        self, root: Node, config: StoreConfig, host: str, port: int, on_ready: Callable
+    ) -> None:
         self.host = host
         self.port = port
+        self.on_ready = on_ready
 
         self._engine = Engine(self, root, config)
-        self._engine.boot()
         self._subscriptions: dict[str, EngineSubscription] = {}
         self._listeners: dict[Listener, set[EngineSubscription]] = defaultdict(set)
 
@@ -39,7 +41,6 @@ class SocketIOServer:
 
         self.app = web.Application()
         self.sio.attach(self.app)
-
         self._register_handlers()
 
     # -------------------------------------------------
@@ -54,6 +55,8 @@ class SocketIOServer:
 
         site = web.TCPSite(runner, self.host, self.port)
         await site.start()
+
+        self.on_ready()
 
         await asyncio.Future()
 
@@ -112,43 +115,6 @@ class SocketIOServer:
                 status=400,
             ).payload()
 
-    async def on_subscribe(
-        self,
-        sid: str,
-        message: dict[str, Any],
-    ) -> dict[str, Any]:
-        try:
-            opcode = InstructionOpCode(message["opcode"])
-            address = Address(*message["address"])
-            node = self._engine.resolve(address)
-
-            listener = node.subscribe(
-                opcode=opcode,
-                id=message.get("id"),
-                key=message.get("key"),
-                depth=message.get("depth", 0),
-                resolve_foreignkeys=message.get("resolve_foreignkeys", False),
-            )
-
-            subscription = EngineSubscription(node, listener)
-            token = subscription.token
-
-            self._subscriptions[token] = subscription
-            self._listeners[listener].add(subscription)
-
-            await self.sio.enter_room(sid=sid, room=listener.room)
-
-            return Response.success(
-                data={"token": token},
-                status=201,
-            ).payload()
-
-        except Exception as e:
-            return Response.error(
-                message=str(e),
-                status=400,
-            ).payload()
-
     async def on_unsubscribe(
         self,
         sid: str,
@@ -188,21 +154,65 @@ class SocketIOServer:
                 status=400,
             ).payload()
 
+    async def on_subscribe(
+        self,
+        sid: str,
+        message: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            opcode = InstructionOpCode(message["opcode"])
+            address = Address(*message["address"])
+            node = self._engine.resolve(address)
+
+            listener = node.subscribe(
+                opcode=opcode,
+                id=message.get("id", None),
+                key=message.get("key", None),
+                depth=message.get("depth", 0),
+                resolve_foreignkeys=message.get("resolve_foreignkeys", False),
+            )
+
+            subscription = EngineSubscription(node, listener)
+            token = subscription.token
+
+            self._subscriptions[token] = subscription
+            self._listeners[listener].add(subscription)
+
+            await self.sio.enter_room(sid=sid, room=listener.room)
+
+            return Response.success(
+                data={"token": token},
+                status=201,
+            ).payload()
+
+        except Exception as e:
+            return Response.error(
+                message=str(e),
+                status=400,
+            ).payload()
+
     async def on_transaction(
         self,
         sid: str,
         commands: list,
     ) -> dict[str, Any]:
         try:
-            transaction = EngineTransaction(self._engine, commands)
-            result = transaction.execute()
+            transaction = Execution(self._engine, commands)
+            execution = transaction.execute()
+
+            self._engine.to_disk(execution.touched_nodes)
+            for event in execution.events:
+                node = self._engine.resolve(event.address)
+                listeners = node.dispatch(event)
+                await self.dispatch(event, listeners)
 
             return Response.success(
-                data=result.payload(),
+                data=execution.payload(),
                 status=200,
             ).payload()
 
         except Exception as e:
+            print(e)
             return Response.error(
                 message=str(e),
                 status=500,
@@ -220,7 +230,7 @@ class SocketIOServer:
     async def send(self, room: str, event: dict[str, Any]) -> None:
         await self.sio.emit("event", event, room=room)
 
-    def dispatch(self, event: NodeEvent, listeners: list[Listener]):
+    async def dispatch(self, event: NodeEvent, listeners: list[Listener]):
         _event = event.to_dict()
         for listener in listeners:
             subscriptions = self._listeners.get(listener)
@@ -228,4 +238,4 @@ class SocketIOServer:
                 continue
             for subscription in subscriptions:
                 message = {"token": subscription.token, "event": _event}
-                asyncio.create_task(self.send(listener.room, message))
+                await self.send(listener.room, message)

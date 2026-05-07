@@ -1,11 +1,13 @@
 from __future__ import annotations
-from typing import Any
-from .delta import Delta
-from .engine import Engine
-from .registry import ForeignKeyRegistry
+from typing import Any, TYPE_CHECKING
 
 from kivyfn.store.errors import ConstraintError
 from kivyfn.store.constants import Policy, ConstraintType
+
+if TYPE_CHECKING:
+    from kivyfn.store.core.delta import Delta
+    from kivyfn.store.core.engine import Engine
+
 
 
 class ConstraintGuard:
@@ -26,7 +28,6 @@ class ConstraintGuard:
     # ============================================================
     # Public API
     # ============================================================
-
     def validate(self, delta: Delta):
         self._validate_uniques(delta)
         self._validate_fk_existence(delta)
@@ -60,7 +61,7 @@ class ConstraintGuard:
                         raise ConstraintError(
                             message=(
                                 f"Unique constraint violated on "
-                                f"{node.schema.__name__}.{'.'.join(unique_key)}"
+                                f"{node.schema.name}.{'.'.join(unique_key)}"
                             ),
                             constraint_type=ConstraintType.UNIQUE,
                             schema=node.schema,
@@ -90,7 +91,7 @@ class ConstraintGuard:
                         raise ConstraintError(
                             message=(
                                 f"Unique constraint violated on "
-                                f"{node.schema.__name__}.{'.'.join(unique_key)}"
+                                f"{node.schema.name}.{'.'.join(unique_key)}"
                             ),
                             constraint_type=ConstraintType.UNIQUE,
                             schema=node.schema,
@@ -104,7 +105,7 @@ class ConstraintGuard:
     def _validate_fk_existence(self, delta: Delta):
         for node in delta.touched_nodes:
             # Foreign keys where this node is the source
-            fks = ForeignKeyRegistry.foreign_keys_of(node.schema.__name__)
+            fks = self.engine.metadata.foreign_keys_of(node.schema.name)
             if not fks:
                 continue
 
@@ -130,7 +131,7 @@ class ConstraintGuard:
                         raise ConstraintError(
                             message=(
                                 f"Foreign key constraint failed on "
-                                f"{node.schema.__name__}.{fk.field} "
+                                f"{node.schema.name}.{fk.field} "
                                 f"-> {fk.reference}"
                             ),
                             constraint_type=ConstraintType.FK_MISSING,
@@ -144,7 +145,7 @@ class ConstraintGuard:
     # ============================================================
     def _validate_restrict(self, delta: Delta):
         for target_node, removed_ids in delta._removed.items():
-            fks = ForeignKeyRegistry.referenced_by(target_node.schema.__name__)
+            fks = self.engine.metadata.referenced_by(target_node.schema.name)
 
             for fk in fks:
                 if fk.on_delete is not Policy.RESTRICT:
@@ -167,7 +168,7 @@ class ConstraintGuard:
                         if future_value == removed_id:
                             raise ConstraintError(
                                 message=(
-                                    f"Cannot delete {target_node.schema.__name__} "
+                                    f"Cannot delete {target_node.schema.name} "
                                     f"'{removed_id}' because it is still referenced "
                                     f"by {fk.schema}.{fk.field}"
                                 ),

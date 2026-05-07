@@ -8,11 +8,12 @@ from kivyfn.store.constants import InstructionOpCode
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
 if TYPE_CHECKING:
+    from kivyfn.store import Store
     from kivyfn.store.node import Node
     from kivyfn.store.events import NodeEvent
     from kivyfn.store.events.listener import Listener
-    from kivyfn.store.store.client import StoreClient
-    from kivyfn.store.address.address import Address
+    from kivyfn.store.client import StoreClient
+    from kivyfn.store.address import Address
 
 
 class Subscription:
@@ -29,6 +30,7 @@ class Subscription:
         self._callback_ref = weakref.WeakMethod(callback)
 
     async def dispose(self) -> None:
+        # TODO: ADD await Store.ready()
         await self._client.unsubscribe(self._token)
 
     def dispatch(self, event: NodeEvent) -> None:
@@ -48,10 +50,12 @@ class Subscription:
 
 
 class SubscriptionEvents:
-    def __init__(self, client: StoreClient) -> None:
+    def __init__(self, store: Store, client: StoreClient) -> None:
+        self._store = store
         self._client = client
 
     async def set(self, callback, address: Address, key: str | None = None):
+        await self._store.ready()
         return await self._client.subscribe(
             opcode=InstructionOpCode.SET,
             callback=callback,
@@ -67,6 +71,7 @@ class SubscriptionEvents:
         key: str | None = None,
         depth: int | None = 0,
     ):
+        await self._store.ready()
         return await self._client.subscribe(
             opcode=InstructionOpCode.SETROW,
             callback=callback,
@@ -77,6 +82,7 @@ class SubscriptionEvents:
         )
 
     async def insert(self, callback, address: Address, resolve_foreignkeys=False):
+        await self._store.ready()
         return await self._client.subscribe(
             opcode=InstructionOpCode.INSERT,
             callback=callback,
@@ -85,6 +91,7 @@ class SubscriptionEvents:
         )
 
     async def remove(self, callback, address: Address):
+        await self._store.ready()
         return await self._client.subscribe(
             opcode=InstructionOpCode.REMOVE, callback=callback, address=address
         )

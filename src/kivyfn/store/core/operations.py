@@ -1,12 +1,12 @@
 from __future__ import annotations
 from typing import cast, TYPE_CHECKING
 
-from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.events.event import NodeEvent
 
 
 if TYPE_CHECKING:
     from ..node import Node
+    from kivyfn.store.core.instruction import Instruction
 
 
 class Operation:
@@ -55,7 +55,7 @@ class SetOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             key=self.key,
             old_value=self.old_value,
             new_value=self.new_value,
@@ -66,7 +66,7 @@ class SetOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             key=self.key,
             old_value=current,
             new_value=self.old_value,
@@ -90,7 +90,7 @@ class SetRowOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             key=self.key,
             old_value=self.old_value,
@@ -102,7 +102,7 @@ class SetRowOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             key=self.key,
             old_value=current,
@@ -125,7 +125,7 @@ class InsertOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             new_value=self.value,
         )
@@ -135,7 +135,7 @@ class InsertOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             old_value=row,
         )
@@ -156,7 +156,7 @@ class RemoveOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             old_value=self.old_row,
         )
@@ -166,7 +166,7 @@ class RemoveOperation(Operation):
 
         return NodeEvent(
             opcode=self.opcode,
-            address=self.node.address(),
+            address=self.node.address,
             id=self.id,
             new_value=self.old_row,
         )

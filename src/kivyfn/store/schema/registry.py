@@ -1,33 +1,76 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
 
-from kivyfn.store.errors import SchemaError
+from dataclasses import dataclass
 
-if TYPE_CHECKING:
-    from kivyfn.store.schema import Schema
+from kivyfn.store.constants import Policy
 
 
-class SchemaRegistry:
-    __registries__: dict[str, type[Schema]] = {}
+@dataclass(frozen=True)
+class ForeignKey:
+    schema: str
+    field: str
+    reference: str
+    on_delete: Policy
 
-    @classmethod
-    def register(cls, schema: type[Schema]) -> None:
-        name = schema.__name__
+    def __repr__(self) -> str:
+        return (
+            f"ForeignKey("
+            f"{self.schema}.{self.field} -> {self.reference}, "
+            f"on_delete={self.on_delete.name})"
+        )
 
-        if name in cls.__registries__:
-            raise SchemaError(
-                f"Duplicate schema name '{name}'. Schema names must be unique."
-            )
 
-        cls.__registries__[name] = schema
+class ForeignKeyRegistry:
+    def __init__(self) -> None:
+        self._forward: dict[tuple[str, str], ForeignKey] = {}
+        self._reverse: dict[str, list[ForeignKey]] = {}
+        self._by_source: dict[str, list[ForeignKey]] = {}
 
-    @classmethod
-    def get(cls, name: str) -> type[Schema]:
-        try:
-            return cls.__registries__[name]
-        except KeyError:
-            raise SchemaError(f"Schema '{name}' is not registered.")
+    def register(
+        self,
+        *,
+        schema: str,
+        field: str,
+        reference: str,
+        on_delete: Policy,
+    ) -> None:
+        key = (schema, field)
 
-    @classmethod
-    def all(cls) -> dict[str, type[Schema]]:
-        return cls.__registries__.copy()
+        if key in self._forward:
+            raise RuntimeError(f"Foreign key already registered for {schema}.{field}")
+
+        fk = ForeignKey(
+            schema=schema,
+            field=field,
+            reference=reference,
+            on_delete=on_delete,
+        )
+
+        self._forward[key] = fk
+        self._reverse.setdefault(reference, []).append(fk)
+        self._by_source.setdefault(schema, []).append(fk)
+
+    def get(self, schema: str, field: str) -> ForeignKey | None:
+        return self._forward.get((schema, field))
+
+    def referenced_by(self, schema: str) -> list[ForeignKey]:
+        return self._reverse.get(schema, []).copy()
+
+    def foreign_keys_of(self, schema: str) -> list[ForeignKey]:
+        return self._by_source.get(schema, []).copy()
+
+    def all(self) -> list[ForeignKey]:
+        return list(self._forward.values())
+
+    def __repr__(self) -> str:
+        if not self._forward:
+            return "ForeignKeyRegistry(empty)"
+
+        lines = ["ForeignKeyRegistry:"]
+
+        for schema, fks in self._by_source.items():
+            lines.append(f"  {schema}:")
+            for fk in fks:
+                lines.append(f"    - {fk.field} -> {fk.reference} ({fk.on_delete.name})")
+
+        return "\n".join(lines)

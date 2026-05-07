@@ -77,12 +77,15 @@ class ConstraintError(EngineExecutionError):
         self.value = value
 
     def __repr__(self) -> str:
-        schema_name = getattr(self.schema, "__name__", self.schema)
+
+        name = None
+        if self.schema:
+            name = self.schema.name
 
         return (
             f"{self.__class__.__name__}("
             f"type={self.constraint_type}, "
-            f"schema={schema_name}, "
+            f"schema={name}, "
             f"field={self.field}, "
             f"value={self.value}"
             f")"

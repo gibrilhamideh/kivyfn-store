@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
 
-from kivyfn.store.address.address import Address
 from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
+    from kivyfn.store.address import Address
     from kivyfn.store.events.event import NodeEvent
     from kivyfn.store.node import Node
 
@@ -139,7 +139,7 @@ class ForeignListener:
                 continue
 
             translated = event.copy_with(
-                address=self.owner.address(),
+                address=self.owner.address,
                 id=base_id,
             )
 

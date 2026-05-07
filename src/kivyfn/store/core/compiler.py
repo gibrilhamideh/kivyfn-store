@@ -2,12 +2,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from collections import deque
 
-from kivyfn.store.node import Node
 from kivyfn.store.errors import CompilerError, FieldError
 from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
-
-from kivyfn.store.core.instruction import Instruction
-from kivyfn.store.core.registry import ForeignKeyRegistry
+from kivyfn.store.transaction import TransactionBuilder
 from kivyfn.store.core.operations import (
     Operation,
     InsertOperation,
@@ -18,7 +15,9 @@ from kivyfn.store.core.operations import (
 
 
 if TYPE_CHECKING:
-    from .engine import Engine
+    from kivyfn.store.node import Node
+    from kivyfn.store.core.engine import Engine
+    from kivyfn.store.core.instruction import Instruction
 
 
 class Compiler:
@@ -211,8 +210,6 @@ class Compiler:
         derived: list[Instruction] = []
 
         triggers = getattr(node.schema, "__triggers__", [])
-        # NOTE: must solve hiddne import
-        from kivyfn.store.core.transaction import TransactionBuilder
 
         for trigger in triggers:
             if not trigger.matches(instruction.opcode, instruction.key):
@@ -245,11 +242,11 @@ class Compiler:
 
         derived: list[Instruction] = []
 
-        target_schema = node.schema.__name__
+        target_schema = node.schema.name
         removed_id = instruction.id
 
         # Get all foreign keys referencing this schema
-        foreign_keys = ForeignKeyRegistry.referenced_by(target_schema)
+        foreign_keys = self.engine.metadata.referenced_by(target_schema)
 
         if not foreign_keys:
             return []
@@ -279,7 +276,7 @@ class Compiler:
                 for id in ids:
                     derived.append(
                         Instruction.remove(
-                            node.address(),  # lazy computed address
+                            node.address,  # lazy computed address
                             id,
                             source=InstructionSource.POLICY,
                         )

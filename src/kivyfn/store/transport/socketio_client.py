@@ -32,7 +32,7 @@ class SocketIOClient:
     async def disconnect(self) -> None:
         await self.sio.disconnect()
 
-    async def call(self, event: str, message: Any) -> Any:
+    async def call(self, event: str, message: Any | None = None) -> Any:
         if not self.sio.connected:
             raise RuntimeError("SocketIOClient is not connected")
 

@@ -8,7 +8,7 @@ from kivyfn.store.transport import SocketIOClient
 from kivyfn.store.transport.response import Response
 from kivyfn.store.events.subscription import Subscription
 from kivyfn.store.events import NodeEvent
-from kivyfn.store.core.transaction import TransactionResult
+from kivyfn.store.transaction import TransactionResult
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
@@ -76,11 +76,10 @@ class StoreClient:
         )
 
         response = Response.from_payload(payload)
-
         if not response.ok:
             return response
 
-        token = response.data["token"]  # pyright: ignore
+        token = response.data["token"]
 
         subscription = Subscription(
             client=self,
@@ -89,7 +88,6 @@ class StoreClient:
         )
 
         self._subscriptions[token] = subscription
-
         return response.copy_with(data=subscription)
 
     async def unsubscribe(self, token: str) -> Response[bool]:
@@ -108,15 +106,15 @@ class StoreClient:
         if not response.ok:
             return response
 
-        result = TransactionResult.from_payload(response.data)  # pyright: ignore
+        result = TransactionResult.from_payload(response.data)
         return response.copy_with(data=result)
 
     async def undo(self) -> Response[Any]:
-        payload = await self._transport.call("undo", None)
+        payload = await self._transport.call("undo")
         return Response.from_payload(payload)
 
     async def redo(self) -> Response[Any]:
-        payload = await self._transport.call("redo", None)
+        payload = await self._transport.call("redo")
         return Response.from_payload(payload)
 
     async def to_dict(self, address: Address) -> Response[Any]:

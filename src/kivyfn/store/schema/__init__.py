@@ -1,2 +1,2 @@
-from .schema import Schema, SchemaRegistry
+from .schema import Schema
 from .trigger import trigger

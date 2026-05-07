@@ -13,19 +13,20 @@ from kivyfn.store.events.event import NodeEvent
 from kivyfn.store.events.listener import Listener, ForeignListener, ListenerIndex
 from kivyfn.store.events.subscription import EngineSubscription
 
+
 if TYPE_CHECKING:
     from kivyfn.store.schema import Schema
-
 
 class Node:
     registry: ClassVar[dict[str, Node]] = {}
 
-    def __init__(self, schema: type[Schema]) -> None:
-        if schema.__name__ in Node.registry:
-            raise NodeError(f"Duplicate schema name: {schema.__name__}")
+    def __init__(self, schema: Schema, address: Address) -> None:
+        if schema.name in Node.registry:
+            raise NodeError(f"Duplicate schema name: {schema.name}")
 
-        Node.registry[schema.__name__] = self
+        Node.registry[schema.name] = self
         self.schema = schema
+        self.address = address
         self.name: str | int | None = None
         self.parent: Node | None = None
         self.children: dict[str, Node] = {}
@@ -40,7 +41,7 @@ class Node:
         self._foreignkey_subscriptions: dict[str, list[EngineSubscription]] = {}
 
     def __repr__(self) -> str:
-        return f"Node(schema={self.schema.__name__}, children={len(self.children)})"
+        return f"Node(schema={self.schema.name}, children={len(self.children)})"
 
     # ---------------------------
     # Build / boot
@@ -108,17 +109,6 @@ class Node:
         node.parent = self
         node.name = name
         self.children[name] = node
-
-    def address(self) -> Address:
-        parts = []
-        node = self
-
-        while node.parent is not None:
-            parts.append(node.name)
-            node = node.parent
-
-        parts.reverse()
-        return Address(*parts)
 
     # ---------------------------
     # Data API used by operations
@@ -247,32 +237,6 @@ class Node:
 
             return self.value[key]
 
-    def _resolve_foreignkeys(self, row: dict) -> dict:
-        resolved = dict(row)
-
-        for fk in self.schema.foreign_key_fields():
-            fk_id = row.get(fk)
-            if fk_id is None:
-                continue
-
-            field = self.schema.get_field(fk)
-            ref_node = Node.registry.get(field.schema)  # pyright: ignore
-
-            if ref_node is None:
-                continue
-
-            ref_row = ref_node.snapshot(
-                id=fk_id,
-                resolve_foreignkeys=True,
-            )
-
-            if not ref_row:
-                continue
-
-            resolved.update(ref_row)
-
-        return resolved
-
     # ---------------------------
     # Subscriptions
     # ---------------------------
@@ -285,7 +249,7 @@ class Node:
         resolve_foreignkeys: bool = False,
     ) -> Listener:
         listener = Listener(
-            address=self.address(),
+            address=self.address,
             opcode=opcode,
             id=id,
             key=key,
@@ -316,6 +280,33 @@ class Node:
             deliveries.append(listener)
 
         return deliveries
+
+    def _resolve_foreignkeys(self, row: dict) -> dict:
+        resolved = dict(row)
+
+        for fk in self.schema.foreign_key_fields():
+            fk_id = row.get(fk)
+            if fk_id is None:
+                continue
+
+            field = self.schema.get_field(fk)
+            ref_node = Node.registry.get(field.schema)  # pyright: ignore
+
+            if ref_node is None:
+                continue
+
+            ref_row = ref_node.snapshot(
+                id=fk_id,
+                resolve_foreignkeys=True,
+            )
+
+            if not ref_row:
+                continue
+
+            resolved.update(ref_row)
+
+        return resolved
+
 
     def _subscribe_foreignkeys(
         self,
@@ -368,7 +359,7 @@ class Node:
         foreignkey: str,
         depth: int | None,
     ):
-        return
+        pass
         # # 1. Resolve the referenced node
         # field = self.schema.get_field(foreignkey)
         # referenced_schema_name = field.schema  # pyright: ignore

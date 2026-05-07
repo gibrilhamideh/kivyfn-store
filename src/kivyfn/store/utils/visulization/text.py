@@ -37,7 +37,7 @@ def render_structure(
         return
 
     prefix = "  " * (_level - start) if _level >= start else ""
-    schema_name = node.schema.__name__
+    schema_name = node.schema.name
 
     if _level >= start:
         print(f"{prefix}- Node(schema={schema_name}, many={node.many})")

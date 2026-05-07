@@ -1,20 +1,22 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional, Callable, TypeVar, Protocol, Any, TYPE_CHECKING
+from typing import Any, Callable, Optional, Protocol, TYPE_CHECKING, TypeVar
 
 from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
     from kivyfn.store.core.instruction import Instruction
-    from kivyfn.store.core.transaction import Transaction
     from kivyfn.store.node import Node
+    from kivyfn.store.schema import Schema
+    from kivyfn.store.transaction import TransactionBuilder
 
 
 @dataclass(frozen=True)
 class Trigger:
     opcode: InstructionOpCode
     field: Optional[str]
-    fn: Callable  # fn(node, action, exec)
+    fn: Callable[..., Any]
 
     def matches(self, opcode: InstructionOpCode, key: Optional[str]) -> bool:
         if self.opcode is not opcode:
@@ -28,25 +30,33 @@ class Trigger:
 
 class TriggerFunc(Protocol):
     def __call__(
-        self, node: Node, action: Instruction, exec_fn: Transaction
+        self,
+        schema: Schema,
+        node: Node,
+        action: Instruction,
+        exec_fn: TransactionBuilder,
     ) -> Any: ...
 
 
-F = TypeVar("F", bound=TriggerFunc)
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 def trigger(opcode: InstructionOpCode, *, field: Optional[str] = None):
     def decorator(fn: F) -> F:
-        # 1. Attach metadata to the raw function
-        if not hasattr(fn, "_trigger_meta"):
-            fn._trigger_meta = []  # type: ignore
+        trigger_meta = getattr(fn, "_trigger_meta", None)
 
-        fn._trigger_meta.append(Trigger(opcode=opcode, field=field, fn=fn))  # type: ignore
+        if trigger_meta is None:
+            trigger_meta = []
+            setattr(fn, "_trigger_meta", trigger_meta)
 
-        # 2. Convert to staticmethod and CAST back to F
-        # This trick fools the type checker into thinking it's still a
-        # regular function (so no 'self' error) while actually making
-        # it a staticmethod at runtime.
+        trigger_meta.append(
+            Trigger(
+                opcode=opcode,
+                field=field,
+                fn=fn,
+            )
+        )
+
         return fn
 
     return decorator

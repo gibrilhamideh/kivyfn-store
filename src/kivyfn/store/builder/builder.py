@@ -4,6 +4,7 @@ from typing import Optional, Set
 from kivyfn.store.node import Node
 from kivyfn.store.builder.branch import Branch
 from kivyfn.store.builder.config import StoreConfig
+from kivyfn.store.address import Address
 
 
 class Builder:
@@ -116,12 +117,19 @@ class Builder:
     # --------------------------------------------------------
     # Branch → Node Conversion
     # --------------------------------------------------------
-
-    def _build_node(self, branch: Branch) -> Node:
-        node = Node(branch.schema)
+    def _build_node(
+        self,
+        branch: Branch,
+        path: tuple[str, ...] = (),
+    ) -> Node:
+        address = Address(*path)
+        node = Node(branch.schema(), address)
 
         for name, child_branch in branch._raw_children().items():
-            child_node = self._build_node(child_branch)
+            child_node = self._build_node(
+                child_branch,
+                path + (name,),
+            )
             node.add_child(name, child_node)
 
         return node

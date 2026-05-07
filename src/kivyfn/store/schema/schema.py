@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from kivyfn.store.schema.registry import SchemaRegistry
 from kivyfn.store.schema.trigger import Trigger
-
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
-from kivyfn.store.core.registry import ForeignKeyRegistry
 from kivyfn.store.errors import FieldNotFoundError
+
 
 
 IndexKey = tuple[str, ...]
@@ -20,120 +18,110 @@ class Schema:
     indexes: ClassVar[list[IndexKey]] = []
     uniques: ClassVar[list[IndexKey]] = []
 
-    __fields__: ClassVar[dict[str, BaseField]]
-    __triggers__: ClassVar[list[Trigger]]
-    __indexes__: ClassVar[set[IndexKey]]
-    __uniques__: ClassVar[set[IndexKey]]
+    def __init__(self) -> None:
+        self.name = self.__class__.__name__
 
-    def __init_subclass__(cls) -> None:
-        super().__init_subclass__()
+        self._fields: dict[str, BaseField] = {}
+        self._triggers: list[Trigger] = []
 
-        fields: dict[str, BaseField] = {}
-        triggers: list[Trigger] = []
+        self._indexes: set[IndexKey] = set()
+        self._uniques: set[IndexKey] = set()
 
-        for name, attr in cls.__dict__.items():
+        self._build_fields()
+        self._build_triggers()
+        self._build_indexes()
+        self._validate_index_keys()
+
+    def _build_fields(self) -> None:
+        for name, attr in self.__class__.__dict__.items():
             if isinstance(attr, BaseField):
                 attr.name = name
-                fields[name] = attr
+                self._fields[name] = attr
 
-                if isinstance(attr, ForeignKeyField):
-                    ForeignKeyRegistry.register(
-                        schema=cls.__name__,
-                        field=name,
-                        reference=attr.schema,
-                        on_delete=attr.on_delete,
+    def _build_triggers(self) -> None:
+        for name, attr in self.__class__.__dict__.items():
+            trigger_meta = getattr(attr, "_trigger_meta", None)
+            if not trigger_meta:
+                continue
+
+            bound_method = getattr(self, name)
+
+            for trigger in trigger_meta:
+                self._triggers.append(
+                    Trigger(
+                        opcode=trigger.opcode,
+                        field=trigger.field,
+                        fn=bound_method,
                     )
+                )
 
-            if hasattr(attr, "_trigger_meta"):
-                triggers.extend(attr._trigger_meta)  # pyright: ignore
+    def _build_indexes(self) -> None:
+        for index in self.indexes:
+            self._indexes.add(tuple(index))
 
-        cls.__fields__ = fields
-        cls.__triggers__ = triggers
-
-        cls.__indexes__ = set()
-        cls.__uniques__ = set()
-
-        # explicit non-unique indexes
-        for index in getattr(cls, "indexes", []):
-            cls.__indexes__.add(tuple(index))
-
-        # unique constraints are automatically indexes
-        for unique in getattr(cls, "uniques", []):
+        for unique in self.uniques:
             key = tuple(unique)
-            cls.__uniques__.add(key)
-            cls.__indexes__.add(key)
+            self._uniques.add(key)
+            self._indexes.add(key)
 
-        # foreign keys are automatically indexed
-        for name, field in fields.items():
+        for name, field in self._fields.items():
             if isinstance(field, ForeignKeyField):
-                cls.__indexes__.add((name,))
+                self._indexes.add((name,))
 
-        cls._validate_index_keys()
-        SchemaRegistry.register(cls)
+    def _validate_index_keys(self) -> None:
+        names = set(self._fields)
 
-    @classmethod
-    def _validate_index_keys(cls) -> None:
-        names = set(cls.__fields__)
-
-        for key in cls.__indexes__ | cls.__uniques__:
+        for key in self._indexes | self._uniques:
             for field_name in key:
                 if field_name not in names:
                     raise FieldNotFoundError(
-                        f"Unknown field '{field_name}' in index/unique for {cls.__name__}"
+                        f"Unknown field '{field_name}' in index/unique for {self.name}"
                     )
 
-    @classmethod
-    def get_field(cls, name: str) -> BaseField:
+    def get_field(self, name: str) -> BaseField:
         try:
-            return cls.__fields__[name]
+            return self._fields[name]
         except KeyError:
-            raise FieldNotFoundError(f"Unknown field '{name}' in {cls.__name__}")
+            raise FieldNotFoundError(f"Unknown field '{name}' in {self.name}")
 
-    @classmethod
-    def fields(cls) -> dict[str, BaseField]:
-        return cls.__fields__.copy()
+    def fields(self) -> dict[str, BaseField]:
+        return self._fields.copy()
 
-    @classmethod
-    def field_names(cls) -> set[str]:
-        return set(cls.__fields__)
+    def field_names(self) -> set[str]:
+        return set(self._fields)
 
-    @classmethod
-    def index_keys(cls) -> set[IndexKey]:
-        return set(cls.__indexes__)
+    def triggers(self) -> list[Trigger]:
+        return self._triggers.copy()
 
-    @classmethod
-    def unique_keys(cls) -> set[IndexKey]:
-        return set(cls.__uniques__)
+    def index_keys(self) -> set[IndexKey]:
+        return set(self._indexes)
 
-    @classmethod
-    def foreign_key_fields(cls) -> tuple[str, ...]:
-        return tuple(
-            name
-            for name, field in cls.__fields__.items()
-            if isinstance(field, ForeignKeyField)
-        )
+    def unique_keys(self) -> set[IndexKey]:
+        return set(self._uniques)
 
-    @classmethod
-    def is_many(cls) -> bool:
-        return cls.many
-
-    @classmethod
-    def is_foreignkey(cls, field) -> bool:
-        return field in cls.foreign_key_fields()
-
-    @classmethod
-    def defaults(cls) -> dict:
+    def foreign_key_fields(self) -> dict[str, ForeignKeyField]:
         return {
-            name: getattr(field, "default", None)
-            for name, field in cls.__fields__.items()
+            name: field
+            for name, field in self._fields.items()
+            if isinstance(field, ForeignKeyField)
         }
 
-    @classmethod
-    def challenge_field(cls, name: str, value) -> None:
-        field = cls.get_field(name)
+    def is_many(self) -> bool:
+        return self.many
+
+    def is_foreignkey(self, name: str) -> bool:
+        return name in self.foreign_key_fields()
+
+    def defaults(self) -> dict:
+        return {
+            name: getattr(field, "default", None)
+            for name, field in self._fields.items()
+        }
+
+    def challenge_field(self, name: str, value) -> None:
+        field = self.get_field(name)
         field.challenge(value)
 
-    @classmethod
-    def challenge_fields(cls, data: dict) -> None:
+    def challenge_fields(self, data: dict) -> None:
         for name, value in data.items():
-            cls.challenge_field(name, value)
+            self.challenge_field(name, value)
