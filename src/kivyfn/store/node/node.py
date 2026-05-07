@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 import copy
 
 
 from kivyfn.store.node.index import IndexManager
 
-from kivyfn.store.constants import InstructionOpCode
 from kivyfn.store.address import Address
 from kivyfn.store.errors import NodeError
-from kivyfn.store.events.event import NodeEvent
-from kivyfn.store.events.listener import Listener, ForeignListener, ListenerIndex
-from kivyfn.store.events.subscription import EngineSubscription
 
 
 if TYPE_CHECKING:
@@ -30,16 +26,9 @@ class Node:
         self.name: str | int | None = None
         self.parent: Node | None = None
         self.children: dict[str, Node] = {}
-
-        # many=True  -> {row_id: row}
-        # many=False -> {field: value}
         self.value: dict | dict[str, dict] = {}
 
         self._indexes = IndexManager(schema)
-        self._listener_index: ListenerIndex = ListenerIndex()
-        self._foreignkey_listeners: dict[str, list[ForeignListener]] = {}
-        self._foreignkey_subscriptions: dict[str, list[EngineSubscription]] = {}
-
     def __repr__(self) -> str:
         return f"Node(schema={self.schema.name}, children={len(self.children)})"
 
@@ -88,7 +77,6 @@ class Node:
         """
 
         built = {}
-
         for name, field in self.schema.fields().items():
             if name in row:
                 value = row[name]
@@ -97,7 +85,8 @@ class Node:
 
             self.schema.challenge_field(name, value)
             built[name] = value
-        return row
+
+        return built
 
     # ---------------------------
     # Tree
@@ -237,50 +226,6 @@ class Node:
 
             return self.value[key]
 
-    # ---------------------------
-    # Subscriptions
-    # ---------------------------
-    def subscribe(
-        self,
-        opcode: InstructionOpCode,
-        id: str | None = None,
-        key: str | None = None,
-        depth: int | None = 0,
-        resolve_foreignkeys: bool = False,
-    ) -> Listener:
-        listener = Listener(
-            address=self.address,
-            opcode=opcode,
-            id=id,
-            key=key,
-            resolve_foreignkeys=resolve_foreignkeys,
-            depth=depth,
-        )
-
-        self._listener_index.add(listener)
-        return listener
-
-    def unsubscribe(self, listener: Listener) -> None:
-        # remove local listener
-        self._listener_index.remove(listener)
-
-        # remove foreign subscriptions
-        # subs = self._foreignkey_subscriptions.pop(token, None)
-        # if subs:
-        #     for sub in subs:
-        #         sub.dispose()
-
-        # remove foreign listeners
-        # self._foreignkey_listeners.pop(token, None)
-
-    def dispatch(self, event: NodeEvent) -> list[Listener]:
-        deliveries = []
-
-        for listener in self._listener_index.listeners(event):
-            deliveries.append(listener)
-
-        return deliveries
-
     def _resolve_foreignkeys(self, row: dict) -> dict:
         resolved = dict(row)
 
@@ -290,7 +235,7 @@ class Node:
                 continue
 
             field = self.schema.get_field(fk)
-            ref_node = Node.registry.get(field.schema)  # pyright: ignore
+            ref_node = Node.registry.get(field.schema) # pyright: ignore
 
             if ref_node is None:
                 continue
@@ -307,87 +252,3 @@ class Node:
 
         return resolved
 
-
-    def _subscribe_foreignkeys(
-        self,
-        token: str,
-        callback: Callable,
-        opcode: InstructionOpCode | None,
-        id: str | None,
-        key: str | None,
-        depth: int | None,
-    ):
-        if opcode != InstructionOpCode.SETROW:
-            return
-
-        if depth == 0:
-            return
-
-        if depth is not None and depth < 0:
-            return
-
-        next_depth = None if depth is None else depth - 1
-
-        foreignkey_fields = self.schema.foreign_key_fields()
-
-        if key is not None:
-            if key in foreignkey_fields:
-                self._subscribe_foreignkey(
-                    token,
-                    callback,
-                    id=id,
-                    foreignkey=key,
-                    depth=next_depth,
-                )
-            return
-
-        for foreignkey in foreignkey_fields:
-            self._subscribe_foreignkey(
-                token,
-                callback,
-                id=id,
-                foreignkey=foreignkey,
-                depth=next_depth,
-            )
-
-    def _subscribe_foreignkey(
-        self,
-        token: str,
-        callback: Callable,
-        *,
-        id: str | None,
-        foreignkey: str,
-        depth: int | None,
-    ):
-        pass
-        # # 1. Resolve the referenced node
-        # field = self.schema.get_field(foreignkey)
-        # referenced_schema_name = field.schema  # pyright: ignore
-        # referenced_node = Node.registry.get(referenced_schema_name)
-        #
-        # if not referenced_node:
-        #     raise NodeError(
-        #         f"Referenced node '{referenced_schema_name}' not found in registry."
-        #     )
-        #
-        # # 2. Create the Adapter (The ForeignListener)
-        # # We pass the original UI callback here. The ForeignListener
-        # # will handle the weakref to the UI internally.
-        # adapter = ForeignListener(
-        #     owner=self, foreignkey=foreignkey, callback=callback, subscriber_id=id
-        # )
-        #
-        # # 3. Subscribe to the foreign node
-        # # We store the adapter in _foreignkey_listeners,
-        # # so the weak Listener inside referenced_node does not lose it.
-        # subscription = referenced_node.subscribe(
-        #     adapter,
-        #     opcode=InstructionOpCode.SETROW,
-        #     id=None,
-        #     key=None,
-        #     depth=depth,
-        # )
-        #
-        # # 4. Store the subscription handle for cleanup during unsubscribe()
-        # self._foreignkey_listeners.setdefault(token, []).append(adapter)
-        # self._foreignkey_subscriptions.setdefault(token, []).append(subscription)

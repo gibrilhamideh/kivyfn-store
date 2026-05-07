@@ -20,7 +20,7 @@ from kivyfn.store.errors import ConstraintError, CompilerError
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
     from kivyfn.store.core.instruction import Instruction
-    from kivyfn.store.events import NodeEvent
+    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
 
 
@@ -35,7 +35,7 @@ class ExecutionResult:
         inserted: list | None = None,
         removed: list | None = None,
         updated: list | None = None,
-        events: list[NodeEvent] | None = None,
+        events: list[StoreEvent] | None = None,
         touched_nodes: set[Node] | None = None,
     ):
         self.success = success
@@ -132,7 +132,7 @@ class Execution:
                 error=e,
             )
 
-        events: list[NodeEvent] = []
+        events: list[StoreEvent] = []
         inserted = []
         removed = []
         updated = []

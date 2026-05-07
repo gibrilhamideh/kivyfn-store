@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from kivyfn.store import Store
     from kivyfn.store.address import Address
     from kivyfn.store.transport.response import Response
-    from kivyfn.store.store.client import StoreClient
+    from kivyfn.store.client import StoreClient
 
 
 CommandPayload = dict[str, Any]

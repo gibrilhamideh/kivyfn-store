@@ -1,2 +1,2 @@
-from .event import NodeEvent
+from .event import StoreEvent
 from .subscription import Subscription

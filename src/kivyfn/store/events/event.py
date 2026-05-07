@@ -8,7 +8,7 @@ from kivyfn.store.address import Address
 
 
 @dataclass(frozen=True, slots=True)
-class NodeEvent:
+class StoreEvent:
     opcode: InstructionOpCode
     address: Address
 
@@ -17,7 +17,7 @@ class NodeEvent:
     old_value: Optional[Any] = None
     new_value: Optional[Any] = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def payload(self) -> dict[str, Any]:
         return {
             "opcode": self.opcode.value,
             "address": self.address.to_list(),
@@ -27,5 +27,5 @@ class NodeEvent:
             "new_value": self.new_value,
         }
 
-    def copy_with(self, **changes: Any) -> "NodeEvent":
+    def copy_with(self, **changes: Any) -> StoreEvent:
         return replace(self, **changes)

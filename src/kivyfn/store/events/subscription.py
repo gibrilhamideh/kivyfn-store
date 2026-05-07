@@ -10,7 +10,7 @@ from kivyfn.store.utils.tools.uuid import generate_uuid
 if TYPE_CHECKING:
     from kivyfn.store import Store
     from kivyfn.store.node import Node
-    from kivyfn.store.events import NodeEvent
+    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.events.listener import Listener
     from kivyfn.store.client import StoreClient
     from kivyfn.store.address import Address
@@ -33,7 +33,7 @@ class Subscription:
         # TODO: ADD await Store.ready()
         await self._client.unsubscribe(self._token)
 
-    def dispatch(self, event: NodeEvent) -> None:
+    def dispatch(self, event: StoreEvent) -> None:
         callback = self._callback_ref()
         if callback is None:
             asyncio.create_task(self.dispose())

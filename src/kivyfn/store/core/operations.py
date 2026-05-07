@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import cast, TYPE_CHECKING
 
-from kivyfn.store.events.event import NodeEvent
+from kivyfn.store.events.event import StoreEvent
 
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class SetOperation(Operation):
     def execute(self):
         self.old_value = self.node.set(self.key, self.new_value)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             key=self.key,
@@ -64,7 +64,7 @@ class SetOperation(Operation):
     def undo(self):
         current = self.node.set(self.key, self.old_value)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             key=self.key,
@@ -88,7 +88,7 @@ class SetRowOperation(Operation):
     def execute(self):
         self.old_value = self.node.setrow(self.id, self.key, self.new_value)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,
@@ -100,7 +100,7 @@ class SetRowOperation(Operation):
     def undo(self):
         current = self.node.setrow(self.id, self.key, self.old_value)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,
@@ -123,7 +123,7 @@ class InsertOperation(Operation):
     def execute(self):
         self.node.insert(self.id, self.value)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,
@@ -133,7 +133,7 @@ class InsertOperation(Operation):
     def undo(self):
         row = self.node.remove(self.id)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,
@@ -154,7 +154,7 @@ class RemoveOperation(Operation):
     def execute(self):
         self.old_row = self.node.remove(self.id)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,
@@ -164,7 +164,7 @@ class RemoveOperation(Operation):
     def undo(self):
         self.node.insert(self.id, self.old_row)
 
-        return NodeEvent(
+        return StoreEvent(
             opcode=self.opcode,
             address=self.node.address,
             id=self.id,

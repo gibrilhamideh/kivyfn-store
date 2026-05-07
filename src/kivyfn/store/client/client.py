@@ -7,7 +7,7 @@ from kivyfn.store.constants import InstructionOpCode
 from kivyfn.store.transport import SocketIOClient
 from kivyfn.store.transport.response import Response
 from kivyfn.store.events.subscription import Subscription
-from kivyfn.store.events import NodeEvent
+from kivyfn.store.events.event import StoreEvent
 from kivyfn.store.transaction import TransactionResult
 
 if TYPE_CHECKING:
@@ -135,5 +135,5 @@ class StoreClient:
         if subscription is None:
             return
 
-        event = NodeEvent(**message)
+        event = StoreEvent(**message)
         subscription.dispatch(event)

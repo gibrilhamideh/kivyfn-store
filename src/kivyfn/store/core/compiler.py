@@ -30,7 +30,7 @@ class Compiler:
         while self.pending:
             instruction = self.pending.popleft()
 
-            node = self.engine.resolve(instruction.address)
+            node = self.engine.get_node_by_address(instruction.address)
 
             # 1️⃣ compile base mutation
             operation, instruction = self._compile_action(node, instruction)

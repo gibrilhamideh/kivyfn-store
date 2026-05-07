@@ -82,7 +82,7 @@ class EngineMetadata:
     # Lookups
     # -------------------------------------------------
 
-    def resolve(self, address: Address) -> Node:
+    def get_node_by_address(self, address: Address) -> Node:
         try:
             return self.nodes_by_address[address]
         except KeyError:

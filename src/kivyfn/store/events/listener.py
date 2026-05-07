@@ -8,7 +8,7 @@ from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
-    from kivyfn.store.events.event import NodeEvent
+    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
 
 
@@ -66,7 +66,7 @@ class ListenerIndex:
         if bucket is not None:
             bucket.discard(listener)
 
-    def listeners(self, event: NodeEvent) -> set[Listener]:
+    def listeners(self, event: StoreEvent) -> set[Listener]:
         result: set[Listener] = set()
 
         if event.opcode is InstructionOpCode.SET:
@@ -113,37 +113,47 @@ class Listener:
 class ForeignListener:
     def __init__(
         self,
+        *,
         owner: Node,
+        referenced: Node,
         foreignkey: str,
         subscriber_id: str | None,
-        listener: Listener,
-    ):
+    ) -> None:
         self.owner = owner
+        self.referenced = referenced
         self.foreignkey = foreignkey
         self.subscriber_id = subscriber_id
-        self.listener = listener
 
-    def resolve(self, event: NodeEvent) -> list[NodeEvent]:
+    @property
+    def referenced_address(self) -> Address:
+        return self.referenced.address
+
+    def translate(self, event: StoreEvent) -> list[StoreEvent]:
+        if event.id is None:
+            return []
+
         matching_ids = self.owner.lookup(self.foreignkey, event.id)
         if not matching_ids:
             return []
 
         ids_to_notify = (
-            [matching_ids] if isinstance(matching_ids, str) else matching_ids
+            [matching_ids]
+            if isinstance(matching_ids, str)
+            else matching_ids
         )
 
-        translated_events: list[NodeEvent] = []
+        translated_events: list[StoreEvent] = []
 
-        for base_id in ids_to_notify:
-            if self.subscriber_id is not None and base_id != self.subscriber_id:
+        for owner_id in ids_to_notify:
+            if self.subscriber_id is not None and owner_id != self.subscriber_id:
                 continue
 
-            translated = event.copy_with(
-                address=self.owner.address,
-                id=base_id,
+            translated_events.append(
+                event.copy_with(
+                    address=self.owner.address,
+                    opcode=InstructionOpCode.SETROW,  # ← this line
+                    id=owner_id,
+                )
             )
-
-            if self.listener.matches(translated):
-                translated_events.append(translated)
 
         return translated_events
