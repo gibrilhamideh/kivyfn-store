@@ -25,16 +25,23 @@ class ListenerIndex:
         self.setrow_by_key: dict[str, set[Listener]] = defaultdict(set)
         self.setrow_by_id_key: dict[tuple[str, str], set[Listener]] = defaultdict(set)
 
-        self._reverse_lookup: dict[Listener, set[Listener]] = {}
+        self._reverse_lookup: dict[
+            Listener,
+            tuple[set[Listener], dict | None, object | None],
+        ] = {}
 
     def add(self, listener: Listener) -> None:
         if listener in self._reverse_lookup:
             return
 
         target_bucket: set[Listener] | None = None
+        bucket_map: dict | None = None
+        bucket_key: object | None = None
 
         if listener.opcode is InstructionOpCode.SET:
             if listener.key is not None:
+                bucket_map = self.set_by_key
+                bucket_key = listener.key
                 target_bucket = self.set_by_key[listener.key]
             else:
                 target_bucket = self.set_all
@@ -47,11 +54,20 @@ class ListenerIndex:
 
         elif listener.opcode is InstructionOpCode.SETROW:
             if listener.id is not None and listener.key is not None:
-                target_bucket = self.setrow_by_id_key[(listener.id, listener.key)]
+                bucket_map = self.setrow_by_id_key
+                bucket_key = (listener.id, listener.key)
+                target_bucket = self.setrow_by_id_key[bucket_key]
+
             elif listener.id is not None:
+                bucket_map = self.setrow_by_id
+                bucket_key = listener.id
                 target_bucket = self.setrow_by_id[listener.id]
+
             elif listener.key is not None:
+                bucket_map = self.setrow_by_key
+                bucket_key = listener.key
                 target_bucket = self.setrow_by_key[listener.key]
+
             else:
                 target_bucket = self.setrow_all
 
@@ -59,12 +75,24 @@ class ListenerIndex:
             raise ValueError(f"Unsupported listener opcode: {listener.opcode!r}")
 
         target_bucket.add(listener)
-        self._reverse_lookup[listener] = target_bucket
+
+        self._reverse_lookup[listener] = (
+            target_bucket,
+            bucket_map,
+            bucket_key,
+        )
 
     def remove(self, listener: Listener) -> None:
-        bucket = self._reverse_lookup.pop(listener, None)
-        if bucket is not None:
-            bucket.discard(listener)
+        entry = self._reverse_lookup.pop(listener, None)
+        if entry is None:
+            return
+
+        bucket, bucket_map, bucket_key = entry
+
+        bucket.discard(listener)
+
+        if bucket_map is not None and not bucket:
+            bucket_map.pop(bucket_key, None)
 
     def listeners(self, event: StoreEvent) -> set[Listener]:
         result: set[Listener] = set()

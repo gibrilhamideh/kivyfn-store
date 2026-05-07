@@ -39,6 +39,7 @@ class Schema:
                 self._fields[name] = attr
 
     def _build_triggers(self) -> None:
+
         for name, attr in self.__class__.__dict__.items():
             trigger_meta = getattr(attr, "_trigger_meta", None)
             if not trigger_meta:

@@ -84,7 +84,7 @@ class Store:
             raise RuntimeError("Store client already connected")
 
         host = f"http://{self.host}:{self.port}"
-        self._client = StoreClient(host)
+        self._client = StoreClient(self, host)
         await self._client.connect()
 
     async def ready(self) -> None:

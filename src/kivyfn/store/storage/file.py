@@ -1,9 +1,8 @@
-# foundation/state/storage/file_store.py
-
 from __future__ import annotations
+
 import json
+from json import JSONDecodeError
 from pathlib import Path
-from typing import Optional
 
 
 class FileStorage:
@@ -29,14 +28,20 @@ class FileStorage:
     # Read
     # -------------------------------------------------------
 
-    def read(self, schema_name: str) -> Optional[dict]:
-        path = self._file_path(schema_name)
+    def read(self, name: str) -> dict | None:
+        path = self._file_path(name)
 
         if not path.exists():
             return None
 
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        if path.stat().st_size == 0:
+            return None
+
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except JSONDecodeError:
+            return None
 
     # -------------------------------------------------------
     # Write

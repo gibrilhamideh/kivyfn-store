@@ -17,24 +17,29 @@ if TYPE_CHECKING:
 
 
 class Subscription:
-    __slots__ = ("_client", "_token", "_callback_ref")
+    __slots__ = ("_store", "_client", "_token", "_event_token", "_callback_ref")
 
     def __init__(
         self,
+        store: Store,
         client: StoreClient,
         token: str,
+        event_token: str,
         callback: Callable[[Any], None],
     ) -> None:
+        self._store = store
         self._client = client
         self._token = token
+        self._event_token = event_token
         self._callback_ref = weakref.WeakMethod(callback)
 
     async def dispose(self) -> None:
-        # TODO: ADD await Store.ready()
+        await self._store.ready()
         await self._client.unsubscribe(self._token)
 
     def dispatch(self, event: StoreEvent) -> None:
         callback = self._callback_ref()
+
         if callback is None:
             asyncio.create_task(self.dispose())
             return
@@ -45,8 +50,12 @@ class Subscription:
     def token(self) -> str:
         return self._token
 
+    @property
+    def event_token(self) -> str:
+        return self._event_token
+
     def __repr__(self) -> str:
-        return f"<Subscription token={self._token!r} active={self._callback_ref}>"
+        return f"<Subscription token={self._token!r} event_token={self._event_token!r}>"
 
 
 class SubscriptionEvents:
@@ -99,14 +108,17 @@ class SubscriptionEvents:
 
 class EngineSubscription:
     """
-    Opaque subscription handle.
+    Server-side subscription handle.
 
-    Returned by Node.subscribe().
+    Owned by SubscriptionManager.
 
-    The only public API:
-        - dispose()
+    It links:
+    - a node
+    - a listener
+    - a unique subscription token
 
-    Developers must not interact with tokens directly.
+    It does not unsubscribe itself from the node because nodes no longer own
+    listeners. Cleanup is handled by SubscriptionManager.
     """
 
     __slots__ = ("_node", "_token", "_listener")
@@ -116,17 +128,21 @@ class EngineSubscription:
         self._listener = listener
         self._token = generate_uuid()
 
-    def dispose(self):
-        self._node.unsubscribe(self._listener)
+    def dispose(self) -> None:
+        pass
 
     @property
-    def listener(self):
+    def node(self) -> Node:
+        return self._node
+
+    @property
+    def listener(self) -> Listener:
         return self._listener
 
     @property
-    def token(self):
+    def token(self) -> str:
         return self._token
 
     @property
-    def room(self):
+    def room(self) -> str:
         return self._listener.room

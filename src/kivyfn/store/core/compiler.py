@@ -4,6 +4,7 @@ from collections import deque
 
 from kivyfn.store.errors import CompilerError, FieldError
 from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
+from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.transaction import TransactionBuilder
 from kivyfn.store.core.operations import (
     Operation,
@@ -17,7 +18,6 @@ from kivyfn.store.core.operations import (
 if TYPE_CHECKING:
     from kivyfn.store.node import Node
     from kivyfn.store.core.engine import Engine
-    from kivyfn.store.core.instruction import Instruction
 
 
 class Compiler:
@@ -209,7 +209,7 @@ class Compiler:
     ) -> list[Instruction]:
         derived: list[Instruction] = []
 
-        triggers = getattr(node.schema, "__triggers__", [])
+        triggers = node.schema.triggers()
 
         for trigger in triggers:
             if not trigger.matches(instruction.opcode, instruction.key):

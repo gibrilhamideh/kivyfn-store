@@ -1,21 +1,23 @@
-# kivyfn/store/client.py
-
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING, Callable
 
+from collections import defaultdict
+from typing import TYPE_CHECKING, Any, Callable
+
+from kivyfn.store.address import Address
 from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.events.event import StoreEvent
+from kivyfn.store.events.subscription import Subscription
 from kivyfn.store.transport import SocketIOClient
 from kivyfn.store.transport.response import Response
-from kivyfn.store.events.subscription import Subscription
-from kivyfn.store.events.event import StoreEvent
 from kivyfn.store.transaction import TransactionResult
 
 if TYPE_CHECKING:
-    from kivyfn.store.address import Address
+    from kivyfn.store import Store
 
 
 class StoreClient:
-    def __init__(self, url: str) -> None:
+    def __init__(self, store: Store, url: str) -> None:
+        self.store = store
         self.url = url
 
         self._transport = SocketIOClient(
@@ -23,7 +25,11 @@ class StoreClient:
             event_hanlder=self.on_event,
         )
 
-        self._subscriptions: dict[str, Subscription] = {}
+        # event_token -> local subscriptions using this event stream
+        self._subscriptions: dict[str, set[Subscription]] = defaultdict(set)
+
+        # subscription_token -> local subscription
+        self._subscriptions_by_token: dict[str, Subscription] = {}
 
     async def connect(self) -> None:
         await self._transport.connect()
@@ -31,6 +37,7 @@ class StoreClient:
     async def disconnect(self) -> None:
         await self._transport.disconnect()
         self._subscriptions.clear()
+        self._subscriptions_by_token.clear()
 
     async def snapshot(
         self,
@@ -79,15 +86,20 @@ class StoreClient:
         if not response.ok:
             return response
 
-        token = response.data["token"]
+        subscription_token = response.data["subscription_token"]
+        event_token = response.data["event_token"]
 
         subscription = Subscription(
+            store=self.store,
             client=self,
-            token=token,
+            token=subscription_token,
+            event_token=event_token,
             callback=callback,
         )
 
-        self._subscriptions[token] = subscription
+        self._subscriptions[event_token].add(subscription)
+        self._subscriptions_by_token[subscription_token] = subscription
+
         return response.copy_with(data=subscription)
 
     async def unsubscribe(self, token: str) -> Response[bool]:
@@ -95,7 +107,17 @@ class StoreClient:
         response = Response.from_payload(payload)
 
         if response.ok:
-            self._subscriptions.pop(token, None)
+            subscription = self._subscriptions_by_token.pop(token, None)
+
+            if subscription is not None:
+                event_token = subscription.event_token
+                bucket = self._subscriptions.get(event_token)
+
+                if bucket is not None:
+                    bucket.discard(subscription)
+
+                    if not bucket:
+                        self._subscriptions.pop(event_token, None)
 
         return response
 
@@ -124,16 +146,19 @@ class StoreClient:
     # -------------------------------------------------
     # Server Events
     # -------------------------------------------------
+
     def on_event(self, message: dict[str, Any]) -> None:
-        token: str = message["token"]
+        event_token: str = message["event_token"]
         event: dict[str, Any] = message["event"]
 
-        self.dispatch(token, event)
+        self.dispatch(event_token, event)
 
-    def dispatch(self, token: str, message: dict[str, Any]) -> None:
-        subscription = self._subscriptions.get(token)
-        if subscription is None:
+    def dispatch(self, event_token: str, message: dict[str, Any]) -> None:
+        subscriptions = self._subscriptions.get(event_token)
+        if not subscriptions:
             return
 
         event = StoreEvent(**message)
-        subscription.dispatch(event)
+
+        for subscription in tuple(subscriptions):
+            subscription.dispatch(event)
