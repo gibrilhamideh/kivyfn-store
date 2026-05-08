@@ -1,16 +1,18 @@
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING, Callable
 
 import asyncio
+from typing import TYPE_CHECKING, Any, Callable
+
 import socketio
 from aiohttp import web
 
-from kivyfn.store.transport.response import Response
 from kivyfn.store.core.engine import Engine
+from kivyfn.store.errors.store import StoreError
+from kivyfn.store.transport.response import Response
 
 if TYPE_CHECKING:
-    from kivyfn.store.node import Node
     from kivyfn.store.builder.config import StoreConfig
+    from kivyfn.store.node import Node
 
 
 class SocketIOServer:
@@ -39,10 +41,6 @@ class SocketIOServer:
         self.sio.attach(self.app)
         self._register_handlers()
 
-    # -------------------------------------------------
-    # Lifecycle
-    # -------------------------------------------------
-
     async def run(self) -> None:
         self.engine.boot()
 
@@ -56,10 +54,6 @@ class SocketIOServer:
 
         await asyncio.Future()
 
-    # -------------------------------------------------
-    # Handler Registration
-    # -------------------------------------------------
-
     def _register_handlers(self) -> None:
         self.sio.on("connect", self.on_connect)
         self.sio.on("disconnect", self.on_disconnect)
@@ -71,19 +65,11 @@ class SocketIOServer:
         self.sio.on("unsubscribe", self.on_unsubscribe)
         self.sio.on("transaction", self.on_transaction)
 
-    # -------------------------------------------------
-    # Core Events
-    # -------------------------------------------------
-
     async def on_connect(self, sid: str, environ: dict[str, Any]) -> None:
         pass
 
     async def on_disconnect(self, sid: str) -> None:
         self.engine.remove_sid(sid)
-
-    # -------------------------------------------------
-    # Operations
-    # -------------------------------------------------
 
     async def on_snapshot(
         self,
@@ -92,17 +78,13 @@ class SocketIOServer:
     ) -> dict[str, Any]:
         try:
             data = self.engine.snapshot(payload)
-
-            return Response.success(
-                data=data,
-                status=200,
+        except StoreError as exc:
+            return Response.failure(
+                status=exc.status,
+                error=exc.payload(),
             ).payload()
 
-        except Exception as e:
-            return Response.error(
-                message=str(e),
-                status=400,
-            ).payload()
+        return Response.success(data=data, status=200).payload()
 
     async def on_subscribe(
         self,
@@ -118,19 +100,19 @@ class SocketIOServer:
                     room=result.room,
                 )
 
-            return Response.success(
-                data={
-                    "subscription_token": result.subscription_token,
-                    "event_token": result.event_token,
-                },
-                status=201,
+        except StoreError as exc:
+            return Response.failure(
+                status=exc.status,
+                error=exc.payload(),
             ).payload()
 
-        except Exception as e:
-            return Response.error(
-                message=str(e),
-                status=400,
-            ).payload()
+        return Response.success(
+            data={
+                "subscription_token": result.subscription_token,
+                "event_token": result.event_token,
+            },
+            status=201,
+        ).payload()
 
     async def on_unsubscribe(
         self,
@@ -139,64 +121,49 @@ class SocketIOServer:
     ) -> dict[str, Any]:
         try:
             result = self.engine.unsubscribe(sid, payload)
-
             if result.should_leave_room:
                 await self.sio.leave_room(
                     sid=sid,
                     room=result.room,
                 )
 
-            return Response.success(
-                data=True,
-                status=200,
+        except StoreError as exc:
+            return Response.failure(
+                status=exc.status,
+                error=exc.payload(),
             ).payload()
 
-        except KeyError:
-            return Response.error(
-                message="Subscription not found",
-                status=404,
-            ).payload()
-
-        except Exception as e:
-            return Response.error(
-                message=str(e),
-                status=400,
-            ).payload()
+        return Response.success(data=True, status=200).payload()
 
     async def on_transaction(
         self,
         sid: str,
         commands: list,
     ) -> dict[str, Any]:
-        try:
-            execution, messages = self.engine.execute(commands)
+        result, messages = self.engine.execute(commands)
 
-            for message in messages:
-                await self.send(
-                    room=message.room,
-                    payload=message.payload,
-                )
+        for message in messages:
+            await self.send(
+                room=message.room,
+                payload=message.payload,
+            )
 
-            return Response.success(
-                data=execution.payload(),
-                status=200,
+        if not result.success:
+            return Response.failure(
+                status=result.error.status,
+                error=result.error.payload(),
             ).payload()
 
-        except Exception as e:
-            return Response.error(
-                message=str(e),
-                status=500,
-            ).payload()
+        return Response.success(
+            data=result.payload(),
+            status=200,
+        ).payload()
 
     async def on_undo(self, sid: str, *_):
         pass
 
     async def on_redo(self, sid: str, *_):
         pass
-
-    # -------------------------------------------------
-    # Server Push
-    # -------------------------------------------------
 
     async def send(self, room: str, payload: dict[str, Any]) -> None:
         await self.sio.emit(

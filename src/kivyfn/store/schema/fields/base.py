@@ -13,5 +13,5 @@ class BaseField:
     def metadata(self) -> dict:
         return {}
 
-    def challenge(self, value):
+    def challenge(self, value: Any):
         pass

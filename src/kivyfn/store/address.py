@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Iterator
 
-from kivyfn.store.errors import AddressError
+from kivyfn.store.errors.store import AddressError
 
 PathPart = str
 
@@ -81,12 +81,22 @@ class Address:
 
     def walk(self, data: Mapping) -> Any:
         try:
-            for point in self.parts:
-                data = data[point]
+            current = data
 
-            return data
-        except Exception:
-            raise AddressError
+            for point in self.parts:
+                current = current[point]
+
+            return current
+
+        except KeyError as exc:
+            raise ValueError(
+                f"Address part '{exc.args[0]}' not found in {self}"
+            ) from exc
+
+        except TypeError as exc:
+            raise ValueError(
+                f"Cannot traverse through non-mapping value at {self}"
+            ) from exc
 
     def to_list(self) -> list[PathPart]:
         return list(self.parts)

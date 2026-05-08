@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
-from kivyfn.store.errors import ConstraintError
+from kivyfn.store.errors.store import ConstraintError
 from kivyfn.store.constants import Policy, ConstraintType
 
 if TYPE_CHECKING:

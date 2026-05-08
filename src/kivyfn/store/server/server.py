@@ -6,11 +6,12 @@ import queue
 import traceback
 from typing import TYPE_CHECKING, Any
 
+from kivyfn.store.errors.client import StoreStateError
 from kivyfn.store.transport import SocketIOServer
 
 if TYPE_CHECKING:
-    from kivyfn.store.node import Node
     from kivyfn.store.builder.config import StoreConfig
+    from kivyfn.store.node import Node
 
 
 class StoreServer:
@@ -25,7 +26,7 @@ class StoreServer:
 
     async def start(self, *, timeout: float = 5.0) -> None:
         if self._process is not None:
-            raise RuntimeError("Store server already started")
+            raise StoreStateError("Store server already started")
 
         self._ready_queue = multiprocessing.Queue()
 
@@ -49,23 +50,23 @@ class StoreServer:
                 True,
                 timeout,
             )
-        except queue.Empty:
+        except queue.Empty as exc:
             self.stop()
-            raise TimeoutError("Store server did not become ready in time")
+            raise StoreStateError("Store server did not become ready in time") from exc
 
         if message["type"] == "ready":
             return
 
         if message["type"] == "error":
             self.stop()
-            raise RuntimeError(
+            raise StoreStateError(
                 "Store server failed to start:\n"
                 f"{message['error']}\n\n"
                 f"{message['traceback']}"
             )
 
         self.stop()
-        raise RuntimeError(f"Unexpected startup message: {message}")
+        raise StoreStateError(f"Unexpected store server startup message: {message}")
 
     def stop(self) -> None:
         if self._process is None:

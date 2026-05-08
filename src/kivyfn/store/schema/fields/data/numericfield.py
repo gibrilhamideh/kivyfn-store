@@ -1,5 +1,5 @@
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors import FieldError
+from kivyfn.store.errors.store import FieldValidationError
 
 
 class NumericField(DataField):
@@ -33,26 +33,27 @@ class NumericField(DataField):
         if value is None:
             return
 
+        # Reject bool explicitly (bool is subclass of int)
         if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise FieldError(
+            raise FieldValidationError(
+                "Expected number",
                 field=self.name,
-                message="Expected number",
                 value=value,
                 metadata=self.metadata,
             )
 
         if self.ge is not None and value < self.ge:
-            raise FieldError(
+            raise FieldValidationError(
+                f"Must be >= {self.ge}",
                 field=self.name,
-                message=f"Must be >= {self.ge}",
                 value=value,
                 metadata=self.metadata,
             )
 
         if self.le is not None and value > self.le:
-            raise FieldError(
+            raise FieldValidationError(
+                f"Must be <= {self.le}",
                 field=self.name,
-                message=f"Must be <= {self.le}",
                 value=value,
                 metadata=self.metadata,
             )

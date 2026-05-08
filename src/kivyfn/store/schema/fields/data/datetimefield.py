@@ -1,22 +1,10 @@
 from datetime import datetime
+
+from kivyfn.store.errors.store import FieldValidationError
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors import FieldError
 
 
 class DatetimeField(DataField):
-    """
-    Strict datetime field.
-
-    Store value:
-        ISO 8601 string
-
-    Example:
-        "2026-04-27T14:30:00+03:00"
-
-    No normalization.
-    No coercion.
-    """
-
     def __init__(
         self,
         *,
@@ -47,9 +35,9 @@ class DatetimeField(DataField):
             return
 
         if not isinstance(value, str):
-            raise FieldError(
+            raise FieldValidationError(
+                "Expected ISO datetime string",
                 field=self.name,
-                message="Expected ISO datetime string",
                 value=value,
                 metadata=self.metadata,
             )
@@ -59,9 +47,9 @@ class DatetimeField(DataField):
         if self.ge is not None:
             ge = self._parse_iso(self.ge, "ge")
             if parsed < ge:
-                raise FieldError(
+                raise FieldValidationError(
+                    f"Must be >= {self.ge}",
                     field=self.name,
-                    message=f"Must be >= {self.ge}",
                     value=value,
                     metadata=self.metadata,
                 )
@@ -69,9 +57,9 @@ class DatetimeField(DataField):
         if self.le is not None:
             le = self._parse_iso(self.le, "le")
             if parsed > le:
-                raise FieldError(
+                raise FieldValidationError(
+                    f"Must be <= {self.le}",
                     field=self.name,
-                    message=f"Must be <= {self.le}",
                     value=value,
                     metadata=self.metadata,
                 )
@@ -79,10 +67,10 @@ class DatetimeField(DataField):
     def _parse_iso(self, value: str, label: str) -> datetime:
         try:
             return datetime.fromisoformat(value)
-        except ValueError as e:
-            raise FieldError(
+        except ValueError as exc:
+            raise FieldValidationError(
+                f"Invalid ISO datetime string for {label}",
                 field=self.name,
-                message=f"Invalid ISO datetime string for {label}",
                 value=value,
                 metadata=self.metadata,
-            ) from e
+            ) from exc

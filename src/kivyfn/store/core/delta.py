@@ -1,7 +1,7 @@
 from collections import defaultdict
 
 from kivyfn.store.node import Node
-from kivyfn.store.errors import CompilerError
+from kivyfn.store.errors.store import CompilerError
 
 from .operations import (
     InsertOperation,
@@ -64,11 +64,11 @@ class Delta:
 
         # Case 2: Duplicate insert in same transaction
         if id in self._inserted[node]:
-            raise CompilerError(f"Duplicate insert id '{id}' in same transaction")
+            raise CompilerError(f"Duplicate insert id '{id}' in same transaction", node=node, schema=node.schema)
 
         # Case 3: Insert existing base id (unless removed first)
         if id in node.value and id not in self._removed[node]:
-            raise CompilerError(f"Insert id '{id}' already exists")
+            raise CompilerError(f"Insert id '{id}' already exists", node=node, schema=node.schema)
 
         self._inserted[node][id] = dict(row)
 
@@ -83,11 +83,11 @@ class Delta:
 
         # Duplicate remove
         if id in self._removed[node]:
-            raise CompilerError(f"Duplicate remove id '{id}' in same transaction")
+            raise CompilerError(f"Duplicate remove id '{id}' in same transaction", node=node, schema=node.schema)
 
         # Removing non-existent row
         if id not in node.value:
-            raise CompilerError(f"Cannot remove non-existent id '{id}'")
+            raise CompilerError(f"Cannot remove non-existent id '{id}'", node=node, schema=node.schema)
 
         self._removed[node].add(id)
 
@@ -104,11 +104,11 @@ class Delta:
 
         # Update removed row
         if id in self._removed[node]:
-            raise CompilerError(f"Cannot update removed id '{id}'")
+            raise CompilerError(f"Cannot update removed id '{id}'", node=node, schema=node.schema)
 
         # Update non-existent row
         if id not in node.value:
-            raise CompilerError(f"Cannot update non-existent id '{id}'")
+            raise CompilerError(f"Cannot update non-existent id '{id}'", node=node, schema=node.schema)
 
         self._updated[node][id][field] = value
 

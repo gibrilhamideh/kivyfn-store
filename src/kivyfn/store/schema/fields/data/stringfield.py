@@ -1,5 +1,5 @@
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors import FieldError
+from kivyfn.store.errors.store import FieldValidationError
 
 
 class StringField(DataField):
@@ -52,9 +52,9 @@ class StringField(DataField):
             return
 
         if not isinstance(value, str):
-            raise FieldError(
+            raise FieldValidationError(
+                "Expected string",
                 field=self.name,
-                message="Expected string",
                 value=value,
                 metadata=self.metadata,
             )
@@ -62,17 +62,17 @@ class StringField(DataField):
         length = len(value)
 
         if self.min_length is not None and length < self.min_length:
-            raise FieldError(
+            raise FieldValidationError(
+                f"Length must be >= {self.min_length}",
                 field=self.name,
-                message=f"Length must be >= {self.min_length}",
                 value=value,
                 metadata=self.metadata,
             )
 
         if self.max_length is not None and length > self.max_length:
-            raise FieldError(
+            raise FieldValidationError(
+                f"Length must be <= {self.max_length}",
                 field=self.name,
-                message=f"Length must be <= {self.max_length}",
                 value=value,
                 metadata=self.metadata,
             )

@@ -1,7 +1,7 @@
 from enum import Enum
 
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors import FieldError
+from kivyfn.store.errors.store import FieldValidationError
 
 
 class EnumField(DataField):
@@ -35,9 +35,9 @@ class EnumField(DataField):
             return
 
         if value not in self.values:
-            raise FieldError(
+            raise FieldValidationError(
+                "Invalid enum value",
                 field=self.name,
-                message="Invalid enum value",
                 value=value,
                 metadata=self.metadata,
             )

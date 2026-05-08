@@ -2,24 +2,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.core.compiler import Compiler
-from kivyfn.store.core.delta import Delta
-from kivyfn.store.core.constraintguard import ConstraintGuard
-from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.constants import InstructionSource
+from kivyfn.store.core.compiler import Compiler
+from kivyfn.store.core.constraintguard import ConstraintGuard
+from kivyfn.store.core.delta import Delta
+from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.core.operations import (
-    SetOperation,
-    SetRowOperation,
     InsertOperation,
     RemoveOperation,
+    SetOperation,
+    SetRowOperation,
 )
-
-
-from kivyfn.store.errors import ConstraintError, CompilerError
+from kivyfn.store.errors.store import CompilerError, ConstraintError, StoreError
 
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
-    from kivyfn.store.core.instruction import Instruction
     from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
 
@@ -31,7 +28,7 @@ class ExecutionResult:
         success: bool,
         stage: str,
         compiled: list | None = None,
-        error: Exception | dict | None = None,
+        error: StoreError | None = None,
         inserted: list | None = None,
         removed: list | None = None,
         updated: list | None = None,
@@ -58,42 +55,16 @@ class ExecutionResult:
         }
 
         if self.error is not None:
-            if isinstance(self.error, dict):
-                data["error"] = self.error
-            else:
-                data["error"] = {
-                    "type": self.error.__class__.__name__,
-                    "message": str(self.error),
-                }
+            data["error"] = self.error.payload()
 
         return data
 
+
 class Execution:
-    """
-    Developer-facing mutation builder.
-
-    Execution collects high-level mutation commands and converts them
-    into low-level Action objects to be compiled by the store.
-
-    Commands are intentionally separated between:
-
-    - Single-schema (object) mutations
-    - Many-schema (collection) mutations
-
-    Each method encodes structural intent explicitly.
-    """
-
-    def __init__(
-        self,
-        engine: Engine,
-        commands: list
-    ):
+    def __init__(self, engine: Engine, commands: list):
         self.engine = engine
         self.commands = commands
 
-    # ----------------------------
-    # Execute
-    # ----------------------------
     def execute(self) -> ExecutionResult:
         instructions = Instruction.construct(
             self.commands,
@@ -104,32 +75,32 @@ class Execution:
 
         try:
             compiled_ops = compiler.compile()
-        except CompilerError as e:
+        except CompilerError as exc:
             return ExecutionResult(
                 success=False,
                 stage="compile",
                 compiled=compiler.operations,
-                error=e,
+                error=exc,
             )
 
         try:
             delta = Delta(self.engine, compiled_ops)
-        except CompilerError as e:
+        except CompilerError as exc:
             return ExecutionResult(
                 success=False,
-                stage="compile",
+                stage="delta",
                 compiled=compiled_ops,
-                error=e,
+                error=exc,
             )
 
         try:
             ConstraintGuard(self.engine).validate(delta)
-        except ConstraintError as e:
+        except ConstraintError as exc:
             return ExecutionResult(
                 success=False,
                 stage="validate",
                 compiled=compiled_ops,
-                error=e,
+                error=exc,
             )
 
         events: list[StoreEvent] = []

@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 
 from kivyfn.store.schema.fields.base import BaseField
-from kivyfn.store.errors import FieldError
+from kivyfn.store.errors.store import FieldValidationError
 
 
 class DataField(BaseField):
@@ -32,4 +32,8 @@ class DataField(BaseField):
 
     def challenge(self, value: Any) -> None:
         if value is None and not self.allow_none:
-            raise FieldError(self.name, "value not allowed to be None")
+            raise FieldValidationError(
+                "value not allowed to be None",
+                field=self.name,
+                value=value,
+            )

@@ -37,7 +37,7 @@ class ForeignKeyRegistry:
         key = (schema, field)
 
         if key in self._forward:
-            raise RuntimeError(f"Foreign key already registered for {schema}.{field}")
+            raise ValueError(f"Foreign key already registered for {schema}.{field}")
 
         fk = ForeignKey(
             schema=schema,

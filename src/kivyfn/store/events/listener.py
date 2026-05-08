@@ -136,18 +136,8 @@ class Listener:
 
     @property
     def room(self) -> str:
-        return ":".join(
-            [
-                "room",
-                str(self.address),
-                str(self.opcode),
-                str(self.id),
-                str(self.key),
-                str(self.propagate_foreignkeys),
-                str(self.resolve_foreignkeys),
-                str(self.depth),
-            ]
-        )
+        h = hash(self) & 0xFFFFFFFFFFFFFFFF
+        return f"room:{h:x}"
 
 
 class ForeignListener:

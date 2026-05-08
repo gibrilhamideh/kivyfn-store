@@ -1,5 +1,5 @@
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors import FieldError
+from kivyfn.store.errors.store import FieldValidationError
 
 
 class BooleanField(DataField):
@@ -16,9 +16,8 @@ class BooleanField(DataField):
             return  # already validated by allow_none
 
         if not isinstance(value, bool):
-            raise FieldError(
+            raise FieldValidationError(
+                "Expected boolean",
                 field=self.name,
-                message="Expected boolean",
                 value=value,
-                metadata=self.metadata,
             )

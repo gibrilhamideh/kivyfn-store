@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from collections import deque
 
-from kivyfn.store.errors import CompilerError, FieldError
+from kivyfn.store.errors.store import CompilerError, FieldError
 from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
 from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.transaction import TransactionBuilder
@@ -130,13 +130,14 @@ class Compiler:
 
         try:
             schema.challenge_field(instruction.key, instruction.value)
-        except FieldError as e:
+        except FieldError as exc:
             raise CompilerError(
-                e.message,
+                exc.message,
                 node=node,
                 schema=schema,
                 instruction=instruction,
-            ) from e
+                **exc.context
+            ) from exc
 
         return SetRowOperation(node, instruction), instruction
 
@@ -169,13 +170,14 @@ class Compiler:
 
         try:
             built = node._build_default(instruction.value)
-        except FieldError as e:
+        except FieldError as exc:
             raise CompilerError(
-                e.message,
+                exc.message,
                 node=node,
                 schema=schema,
                 instruction=instruction,
-            ) from e
+                **exc.context
+            ) from exc
 
         instruction = instruction.copy(value=built)
 

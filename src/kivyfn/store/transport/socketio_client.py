@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 import socketio
-
+from kivyfn.store.errors.client import StoreConnectionError
 EventCallback = Callable[[dict[str, Any]], None | Awaitable[None]]
 
 
@@ -34,9 +34,12 @@ class SocketIOClient:
 
     async def call(self, event: str, message: Any | None = None) -> Any:
         if not self.sio.connected:
-            raise RuntimeError("SocketIOClient is not connected")
+            raise StoreConnectionError("SocketIOClient is not connected")
 
-        return await self.sio.call(event, message, timeout=self.timeout)
+        try:
+            return await self.sio.call(event, message, timeout=self.timeout)
+        except Exception as exc:
+            raise StoreConnectionError(f"SocketIO call failed: {event}") from exc
 
     async def on_event(self, message: dict[str, Any]) -> None:
         self.event_hanlder(message)
