@@ -130,12 +130,24 @@ class Listener:
     opcode: InstructionOpCode | None = None
     id: str | None = None
     key: str | None = None
+    propagate_foreignkeys: bool = False
     resolve_foreignkeys: bool = False
     depth: int | None = 0
 
     @property
     def room(self) -> str:
-        return f"room:{self.address}:{self.opcode}:{self.id}:{self.key}:{self.resolve_foreignkeys}:{self.depth}"
+        return ":".join(
+            [
+                "room",
+                str(self.address),
+                str(self.opcode),
+                str(self.id),
+                str(self.key),
+                str(self.propagate_foreignkeys),
+                str(self.resolve_foreignkeys),
+                str(self.depth),
+            ]
+        )
 
 
 class ForeignListener:

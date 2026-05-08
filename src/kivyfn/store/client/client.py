@@ -69,6 +69,7 @@ class StoreClient:
         key: str | None = None,
         depth: int | None = 0,
         resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False
     ) -> Response[Subscription]:
         payload = await self._transport.call(
             "subscribe",
@@ -79,6 +80,7 @@ class StoreClient:
                 "key": key,
                 "depth": depth,
                 "resolve_foreignkeys": resolve_foreignkeys,
+                "propagate_foreignkeys": propagate_foreignkeys
             },
         )
 

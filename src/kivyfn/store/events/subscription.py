@@ -79,6 +79,7 @@ class SubscriptionEvents:
         id: str | None = None,
         key: str | None = None,
         depth: int | None = 0,
+        propagate_foreignkeys: bool = False
     ):
         await self._store.ready()
         return await self._client.subscribe(
@@ -88,6 +89,7 @@ class SubscriptionEvents:
             id=id,
             key=key,
             depth=depth,
+            propagate_foreignkeys=propagate_foreignkeys
         )
 
     async def insert(self, callback, address: Address, resolve_foreignkeys=False):

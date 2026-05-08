@@ -163,6 +163,7 @@ class SubscriptionManager:
             opcode=InstructionOpCode(message["opcode"]),
             id=message.get("id"),
             key=message.get("key"),
+            propagate_foreignkeys=message.get("propagate_foreignkeys", False),
             resolve_foreignkeys=message.get("resolve_foreignkeys", False),
             depth=message.get("depth", 0),
         )
@@ -174,7 +175,7 @@ class SubscriptionManager:
         self._subscriptions[subscription.token] = subscription
         self._listener_subscriptions[listener].add(subscription)
 
-        if listener.resolve_foreignkeys:
+        if listener.propagate_foreignkeys:
             self._subscribe_foreignkeys(
                 subscription_token=subscription.token,
                 owner_node=node,
@@ -315,7 +316,7 @@ class SubscriptionManager:
                     room=listener.room,
                     payload={
                         "event_token": listener.room,
-                        "event": event.payload(),
+                        "event": self._payload_for_listener(listener, event),
                     },
                 )
             )
@@ -335,6 +336,9 @@ class SubscriptionManager:
         Returns:
             List of messages generated from translated events.
         """
+        if event.opcode is not InstructionOpCode.SETROW:
+            return []
+
         foreign_listeners = self._foreign_indexes.get(event.address)
         if not foreign_listeners:
             return []
@@ -348,6 +352,32 @@ class SubscriptionManager:
                 messages.extend(self._dispatch_listeners(translated))
 
         return messages
+
+    def _payload_for_listener(
+        self,
+        listener: Listener,
+        event: StoreEvent,
+    ) -> dict[str, Any]:
+        if not listener.resolve_foreignkeys:
+            return event.payload()
+
+        if event.opcode is not InstructionOpCode.INSERT:
+            return event.payload()
+
+        if event.id is None:
+            return event.payload()
+
+        node = self._engine.get_node_by_event(event)
+        row = node.snapshot(id=event.id)
+
+        if not isinstance(row, dict):
+            return event.payload()
+
+        resolved = self._engine.resolve_foreignkeys(node, row)
+
+        return event.copy_with(
+            new_value=resolved,
+        ).payload()
 
     # -------------------------------------------------
     # Listener lifecycle
@@ -511,8 +541,8 @@ class SubscriptionManager:
             opcode=InstructionOpCode.SETROW,
             id=None,
             key=None,
-            resolve_foreignkeys=True,
             depth=depth,
+            propagate_foreignkeys=True,
         )
 
         self._subscribe_foreignkeys(

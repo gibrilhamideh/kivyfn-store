@@ -52,11 +52,55 @@ class Engine:
         address = Address(*payload["address"])
         node = self.get_node_by_address(address)
 
-        return node.snapshot(
+        data = node.snapshot(
             id=payload.get("id"),
             key=payload.get("key"),
-            resolve_foreignkeys=payload.get("resolve_foreignkeys", False),
         )
+
+        if not payload.get("resolve_foreignkeys", False):
+            return data
+
+        # Cannot resolve FK on scalar field values or missing data.
+        if data is None or payload.get("key") is not None:
+            return data
+
+        # Full many-table snapshot: {row_id: row}
+        if node.schema.many and payload.get("id") is None:
+            return {
+                row_id: self.resolve_foreignkeys(node, row)
+                for row_id, row in data.items()
+            }
+
+        # Single row snapshot.
+        return self.resolve_foreignkeys(node, data)
+
+    def resolve_foreignkeys(
+        self,
+        node: Node,
+        row: dict,
+    ) -> dict:
+        resolved = dict(row)
+
+        for fk in node.schema.foreign_key_fields():
+            fk_id = row.get(fk)
+            if fk_id is None:
+                continue
+
+            field = node.schema.get_field(fk)
+            ref_node = self.get_node_by_schema(field.schema)  # pyright: ignore
+
+            ref_row = ref_node.snapshot(id=fk_id)
+            if ref_row is None:
+                continue
+
+            resolved.update(
+                self.resolve_foreignkeys(
+                    ref_node,
+                    ref_row,
+                )
+            )
+
+        return resolved
 
     # -------------------------------------------------
     # Subscriptions

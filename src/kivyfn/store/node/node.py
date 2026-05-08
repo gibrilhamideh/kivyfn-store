@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 import copy
 
 
@@ -14,13 +14,8 @@ if TYPE_CHECKING:
     from kivyfn.store.schema import Schema
 
 class Node:
-    registry: ClassVar[dict[str, Node]] = {}
 
     def __init__(self, schema: Schema, address: Address) -> None:
-        if schema.name in Node.registry:
-            raise NodeError(f"Duplicate schema name: {schema.name}")
-
-        Node.registry[schema.name] = self
         self.schema = schema
         self.address = address
         self.name: str | int | None = None
@@ -181,74 +176,25 @@ class Node:
         self,
         id: str | None = None,
         key: str | None = None,
-        *,
-        resolve_foreignkeys: bool = False,
     ) -> Any:
         if self.schema.many:
-            # Full table
             if id is None:
-                if not resolve_foreignkeys:
-                    return copy.deepcopy(self.value)
+                return copy.deepcopy(self.value)
 
-                return {
-                    row_id: self._resolve_foreignkeys(row)
-                    for row_id, row in self.value.items()
-                }
-
-            # Row-level
             if id not in self.value:
                 return None
 
             row = self.value[id]
 
             if key is None:
-                if not resolve_foreignkeys:
-                    return copy.deepcopy(row)
+                return copy.deepcopy(row)
 
-                return self._resolve_foreignkeys(row)
-
-            # Field-level
-            if key not in row:
-                return None
-
-            return row[key]
+            return row.get(key)
 
         else:
-            # Single schema
             if key is None:
-                if not resolve_foreignkeys:
-                    return self.value
+                return self.value
 
-                return self._resolve_foreignkeys(self.value)
+            return self.value.get(key)
 
-            if key not in self.value:
-                return None
-
-            return self.value[key]
-
-    def _resolve_foreignkeys(self, row: dict) -> dict:
-        resolved = dict(row)
-
-        for fk in self.schema.foreign_key_fields():
-            fk_id = row.get(fk)
-            if fk_id is None:
-                continue
-
-            field = self.schema.get_field(fk)
-            ref_node = Node.registry.get(field.schema) # pyright: ignore
-
-            if ref_node is None:
-                continue
-
-            ref_row = ref_node.snapshot(
-                id=fk_id,
-                resolve_foreignkeys=True,
-            )
-
-            if not ref_row:
-                continue
-
-            resolved.update(ref_row)
-
-        return resolved
 
