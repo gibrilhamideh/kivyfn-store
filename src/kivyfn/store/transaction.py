@@ -76,16 +76,14 @@ class Transaction(TransactionBuilder):
     def __init__(
         self,
         store: Store,
-        client: StoreClient,
         commands: list[CommandPayload] | None = None,
     ):
         super().__init__(commands)
         self._store = store
-        self._client = client
 
     async def commit(self) -> Response[TransactionResult]:
         await self._store.ready()
-        return await self._client.transaction(self.commands)
+        return await self._store.client.transaction(self.commands)
 
 
 class TransactionResult:

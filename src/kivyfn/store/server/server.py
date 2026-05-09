@@ -1,12 +1,14 @@
 from __future__ import annotations
-
-import asyncio
-import multiprocessing
-import queue
-import traceback
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.errors.client import StoreStateError
+import asyncio
+import queue
+import traceback
+import multiprocessing
+
+from multiprocessing.context import SpawnProcess
+
+from kivyfn.store.errors.client import StoreConnectionError, StoreStateError
 from kivyfn.store.transport import SocketIOServer
 
 if TYPE_CHECKING:
@@ -21,16 +23,18 @@ class StoreServer:
         self.host = host
         self.port = port
 
-        self._process: multiprocessing.Process | None = None
+        self._ctx = multiprocessing.get_context("spawn")
+        self._process: SpawnProcess | None = None
         self._ready_queue: multiprocessing.Queue[dict[str, Any]] | None = None
+
 
     async def start(self, *, timeout: float = 5.0) -> None:
         if self._process is not None:
             raise StoreStateError("Store server already started")
 
-        self._ready_queue = multiprocessing.Queue()
+        self._ready_queue = self._ctx.Queue()
 
-        self._process = multiprocessing.Process(
+        self._process = self._ctx.Process(
             target=_run_transport,
             kwargs={
                 "root": self.root,
@@ -50,23 +54,24 @@ class StoreServer:
                 True,
                 timeout,
             )
-        except queue.Empty as exc:
+        except queue.Empty:
             self.stop()
-            raise StoreStateError("Store server did not become ready in time") from exc
+            raise StoreConnectionError("Store server did not become ready in time")
 
         if message["type"] == "ready":
             return
 
         if message["type"] == "error":
             self.stop()
-            raise StoreStateError(
+            raise StoreConnectionError(
                 "Store server failed to start:\n"
                 f"{message['error']}\n\n"
                 f"{message['traceback']}"
             )
 
         self.stop()
-        raise StoreStateError(f"Unexpected store server startup message: {message}")
+        raise StoreConnectionError(f"Unexpected startup message: {message}")
+
 
     def stop(self) -> None:
         if self._process is None:

@@ -28,23 +28,15 @@ class Store:
         self._server: StoreServer | None = None
 
         self._ready_event = asyncio.Event()
-        self._startup_error: Exception | None = None
-
-        self._starting = False
-        self._stopping = False
 
     # -------------------------------------------------
     # Lifecycle
     # -------------------------------------------------
-
     async def start(self, root: Node, config: StoreConfig) -> None:
         if self._server is not None:
             raise StoreStateError("Store server already started")
 
         self._ready_event.clear()
-        self._startup_error = None
-        self._starting = True
-        self._stopping = False
 
         try:
             self._server = StoreServer(root, config, self.host, self.port)
@@ -52,16 +44,11 @@ class Store:
             await self._server.start()
             await self.connect()
 
-            self._ready_event.set()
-
         except Exception as exc:
-            self._startup_error = exc
+            await self.stop()
             self._ready_event.set()
-
             raise StoreStateError("Store failed to start") from exc
 
-        finally:
-            self._starting = False
 
     async def stop(self) -> None:
         """
@@ -69,7 +56,6 @@ class Store:
         Safe to call multiple times.
         """
 
-        self._stopping = True
 
         if self._client is not None:
             try:
@@ -84,13 +70,12 @@ class Store:
                 self._server = None
 
         self._ready_event.clear()
-        self._startup_error = None
-        self._starting = False
-        self._stopping = False
 
     async def connect(self) -> None:
         if self._client is not None:
             raise StoreConnectionError("Store client already connected")
+
+        self._ready_event.clear()
 
         host = f"http://{self.host}:{self.port}"
         client = StoreClient(self, host)
@@ -99,27 +84,17 @@ class Store:
             await client.connect()
         except Exception as exc:
             self._client = None
+            self._ready_event.set()
             raise StoreConnectionError("Failed to connect to store") from exc
 
         self._client = client
+        self._ready_event.set()
 
     async def ready(self) -> None:
-        if self._startup_error is not None:
-            raise StoreStateError("Store failed to start") from self._startup_error
-
-        if self._stopping:
-            raise StoreStateError("Store is stopping")
-
-        if self._server is None:
-            raise StoreStateError("Store has not been started")
 
         await self._ready_event.wait()
-
-        if self._startup_error is not None:
-            raise StoreStateError("Store failed to start") from self._startup_error
-
         if self._client is None:
-            raise StoreConnectionError("Store is not connected")
+            raise StoreConnectionError("Client is not connected")
 
 
     # -------------------------------------------------
@@ -168,8 +143,8 @@ class Store:
 
     @property
     def transaction(self) -> Transaction:
-        return Transaction(self, self.client)
+        return Transaction(self)
 
     @property
     def subscription(self) -> SubscriptionEvents:
-        return SubscriptionEvents(self, self.client)
+        return SubscriptionEvents(self)

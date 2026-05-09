@@ -59,13 +59,12 @@ class Subscription:
 
 
 class SubscriptionEvents:
-    def __init__(self, store: Store, client: StoreClient) -> None:
+    def __init__(self, store: Store) -> None:
         self._store = store
-        self._client = client
 
     async def set(self, callback, address: Address, key: str | None = None):
         await self._store.ready()
-        return await self._client.subscribe(
+        return await self._store.client.subscribe(
             opcode=InstructionOpCode.SET,
             callback=callback,
             address=address,
@@ -82,7 +81,7 @@ class SubscriptionEvents:
         propagate_foreignkeys: bool = False
     ):
         await self._store.ready()
-        return await self._client.subscribe(
+        return await self._store.client.subscribe(
             opcode=InstructionOpCode.SETROW,
             callback=callback,
             address=address,
@@ -94,7 +93,7 @@ class SubscriptionEvents:
 
     async def insert(self, callback, address: Address, resolve_foreignkeys=False):
         await self._store.ready()
-        return await self._client.subscribe(
+        return await self._store.client.subscribe(
             opcode=InstructionOpCode.INSERT,
             callback=callback,
             address=address,
@@ -103,7 +102,7 @@ class SubscriptionEvents:
 
     async def remove(self, callback, address: Address):
         await self._store.ready()
-        return await self._client.subscribe(
+        return await self._store.client.subscribe(
             opcode=InstructionOpCode.REMOVE, callback=callback, address=address
         )
 
