@@ -3,9 +3,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from kivyfn.store.address import Address
+from kivyfn.store.core.boot import StoreBoot
 from kivyfn.store.core.execution import Execution
 from kivyfn.store.core.metadata import EngineMetadata
 from kivyfn.store.events.manager import SubscriptionManager
+from kivyfn.store.storage import FileStorage
 
 if TYPE_CHECKING:
     from kivyfn.store.node import Node
@@ -29,6 +31,7 @@ class Engine:
 
         self.subscriptions = SubscriptionManager(self)
 
+        self._storage = FileStorage(self.config.storage_path)
         self._history: list[list[Operation]] = []
         self._redo: list[list[Operation]] = []
 
@@ -147,19 +150,13 @@ class Engine:
     # -------------------------------------------------
 
     def to_disk(self, nodes: set[Node]) -> None:
-        storage = self.config.storage
-        if storage is None:
-            return
-
         for node in nodes:
             if self.metadata.is_persistent(node):
-                storage.write(node.schema.name, node.value)
+                self._storage.write(
+                    node.schema.name,
+                    node.value,
+                    store_version=self.config.store_version
+                )
 
     def boot(self) -> None:
-        storage = self.config.storage
-        if storage is None:
-            return
-
-        for node in self.metadata.persistent_nodes:
-            data = storage.read(node.schema.name)
-            node.build(data)
+        StoreBoot(self).boot()

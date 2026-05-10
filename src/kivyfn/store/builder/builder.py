@@ -1,34 +1,34 @@
 from __future__ import annotations
-from typing import Optional, Set
 
-from kivyfn.store.node import Node
+from pathlib import Path
+from typing import Optional, Set, Literal
+
+from kivyfn.store.address import Address
 from kivyfn.store.builder.branch import Branch
 from kivyfn.store.builder.config import StoreConfig
-from kivyfn.store.address import Address
+from kivyfn.store.builder.migration import Migration
+from kivyfn.store.builder.policy import BootPolicy
+from kivyfn.store.node import Node
 
 
 class Builder:
-    """
-    Responsible for constructing a Store from a Branch structure.
-
-    Builder handles:
-        - Structural validation (tree correctness)
-        - Converting Branch → runtime Node tree
-        - Attaching storage backend
-        - Attaching boot policy
-    """
-
     __slots__ = (
         "_root_branch",
+        "_storage_path",
+        "_store_version",
         "_boot_policy",
-        "_storage",
+        "_migrations",
         "_built",
     )
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._root_branch: Optional[Branch] = None
-        self._boot_policy = None
-        self._storage = None
+
+        self._storage_path: Path = Path("./storage")
+        self._store_version = 1
+        self._boot_policy = BootPolicy.RAISE
+        self._migrations: list[Migration] = []
+
         self._built = False
 
     # --------------------------------------------------------
@@ -49,25 +49,32 @@ class Builder:
     # Storage Configuration
     # --------------------------------------------------------
 
-    def storage(self, storage_backend) -> Builder:
-        """
-        Attach a storage backend (e.g. FileStorage).
-        """
-        if self._storage is not None:
-            raise RuntimeError("Storage already configured")
-
-        self._storage = storage_backend
+    def storage_path(self, path: str | Path) -> Builder:
+        self._storage_path = Path(path)
         return self
 
     # --------------------------------------------------------
-    # Boot Policy Configuration
+    # Migration Configuration
     # --------------------------------------------------------
 
-    def boot_policy(self, policy) -> Builder:
-        if self._boot_policy is not None:
-            raise RuntimeError("Policy already configured")
+    def store_version(self, version: int) -> Builder:
+        if not isinstance(version, int):
+            raise TypeError("store_version must be an int")
 
-        self._boot_policy = policy
+        if version < 1:
+            raise ValueError("store_version must be >= 1")
+
+        self._store_version = version
+        return self
+
+    def boot_policy(self, policy: Literal["erase", "raise"]) -> Builder:
+        boot_policy = BootPolicy(policy)
+
+        self._boot_policy = boot_policy
+        return self
+
+    def migrations(self, migrations: list[Migration]) -> Builder:
+        self._migrations = list(migrations)
         return self
 
     # --------------------------------------------------------
@@ -81,24 +88,30 @@ class Builder:
         if self._root_branch is None:
             raise RuntimeError("No tree defined. Call .tree() first.")
 
+
         self._validate_structure(self._root_branch)
 
         root_node = self._build_node(self._root_branch)
 
-        config = StoreConfig(self._storage, self._boot_policy)
+        config = StoreConfig(
+            storage_path=self._storage_path,
+            store_version=self._store_version,
+            boot_policy=self._boot_policy,
+            migrations=self._migrations,
+        )
 
         self._built = True
-
         return root_node, config
 
     # --------------------------------------------------------
     # Internal Structure Validation
     # --------------------------------------------------------
-    def _validate_structure(self, root: Branch):
+
+    def _validate_structure(self, root: Branch) -> None:
         visited: Set[int] = set()
         self._dfs_validate(root, visited)
 
-    def _dfs_validate(self, branch: Branch, visited: Set[int]):
+    def _dfs_validate(self, branch: Branch, visited: Set[int]) -> None:
         branch_id = id(branch)
 
         if branch_id in visited:
@@ -115,8 +128,9 @@ class Builder:
         visited.remove(branch_id)
 
     # --------------------------------------------------------
-    # Branch → Node Conversion
+    # Branch -> Node Conversion
     # --------------------------------------------------------
+
     def _build_node(
         self,
         branch: Branch,

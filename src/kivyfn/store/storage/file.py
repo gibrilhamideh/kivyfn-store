@@ -47,15 +47,32 @@ class FileStorage:
     # Write
     # -------------------------------------------------------
 
-    def write(self, schema_name: str, data: dict) -> None:
+    def write(self, schema_name: str, data: dict, *, store_version: int) -> None:
         path = self._file_path(schema_name)
 
+        payload = {
+            "metadata": {
+                "store_version": store_version,
+            },
+            "data": data,
+        }
+
         with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(payload, f, indent=2)
 
     # -------------------------------------------------------
     # Exists
     # -------------------------------------------------------
-
     def exists(self, schema_name: str) -> bool:
         return self._file_path(schema_name).exists()
+
+    # -------------------------------------------------------
+    # Load Store
+    # -------------------------------------------------------
+    def load_store(self, schema_names: list[str]) -> dict[str, dict | None]:
+        store = {}
+
+        for schema_name in schema_names:
+            store[schema_name] = self.read(schema_name)
+
+        return store
