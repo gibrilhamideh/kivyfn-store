@@ -8,6 +8,7 @@ import multiprocessing
 
 from multiprocessing.context import SpawnProcess
 
+from kivyfn.logging.multiprocessing import configure_process_logging
 from kivyfn.store.errors.client import StoreConnectionError, StoreStateError
 from kivyfn.store.transport import SocketIOServer
 
@@ -17,11 +18,20 @@ if TYPE_CHECKING:
 
 
 class StoreServer:
-    def __init__(self, root: Node, config: StoreConfig, host: str, port: int) -> None:
+    def __init__(
+            self,
+            root: Node,
+            config: StoreConfig,
+            host: str,
+            port: int,
+            log_queue: multiprocessing.Queue
+    ) -> None:
+
         self.root = root
         self.config = config
         self.host = host
         self.port = port
+        self.log_queue = log_queue
 
         self._ctx = multiprocessing.get_context("spawn")
         self._process: SpawnProcess | None = None
@@ -41,7 +51,8 @@ class StoreServer:
                 "config": self.config,
                 "host": self.host,
                 "port": self.port,
-                "ready_queue": self._ready_queue,
+                "log_queue": self.log_queue,
+                "ready_queue": self._ready_queue
             },
             daemon=True,
         )
@@ -97,8 +108,12 @@ def _run_transport(
     config,
     host: str,
     port: int,
+    log_queue: multiprocessing.Queue,
     ready_queue: multiprocessing.Queue,
 ) -> None:
+
+    configure_process_logging(log_queue)
+
     try:
         transport = SocketIOServer(
             root=root,

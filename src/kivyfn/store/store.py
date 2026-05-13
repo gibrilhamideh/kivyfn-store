@@ -1,16 +1,17 @@
 from __future__ import annotations
-
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from kivyfn.store.client import StoreClient
+from kivyfn.store.events.subscription import SubscriptionEvents
+from kivyfn.store.server import StoreServer
+from kivyfn.store.transaction import Transaction
 from kivyfn.store.errors.client import (
     StoreStateError,
     StoreConnectionError,
 )
-from kivyfn.store.events.subscription import SubscriptionEvents
-from kivyfn.store.server import StoreServer
-from kivyfn.store.transaction import Transaction
+
+import asyncio
+import multiprocessing
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
@@ -20,7 +21,12 @@ if TYPE_CHECKING:
 
 
 class Store:
-    def __init__(self, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def __init__(
+            self,
+            host: str = "127.0.0.1",
+            port: int = 8765,
+    ) -> None:
+
         self.host = host
         self.port = port
 
@@ -32,14 +38,14 @@ class Store:
     # -------------------------------------------------
     # Lifecycle
     # -------------------------------------------------
-    async def start(self, root: Node, config: StoreConfig) -> None:
+    async def start(self, root: Node, config: StoreConfig, log_queue: multiprocessing.Queue) -> None:
         if self._server is not None:
             raise StoreStateError("Store server already started")
 
         self._ready_event.clear()
 
         try:
-            self._server = StoreServer(root, config, self.host, self.port)
+            self._server = StoreServer(root, config, self.host, self.port, log_queue)
 
             await self._server.start()
             await self.connect()
