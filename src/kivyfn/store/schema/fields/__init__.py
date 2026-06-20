@@ -3,6 +3,8 @@ from .relational import ForeignKeyField
 from .data import (
     DataField,
     BooleanField,
+    TimeField,
+    DateField,
     DatetimeField,
     EnumField,
     NumericField,
