@@ -98,7 +98,7 @@ class StoreClient:
 
         result = response.from_payload(payload)
 
-        if response.is_failure(result):
+        if result.ok is False:
             return result
 
         subscription_token = result.data["subscription_token"]
@@ -133,7 +133,7 @@ class StoreClient:
 
         result = response.from_payload(payload)
 
-        if response.is_failure(result):
+        if result.ok is False:
             return result
 
         subscription = self._subscriptions_by_token.pop(
@@ -164,7 +164,7 @@ class StoreClient:
 
         result = response.from_payload(payload)
 
-        if response.is_failure(result):
+        if result.ok is False:
             return result
 
         transaction_result = TransactionResult.from_payload(
