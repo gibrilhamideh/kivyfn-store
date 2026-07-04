@@ -1,17 +1,18 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any
-
-from kivyfn.store.client import StoreClient
-from kivyfn.store.events.subscription import SubscriptionEvents
-from kivyfn.store.server import StoreServer
-from kivyfn.store.transaction import Transaction
-from kivyfn.store.errors.client import (
-    StoreStateError,
-    StoreConnectionError,
-)
 
 import asyncio
 import multiprocessing
+from typing import TYPE_CHECKING, Any, TypeVar
+
+from kivyfn.store.client import StoreClient
+from kivyfn.store.errors.client import (
+    StoreConnectionError,
+    StoreStateError,
+)
+from kivyfn.store.events.subscription import SubscriptionEvents
+from kivyfn.store.server import StoreServer
+from kivyfn.store.transaction import Transaction
+
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
@@ -20,13 +21,15 @@ if TYPE_CHECKING:
     from kivyfn.store.transport.response import Response
 
 
+T = TypeVar("T")
+
+
 class Store:
     def __init__(
-            self,
-            host: str = "127.0.0.1",
-            port: int = 8765,
+        self,
+        host: str = "127.0.0.1",
+        port: int = 8765,
     ) -> None:
-
         self.host = host
         self.port = port
 
@@ -38,14 +41,26 @@ class Store:
     # -------------------------------------------------
     # Lifecycle
     # -------------------------------------------------
-    async def start(self, root: Node, config: StoreConfig, log_queue: multiprocessing.Queue) -> None:
+
+    async def start(
+        self,
+        root: Node,
+        config: StoreConfig,
+        log_queue: multiprocessing.Queue,
+    ) -> None:
         if self._server is not None:
             raise StoreStateError("Store server already started")
 
         self._ready_event.clear()
 
         try:
-            self._server = StoreServer(root, config, self.host, self.port, log_queue)
+            self._server = StoreServer(
+                root,
+                config,
+                self.host,
+                self.port,
+                log_queue,
+            )
 
             await self._server.start()
             await self.connect()
@@ -53,16 +68,17 @@ class Store:
         except Exception as exc:
             await self.stop()
             self._ready_event.set()
-            raise StoreStateError("Store failed to start") from exc
 
+            raise StoreStateError(
+                "Store failed to start"
+            ) from exc
 
     async def stop(self) -> None:
         """
-        Stops the store client and server.
+        Stop the store client and server.
+
         Safe to call multiple times.
         """
-
-
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -79,43 +95,52 @@ class Store:
 
     async def connect(self) -> None:
         if self._client is not None:
-            raise StoreConnectionError("Store client already connected")
+            raise StoreConnectionError(
+                "Store client already connected"
+            )
 
         self._ready_event.clear()
 
-        host = f"http://{self.host}:{self.port}"
-        client = StoreClient(self, host)
+        url = f"http://{self.host}:{self.port}"
+        client = StoreClient(self, url)
 
         try:
             await client.connect()
+
         except Exception as exc:
             self._client = None
             self._ready_event.set()
-            raise StoreConnectionError("Failed to connect to store") from exc
+
+            raise StoreConnectionError(
+                "Failed to connect to store"
+            ) from exc
 
         self._client = client
         self._ready_event.set()
 
     async def ready(self) -> None:
-
         await self._ready_event.wait()
-        if self._client is None:
-            raise StoreConnectionError("Client is not connected")
 
+        if self._client is None:
+            raise StoreConnectionError(
+                "Client is not connected"
+            )
 
     # -------------------------------------------------
-    # Client Access
+    # Client access
     # -------------------------------------------------
 
     @property
     def client(self) -> StoreClient:
         if self._client is None:
-            raise StoreConnectionError("Store must be connected before use")
+            raise StoreConnectionError(
+                "Store must be connected before use"
+            )
 
         return self._client
 
     # -------------------------------------------------
-    # API Delegation
+    # API delegation
     # -------------------------------------------------
 
     async def undo(self) -> Response[Any]:
@@ -128,12 +153,12 @@ class Store:
 
     async def snapshot(
         self,
-        address: Address,
+        address: Address[T],
         id: str | None = None,
         key: str | None = None,
         *,
         resolve_foreignkeys: bool = False,
-    ) -> Response[Any]:
+    ) -> Response[T]:
         await self.ready()
 
         return await self.client.snapshot(
@@ -143,7 +168,10 @@ class Store:
             resolve_foreignkeys=resolve_foreignkeys,
         )
 
-    async def to_dict(self, address: Address) -> Response[dict[str, Any]]:
+    async def to_dict(
+        self,
+        address: Address[T],
+    ) -> Response[T]:
         await self.ready()
         return await self.client.to_dict(address)
 

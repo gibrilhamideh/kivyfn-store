@@ -6,13 +6,18 @@ from typing import TYPE_CHECKING, Any, Callable
 import socketio
 from aiohttp import web
 
+from kivyfn.logging import get_logger
 from kivyfn.store.core.engine import Engine
 from kivyfn.store.errors.store import StoreError
-from kivyfn.store.transport.response import Response
+from kivyfn.store.transport import response
+
 
 if TYPE_CHECKING:
     from kivyfn.store.builder.config import StoreConfig
     from kivyfn.store.node import Node
+
+
+logger = get_logger(__name__)
 
 
 class SocketIOServer:
@@ -22,13 +27,17 @@ class SocketIOServer:
         config: StoreConfig,
         host: str,
         port: int,
-        on_ready: Callable,
+        on_ready: Callable[[], None],
     ) -> None:
         self.host = host
         self.port = port
         self.on_ready = on_ready
 
-        self.engine = Engine(self, root, config)
+        self.engine = Engine(
+            self,
+            root,
+            config,
+        )
 
         self.sio = socketio.AsyncServer(
             async_mode="aiohttp",
@@ -38,6 +47,7 @@ class SocketIOServer:
         )
 
         self.app = web.Application()
+
         self.sio.attach(self.app)
         self._register_handlers()
 
@@ -47,28 +57,64 @@ class SocketIOServer:
         runner = web.AppRunner(self.app)
         await runner.setup()
 
-        site = web.TCPSite(runner, self.host, self.port)
+        site = web.TCPSite(
+            runner,
+            self.host,
+            self.port,
+        )
+
         await site.start()
 
         self.on_ready()
 
-        await asyncio.Future()
+        await asyncio.Event().wait()
 
     def _register_handlers(self) -> None:
-        self.sio.on("connect", self.on_connect)
-        self.sio.on("disconnect", self.on_disconnect)
+        self.sio.on(
+            "connect",
+            self.on_connect,
+        )
+        self.sio.on(
+            "disconnect",
+            self.on_disconnect,
+        )
 
-        self.sio.on("undo", self.on_undo)
-        self.sio.on("redo", self.on_redo)
-        self.sio.on("snapshot", self.on_snapshot)
-        self.sio.on("subscribe", self.on_subscribe)
-        self.sio.on("unsubscribe", self.on_unsubscribe)
-        self.sio.on("transaction", self.on_transaction)
+        self.sio.on(
+            "undo",
+            self.on_undo,
+        )
+        self.sio.on(
+            "redo",
+            self.on_redo,
+        )
+        self.sio.on(
+            "snapshot",
+            self.on_snapshot,
+        )
+        self.sio.on(
+            "subscribe",
+            self.on_subscribe,
+        )
+        self.sio.on(
+            "unsubscribe",
+            self.on_unsubscribe,
+        )
+        self.sio.on(
+            "transaction",
+            self.on_transaction,
+        )
 
-    async def on_connect(self, sid: str, environ: dict[str, Any]) -> None:
+    async def on_connect(
+        self,
+        sid: str,
+        environ: dict[str, Any],
+    ) -> None:
         pass
 
-    async def on_disconnect(self, sid: str) -> None:
+    async def on_disconnect(
+        self,
+        sid: str,
+    ) -> None:
         self.engine.remove_sid(sid)
 
     async def on_snapshot(
@@ -78,13 +124,33 @@ class SocketIOServer:
     ) -> dict[str, Any]:
         try:
             data = self.engine.snapshot(payload)
+
         except StoreError as exc:
-            return Response.failure(
+            return response.failure(
                 status=exc.status,
                 error=exc.payload(),
             ).payload()
 
-        return Response.success(data=data, status=200).payload()
+        except Exception as exc:
+            logger.exception(
+                "Unhandled snapshot error: sid=%s payload=%r",
+                sid,
+                payload,
+            )
+
+            return response.failure(
+                status=500,
+                error={
+                    "type": type(exc).__name__,
+                    "code": "internal_store_error",
+                    "message": str(exc),
+                },
+            ).payload()
+
+        return response.success(
+            data=data,
+            status=200,
+        ).payload()
 
     async def on_subscribe(
         self,
@@ -92,7 +158,10 @@ class SocketIOServer:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            result = self.engine.subscribe(sid, payload)
+            result = self.engine.subscribe(
+                sid,
+                payload,
+            )
 
             if result.should_join_room:
                 await self.sio.enter_room(
@@ -101,12 +170,28 @@ class SocketIOServer:
                 )
 
         except StoreError as exc:
-            return Response.failure(
+            return response.failure(
                 status=exc.status,
                 error=exc.payload(),
             ).payload()
 
-        return Response.success(
+        except Exception as exc:
+            logger.exception(
+                "Unhandled subscribe error: sid=%s payload=%r",
+                sid,
+                payload,
+            )
+
+            return response.failure(
+                status=500,
+                error={
+                    "type": type(exc).__name__,
+                    "code": "internal_store_error",
+                    "message": str(exc),
+                },
+            ).payload()
+
+        return response.success(
             data={
                 "subscription_token": result.subscription_token,
                 "event_token": result.event_token,
@@ -120,7 +205,11 @@ class SocketIOServer:
         payload: dict[str, Any],
     ) -> dict[str, Any]:
         try:
-            result = self.engine.unsubscribe(sid, payload)
+            result = self.engine.unsubscribe(
+                sid,
+                payload,
+            )
+
             if result.should_leave_room:
                 await self.sio.leave_room(
                     sid=sid,
@@ -128,44 +217,119 @@ class SocketIOServer:
                 )
 
         except StoreError as exc:
-            return Response.failure(
+            return response.failure(
                 status=exc.status,
                 error=exc.payload(),
             ).payload()
 
-        return Response.success(data=True, status=200).payload()
+        except Exception as exc:
+            logger.exception(
+                "Unhandled unsubscribe error: sid=%s payload=%r",
+                sid,
+                payload,
+            )
+
+            return response.failure(
+                status=500,
+                error={
+                    "type": type(exc).__name__,
+                    "code": "internal_store_error",
+                    "message": str(exc),
+                },
+            ).payload()
+
+        return response.success(
+            data=True,
+            status=200,
+        ).payload()
 
     async def on_transaction(
         self,
         sid: str,
-        commands: list,
+        commands: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        result, messages = self.engine.execute(commands)
+        try:
+            result, messages = self.engine.execute(commands)
 
-        for message in messages:
-            await self.send(
-                room=message.room,
-                payload=message.payload,
-            )
+            if not result.success:
+                error = result.error
 
-        if not result.success:
-            return Response.failure(
-                status=result.error.status,
-                error=result.error.payload(),
+                if error is None:
+                    raise RuntimeError(
+                        "Transaction failed without an error"
+                    )
+
+                return response.failure(
+                    status=error.status,
+                    error=error.payload(),
+                ).payload()
+
+            for message in messages:
+                await self.send(
+                    room=message.room,
+                    payload=message.payload,
+                )
+
+        except StoreError as exc:
+            return response.failure(
+                status=exc.status,
+                error=exc.payload(),
             ).payload()
 
-        return Response.success(
+        except Exception as exc:
+            logger.exception(
+                "Unhandled transaction error: sid=%s commands=%r",
+                sid,
+                commands,
+            )
+
+            return response.failure(
+                status=500,
+                error={
+                    "type": type(exc).__name__,
+                    "code": "internal_store_error",
+                    "message": str(exc),
+                },
+            ).payload()
+
+        return response.success(
             data=result.payload(),
             status=200,
         ).payload()
 
-    async def on_undo(self, sid: str, *_):
-        pass
+    async def on_undo(
+        self,
+        sid: str,
+        *_: Any,
+    ) -> dict[str, Any]:
+        return response.failure(
+            status=501,
+            error={
+                "type": "NotImplementedError",
+                "code": "not_implemented",
+                "message": "Undo is not implemented",
+            },
+        ).payload()
 
-    async def on_redo(self, sid: str, *_):
-        pass
+    async def on_redo(
+        self,
+        sid: str,
+        *_: Any,
+    ) -> dict[str, Any]:
+        return response.failure(
+            status=501,
+            error={
+                "type": "NotImplementedError",
+                "code": "not_implemented",
+                "message": "Redo is not implemented",
+            },
+        ).payload()
 
-    async def send(self, room: str, payload: dict[str, Any]) -> None:
+    async def send(
+        self,
+        room: str,
+        payload: dict[str, Any],
+    ) -> None:
         await self.sio.emit(
             "event",
             payload,

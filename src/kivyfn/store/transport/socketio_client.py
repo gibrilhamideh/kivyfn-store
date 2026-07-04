@@ -32,14 +32,27 @@ class SocketIOClient:
     async def disconnect(self) -> None:
         await self.sio.disconnect()
 
-    async def call(self, event: str, message: Any | None = None) -> Any:
+    async def call(
+        self,
+        event: str,
+        message: Any | None = None,
+    ) -> Any:
         if not self.sio.connected:
-            raise StoreConnectionError("SocketIOClient is not connected")
+            raise StoreConnectionError(
+                "SocketIOClient is not connected"
+            )
 
         try:
-            return await self.sio.call(event, message, timeout=self.timeout)
+            return await self.sio.call(
+                event,
+                message,
+                timeout=self.timeout,
+            )
         except Exception as exc:
-            raise StoreConnectionError(f"SocketIO call failed: {event}") from exc
+            raise StoreConnectionError(
+                f"SocketIO call failed: {event!r}; "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
 
     async def on_event(self, message: dict[str, Any]) -> None:
         self.event_hanlder(message)

@@ -8,6 +8,7 @@ import multiprocessing
 
 from multiprocessing.context import SpawnProcess
 
+
 from kivyfn.logging.multiprocessing import configure_process_logging
 from kivyfn.store.errors.client import StoreConnectionError, StoreStateError
 from kivyfn.store.transport import SocketIOServer

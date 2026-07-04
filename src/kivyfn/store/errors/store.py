@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, cast, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kivyfn.store.core.instruction import Instruction
@@ -84,6 +84,21 @@ class NodeNotFoundError(StoreExecutionError):
 
 class FieldError(StoreExecutionError):
     code = "FIELD_ERROR"
+
+    def __str__(self) -> str:
+        parts: list[str] = []
+
+        field = self.context.get("field")
+        if field is not None:
+            parts.append(f"field={field!r}")
+
+        if "value" in self.context:
+            parts.append(f"value={self.context['value']!r}")
+
+        if not parts:
+            return self.message
+
+        return f"{self.message} ({', '.join(parts)})"
 
 
 class FieldNotFoundError(FieldError):

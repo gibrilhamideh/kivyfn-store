@@ -1,21 +1,24 @@
+# kivyfn/store/address.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Iterator
+from typing import Any, Generic, Iterator, Mapping, TypeVar
 
-from kivyfn.store.errors.store import AddressError
+
+T_co = TypeVar("T_co", covariant=True)
 
 PathPart = str
 
 
 @dataclass(slots=True, frozen=True)
-class Address:
+class Address(Generic[T_co]):
     parts: tuple[PathPart, ...]
 
-    def __init__(self, *parts: PathPart):
+    def __init__(self, *parts: PathPart) -> None:
         object.__setattr__(self, "parts", parts)
 
     # --- iteration / sequence-like ---
+
     def __iter__(self) -> Iterator[PathPart]:
         return iter(self.parts)
 
@@ -25,78 +28,87 @@ class Address:
     def __getitem__(self, index: int) -> PathPart:
         return self.parts[index]
 
-    # --- Operators ---
-    def __truediv__(self, part: PathPart) -> Address:
-        """Append a child part (like pathlib.Path)."""
-        return Address(*self.parts + (part,))
+    # --- operators ---
 
-    # --- String repr ---
+    def __truediv__(self, part: PathPart) -> Address[Any]:
+        """
+        Append a child part.
+
+        The resulting value type is unknown unless the caller explicitly
+        annotates the new address.
+        """
+        return Address(*self.parts, part)
+
+    # --- string representation ---
+
     def __str__(self) -> str:
         if not self.parts:
             return "<empty>"
-        out = [str(self.parts[0])]
-        for p in self.parts[1:]:
-            out.append(f"[{p}]" if isinstance(p, int) else f".{p}")
-        return "".join(out)
+
+        root, *remaining = self.parts
+        return str(root) + "".join(f".{part}" for part in remaining)
 
     def __repr__(self) -> str:
-        return f"Address({self.parts})"
+        return f"Address({self.parts!r})"
 
-    def __hash__(self) -> int:
-        return hash(self.parts)
+    # --- properties ---
 
-    # --- Properties ---
     @property
-    def relative(self) -> Address:
-        """All parts inside the model (after root)."""
+    def relative(self) -> Address[Any]:
+        """Return all parts after the root."""
         if len(self.parts) <= 1:
-            raise ValueError("Path has no relative part (only root)")
+            raise ValueError("Address has no relative part")
+
         return Address(*self.parts[1:])
 
     @property
     def root(self) -> str:
-        """Model name (the first part)."""
+        """Return the first address part."""
         if not self.parts:
-            raise ValueError("Empty path has no root (model)")
-        return str(self.parts[0])
+            raise ValueError("Empty address has no root")
+
+        return self.parts[0]
 
     @property
     def leaf(self) -> str:
-        """Return the last element in the path."""
+        """Return the final address part."""
         if not self.parts:
-            raise ValueError("Empty path has no leaf")
-        return str(self.parts[-1])
+            raise ValueError("Empty address has no leaf")
+
+        return self.parts[-1]
 
     @property
-    def parent(self) -> Address:
-        """Return parent path. Root fields return empty Path for the document."""
-        if not self.parts:
-            return Address()  # no parent for empty path
-        if len(self.parts) == 1:
-            return Address()  # root document
+    def parent(self) -> Address[Any]:
+        """Return the parent address."""
+        if len(self.parts) <= 1:
+            return Address()
+
         return Address(*self.parts[:-1])
 
-    def prefixes(self) -> list[Address]:
-        return [Address(*self.parts[:i]) for i in range(1, len(self.parts) + 1)]
+    def prefixes(self) -> list[Address[Any]]:
+        return [
+            Address(*self.parts[:index])
+            for index in range(1, len(self.parts) + 1)
+        ]
 
-    def walk(self, data: Mapping) -> Any:
+    def walk(self, data: Mapping[str, Any]) -> Any:
+        current: Any = data
+
         try:
-            current = data
-
-            for point in self.parts:
-                current = current[point]
-
-            return current
+            for part in self.parts:
+                current = current[part]
 
         except KeyError as exc:
             raise ValueError(
-                f"Address part '{exc.args[0]}' not found in {self}"
+                f"Address part {exc.args[0]!r} was not found in {self}"
             ) from exc
 
         except TypeError as exc:
             raise ValueError(
-                f"Cannot traverse through non-mapping value at {self}"
+                f"Cannot traverse through a non-mapping value at {self}"
             ) from exc
+
+        return current
 
     def to_list(self) -> list[PathPart]:
         return list(self.parts)
