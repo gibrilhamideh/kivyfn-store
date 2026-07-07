@@ -1,3 +1,4 @@
+# kivyfn/store/schema/trigger.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,9 +7,8 @@ from typing import Any, Callable, Optional, Protocol, TYPE_CHECKING, TypeVar
 from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
-    from kivyfn.store.core.instruction import Instruction
-    from kivyfn.store.node import Node
     from kivyfn.store.schema import Schema
+    from kivyfn.store.schema.context import TriggerContext
     from kivyfn.store.transaction import TransactionBuilder
 
 
@@ -32,9 +32,8 @@ class TriggerFunc(Protocol):
     def __call__(
         self,
         schema: Schema,
-        node: Node,
-        action: Instruction,
-        exec_fn: TransactionBuilder,
+        builder: TransactionBuilder,
+        context: TriggerContext,
     ) -> Any: ...
 
 

@@ -9,10 +9,8 @@ from ..constants import InstructionOpCode
 from ...store import store
 
 if TYPE_CHECKING:
-    from kivyfn.widget import FnWidget
-
+    from kivyfn.ui.widget import FnWidget
     from kivyfn.store.address import Address
-    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.events.subscription import Subscription
     from kivyfn.store.behaviors.state import FnStateBehavior
 

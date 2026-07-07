@@ -6,6 +6,7 @@ from kivyfn.store.errors.store import CompilerError, FieldError
 from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
 from kivyfn.store.core.instruction import Instruction
 from kivyfn.store.transaction import TransactionBuilder
+from kivyfn.store.schema.context import TriggerContext
 from kivyfn.store.core.operations import (
     Operation,
     InsertOperation,
@@ -38,7 +39,7 @@ class Compiler:
 
             # 2️⃣ collect derived actions
             derived = []
-            derived.extend(self._collect_triggers(node, instruction))
+            derived.extend(self._collect_triggers(operation))
             derived.extend(self._collect_policies(node, instruction))
 
             # 3️⃣ push back into queue
@@ -206,28 +207,22 @@ class Compiler:
     # ============================= #
     # Trigger Executions
     # ============================= #
-    def _collect_triggers(
-        self, node: Node, instruction: Instruction
-    ) -> list[Instruction]:
+    def _collect_triggers(self, operation: Operation) -> list[Instruction]:
         derived: list[Instruction] = []
 
-        triggers = node.schema.triggers()
+        node = operation.node
+        instruction = operation.instruction
+        context = TriggerContext(engine=self.engine, operation=operation, operations=self.operations)
 
-        for trigger in triggers:
+        for trigger in node.schema.triggers():
             if not trigger.matches(instruction.opcode, instruction.key):
                 continue
 
-            # internal execution context to collect new actions
-            exec_ctx = TransactionBuilder()
+            builder = TransactionBuilder()
 
-            # call trigger
-            trigger.fn(node, instruction, exec_ctx)
+            trigger.fn(builder, context)
 
-            instructions = Instruction.construct(
-                exec_ctx.commands, source=InstructionSource.TRIGGER
-            )
-
-            # collect generated actions
+            instructions = Instruction.construct(builder.commands, source=InstructionSource.TRIGGER)
             derived.extend(instructions)
 
         return derived

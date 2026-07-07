@@ -10,7 +10,8 @@ if TYPE_CHECKING:
 
 
 class Operation:
-    def __init__(self, instruction: Instruction) -> None:
+    def __init__(self, node: Node, instruction: Instruction) -> None:
+        self.node = node
         self.instruction = instruction
         self.address = instruction.address
         self.opcode = instruction.opcode
@@ -41,8 +42,7 @@ class Operation:
 
 class SetOperation(Operation):
     def __init__(self, node: Node, instruction: Instruction):
-        super().__init__(instruction)
-        self.node = node
+        super().__init__(node, instruction)
         self.key = cast(str, instruction.key)
         self.new_value = instruction.value
         self.old_value = None
@@ -75,8 +75,7 @@ class SetOperation(Operation):
 
 class SetRowOperation(Operation):
     def __init__(self, node: Node, instruction: Instruction):
-        super().__init__(instruction)
-        self.node = node
+        super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
         self.key = cast(str, instruction.key)
         self.new_value = instruction.value
@@ -112,8 +111,7 @@ class SetRowOperation(Operation):
 
 class InsertOperation(Operation):
     def __init__(self, node: Node, instruction: Instruction):
-        super().__init__(instruction)
-        self.node = node
+        super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
         self.value = cast(dict, instruction.value)
 
@@ -143,8 +141,7 @@ class InsertOperation(Operation):
 
 class RemoveOperation(Operation):
     def __init__(self, node: Node, instruction: Instruction):
-        super().__init__(instruction)
-        self.node = node
+        super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
         self.old_row = {}
 
