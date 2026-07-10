@@ -2,11 +2,25 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Literal,
+    TypeVar,
+    overload,
+)
 
 from kivyfn.store.address import Address
 from kivyfn.store.constants import InstructionOpCode
-from kivyfn.store.events.event import StoreEvent
+from kivyfn.store.events.event import (
+    InsertEvent,
+    RemoveEvent,
+    SetEvent,
+    SetRowEvent,
+    StoreEvent,
+    event_from_payload,
+)
 from kivyfn.store.events.subscription import Subscription
 from kivyfn.store.transaction import TransactionResult
 from kivyfn.store.transport import SocketIOClient, response
@@ -18,8 +32,6 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
-
-SubscriptionCallback = Callable[[StoreEvent], None]
 
 
 class StoreClient:
@@ -37,10 +49,16 @@ class StoreClient:
         )
 
         # event_token -> local subscriptions using this event stream
-        self._subscriptions: dict[str, set[Subscription]] = defaultdict(set)
+        self._subscriptions: dict[
+            str,
+            set[Subscription[Any]],
+        ] = defaultdict(set)
 
         # subscription_token -> local subscription
-        self._subscriptions_by_token: dict[str, Subscription] = {}
+        self._subscriptions_by_token: dict[
+            str,
+            Subscription[Any],
+        ] = {}
 
     async def connect(self) -> None:
         await self._transport.connect()
@@ -71,18 +89,82 @@ class StoreClient:
 
         return response.from_payload(payload)
 
+    # -------------------------------------------------
+    # Subscriptions
+    # -------------------------------------------------
+
+    @overload
     async def subscribe(
         self,
-        opcode: InstructionOpCode,
+        opcode: Literal[InstructionOpCode.SET],
         address: Address[Any],
-        callback: SubscriptionCallback,
+        callback: Callable[[SetEvent], None],
+        *,
+        id: None = None,
+        key: str | None = None,
+        depth: int | None = 0,
+        resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False,
+    ) -> Response[Subscription[SetEvent]]:
+        ...
+
+    @overload
+    async def subscribe(
+        self,
+        opcode: Literal[InstructionOpCode.SETROW],
+        address: Address[Any],
+        callback: Callable[[SetRowEvent], None],
         *,
         id: str | None = None,
         key: str | None = None,
         depth: int | None = 0,
         resolve_foreignkeys: bool = False,
         propagate_foreignkeys: bool = False,
-    ) -> Response[Subscription]:
+    ) -> Response[Subscription[SetRowEvent]]:
+        ...
+
+    @overload
+    async def subscribe(
+        self,
+        opcode: Literal[InstructionOpCode.INSERT],
+        address: Address[Any],
+        callback: Callable[[InsertEvent[T]], None],
+        *,
+        id: None = None,
+        key: None = None,
+        depth: int | None = 0,
+        resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False,
+    ) -> Response[Subscription[InsertEvent[T]]]:
+        ...
+
+    @overload
+    async def subscribe(
+        self,
+        opcode: Literal[InstructionOpCode.REMOVE],
+        address: Address[Any],
+        callback: Callable[[RemoveEvent[T]], None],
+        *,
+        id: None = None,
+        key: None = None,
+        depth: int | None = 0,
+        resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False,
+    ) -> Response[Subscription[RemoveEvent[T]]]:
+        ...
+
+    async def subscribe(
+        self,
+        opcode: InstructionOpCode,
+        address: Address[Any],
+        callback: Callable[[Any], None],
+        *,
+        id: str | None = None,
+        key: str | None = None,
+        depth: int | None = 0,
+        resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False,
+    ) -> Response[Subscription[Any]]:
         payload = await self._transport.call(
             "subscribe",
             {
@@ -104,7 +186,7 @@ class StoreClient:
         subscription_token = result.data["subscription_token"]
         event_token = result.data["event_token"]
 
-        subscription = Subscription(
+        subscription: Subscription[Any] = Subscription(
             store=self.store,
             client=self,
             token=subscription_token,
@@ -112,8 +194,13 @@ class StoreClient:
             callback=callback,
         )
 
-        self._subscriptions[event_token].add(subscription)
-        self._subscriptions_by_token[subscription_token] = subscription
+        self._subscriptions[event_token].add(
+            subscription,
+        )
+
+        self._subscriptions_by_token[
+            subscription_token
+        ] = subscription
 
         return response.success(
             data=subscription,
@@ -143,15 +230,26 @@ class StoreClient:
 
         if subscription is not None:
             event_token = subscription.event_token
-            bucket = self._subscriptions.get(event_token)
+            bucket = self._subscriptions.get(
+                event_token,
+            )
 
             if bucket is not None:
-                bucket.discard(subscription)
+                bucket.discard(
+                    subscription,
+                )
 
                 if not bucket:
-                    self._subscriptions.pop(event_token, None)
+                    self._subscriptions.pop(
+                        event_token,
+                        None,
+                    )
 
         return result
+
+    # -------------------------------------------------
+    # Transactions
+    # -------------------------------------------------
 
     async def transaction(
         self,
@@ -168,7 +266,7 @@ class StoreClient:
             return result
 
         transaction_result = TransactionResult.from_payload(
-            result.data
+            result.data,
         )
 
         return response.success(
@@ -177,12 +275,22 @@ class StoreClient:
         )
 
     async def undo(self) -> Response[Any]:
-        payload = await self._transport.call("undo")
-        return response.from_payload(payload)
+        payload = await self._transport.call(
+            "undo",
+        )
+
+        return response.from_payload(
+            payload,
+        )
 
     async def redo(self) -> Response[Any]:
-        payload = await self._transport.call("redo")
-        return response.from_payload(payload)
+        payload = await self._transport.call(
+            "redo",
+        )
+
+        return response.from_payload(
+            payload,
+        )
 
     async def to_dict(
         self,
@@ -193,7 +301,9 @@ class StoreClient:
             address.to_list(),
         )
 
-        return response.from_payload(payload)
+        return response.from_payload(
+            payload,
+        )
 
     # -------------------------------------------------
     # Server events
@@ -204,24 +314,30 @@ class StoreClient:
         message: dict[str, Any],
     ) -> None:
         event_token = message["event_token"]
-        event = message["event"]
+        event_payload = message["event"]
 
         self.dispatch(
             event_token,
-            event,
+            event_payload,
         )
 
     def dispatch(
         self,
         event_token: str,
-        message: dict[str, Any],
+        payload: dict[str, Any],
     ) -> None:
-        subscriptions = self._subscriptions.get(event_token)
+        subscriptions = self._subscriptions.get(
+            event_token,
+        )
 
         if not subscriptions:
             return
 
-        event = StoreEvent(**message)
+        event: StoreEvent = event_from_payload(
+            payload,
+        )
 
         for subscription in tuple(subscriptions):
-            subscription.dispatch(event)
+            subscription.dispatch(
+                event,
+            )

@@ -364,9 +364,6 @@ class SubscriptionManager:
         if event.opcode is not InstructionOpCode.INSERT:
             return event.payload()
 
-        if event.id is None:
-            return event.payload()
-
         node = self._engine.get_node_by_event(event)
         row = node.snapshot(id=event.id)
 

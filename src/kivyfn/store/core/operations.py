@@ -1,7 +1,13 @@
 from __future__ import annotations
-from typing import cast, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
-from kivyfn.store.events.event import StoreEvent
+from kivyfn.store.events.event import (
+    InsertEvent,
+    RemoveEvent,
+    SetEvent,
+    SetRowEvent,
+    StoreEvent,
+)
 
 
 if TYPE_CHECKING:
@@ -10,17 +16,21 @@ if TYPE_CHECKING:
 
 
 class Operation:
-    def __init__(self, node: Node, instruction: Instruction) -> None:
+    def __init__(
+        self,
+        node: Node,
+        instruction: Instruction,
+    ) -> None:
         self.node = node
         self.instruction = instruction
         self.address = instruction.address
         self.opcode = instruction.opcode
         self.source = instruction.source
 
-    def execute(self):
+    def execute(self) -> StoreEvent:
         raise NotImplementedError()
 
-    def undo(self):
+    def undo(self) -> StoreEvent:
         raise NotImplementedError()
 
     # ----------------------------
@@ -41,31 +51,39 @@ class Operation:
 
 
 class SetOperation(Operation):
-    def __init__(self, node: Node, instruction: Instruction):
+    def __init__(
+        self,
+        node: Node,
+        instruction: Instruction,
+    ) -> None:
         super().__init__(node, instruction)
         self.key = cast(str, instruction.key)
         self.new_value = instruction.value
-        self.old_value = None
+        self.old_value: Any = None
 
-    def _repr_details(self):
+    def _repr_details(self) -> str:
         return f"key={self.key!r}, value={self.new_value!r}"
 
-    def execute(self):
-        self.old_value = self.node.set(self.key, self.new_value)
+    def execute(self) -> SetEvent:
+        self.old_value = self.node.set(
+            self.key,
+            self.new_value,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return SetEvent(
             address=self.node.address,
             key=self.key,
             old_value=self.old_value,
             new_value=self.new_value,
         )
 
-    def undo(self):
-        current = self.node.set(self.key, self.old_value)
+    def undo(self) -> SetEvent:
+        current = self.node.set(
+            self.key,
+            self.old_value,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return SetEvent(
             address=self.node.address,
             key=self.key,
             old_value=current,
@@ -74,21 +92,32 @@ class SetOperation(Operation):
 
 
 class SetRowOperation(Operation):
-    def __init__(self, node: Node, instruction: Instruction):
+    def __init__(
+        self,
+        node: Node,
+        instruction: Instruction,
+    ) -> None:
         super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
         self.key = cast(str, instruction.key)
         self.new_value = instruction.value
-        self.old_value = None
+        self.old_value: Any = None
 
-    def _repr_details(self):
-        return f"id={self.id!r}, key={self.key!r}, value={self.new_value!r}"
+    def _repr_details(self) -> str:
+        return (
+            f"id={self.id!r}, "
+            f"key={self.key!r}, "
+            f"value={self.new_value!r}"
+        )
 
-    def execute(self):
-        self.old_value = self.node.setrow(self.id, self.key, self.new_value)
+    def execute(self) -> SetRowEvent:
+        self.old_value = self.node.setrow(
+            self.id,
+            self.key,
+            self.new_value,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return SetRowEvent(
             address=self.node.address,
             id=self.id,
             key=self.key,
@@ -96,11 +125,14 @@ class SetRowOperation(Operation):
             new_value=self.new_value,
         )
 
-    def undo(self):
-        current = self.node.setrow(self.id, self.key, self.old_value)
+    def undo(self) -> SetRowEvent:
+        current = self.node.setrow(
+            self.id,
+            self.key,
+            self.old_value,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return SetRowEvent(
             address=self.node.address,
             id=self.id,
             key=self.key,
@@ -110,29 +142,34 @@ class SetRowOperation(Operation):
 
 
 class InsertOperation(Operation):
-    def __init__(self, node: Node, instruction: Instruction):
+    def __init__(
+        self,
+        node: Node,
+        instruction: Instruction,
+    ) -> None:
         super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
-        self.value = cast(dict, instruction.value)
+        self.value = cast(dict[str, Any], instruction.value)
 
-    def _repr_details(self):
+    def _repr_details(self) -> str:
         return f"id={self.id!r}, value={self.value!r}"
 
-    def execute(self):
-        self.node.insert(self.id, self.value)
+    def execute(self) -> InsertEvent[dict[str, Any]]:
+        self.node.insert(
+            self.id,
+            self.value,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return InsertEvent(
             address=self.node.address,
             id=self.id,
             new_value=self.value,
         )
 
-    def undo(self):
+    def undo(self) -> RemoveEvent[dict[str, Any]]:
         row = self.node.remove(self.id)
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return RemoveEvent(
             address=self.node.address,
             id=self.id,
             old_value=row,
@@ -140,29 +177,34 @@ class InsertOperation(Operation):
 
 
 class RemoveOperation(Operation):
-    def __init__(self, node: Node, instruction: Instruction):
+    def __init__(
+        self,
+        node: Node,
+        instruction: Instruction,
+    ) -> None:
         super().__init__(node, instruction)
         self.id = cast(str, instruction.id)
-        self.old_row = {}
+        self.old_row: dict[str, Any] = {}
 
-    def _repr_details(self):
+    def _repr_details(self) -> str:
         return f"id={self.id!r}"
 
-    def execute(self):
+    def execute(self) -> RemoveEvent[dict[str, Any]]:
         self.old_row = self.node.remove(self.id)
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return RemoveEvent(
             address=self.node.address,
             id=self.id,
             old_value=self.old_row,
         )
 
-    def undo(self):
-        self.node.insert(self.id, self.old_row)
+    def undo(self) -> InsertEvent[dict[str, Any]]:
+        self.node.insert(
+            self.id,
+            self.old_row,
+        )
 
-        return StoreEvent(
-            opcode=self.opcode,
+        return InsertEvent(
             address=self.node.address,
             id=self.id,
             new_value=self.old_row,

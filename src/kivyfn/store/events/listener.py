@@ -8,8 +8,11 @@ from kivyfn.store.constants import InstructionOpCode
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
-    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
+    from kivyfn.store.events.event import (
+        SetRowEvent,
+        StoreEvent,
+    )
 
 
 class ListenerIndex:
@@ -94,14 +97,20 @@ class ListenerIndex:
         if bucket_map is not None and not bucket:
             bucket_map.pop(bucket_key, None)
 
-    def listeners(self, event: StoreEvent) -> set[Listener]:
+    def listeners(
+        self,
+        event: StoreEvent,
+    ) -> set[Listener]:
         result: set[Listener] = set()
 
         if event.opcode is InstructionOpCode.SET:
             result.update(self.set_all)
-
-            if event.key is not None:
-                result.update(self.set_by_key.get(event.key, ()))
+            result.update(
+                self.set_by_key.get(
+                    event.key,
+                    (),
+                )
+            )
 
         elif event.opcode is InstructionOpCode.INSERT:
             result.update(self.insert_all)
@@ -112,14 +121,26 @@ class ListenerIndex:
         elif event.opcode is InstructionOpCode.SETROW:
             result.update(self.setrow_all)
 
-            if event.id is not None:
-                result.update(self.setrow_by_id.get(event.id, ()))
+            result.update(
+                self.setrow_by_id.get(
+                    event.id,
+                    (),
+                )
+            )
 
-            if event.key is not None:
-                result.update(self.setrow_by_key.get(event.key, ()))
+            result.update(
+                self.setrow_by_key.get(
+                    event.key,
+                    (),
+                )
+            )
 
-            if event.id is not None and event.key is not None:
-                result.update(self.setrow_by_id_key.get((event.id, event.key), ()))
+            result.update(
+                self.setrow_by_id_key.get(
+                    (event.id, event.key),
+                    (),
+                )
+            )
 
         return result
 
@@ -158,11 +179,15 @@ class ForeignListener:
     def referenced_address(self) -> Address:
         return self.referenced.address
 
-    def translate(self, event: StoreEvent) -> list[StoreEvent]:
-        if event.id is None:
-            return []
+    def translate(
+        self,
+        event: SetRowEvent,
+    ) -> list[SetRowEvent]:
+        matching_ids = self.owner.lookup(
+            self.foreignkey,
+            event.id,
+        )
 
-        matching_ids = self.owner.lookup(self.foreignkey, event.id)
         if not matching_ids:
             return []
 
@@ -172,16 +197,18 @@ class ForeignListener:
             else matching_ids
         )
 
-        translated_events: list[StoreEvent] = []
+        translated_events: list[SetRowEvent] = []
 
         for owner_id in ids_to_notify:
-            if self.subscriber_id is not None and owner_id != self.subscriber_id:
+            if (
+                self.subscriber_id is not None
+                and owner_id != self.subscriber_id
+            ):
                 continue
 
             translated_events.append(
                 event.copy_with(
                     address=self.owner.address,
-                    opcode=InstructionOpCode.SETROW,  # ← this line
                     id=owner_id,
                 )
             )
