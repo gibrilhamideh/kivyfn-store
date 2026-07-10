@@ -98,6 +98,22 @@ class TransactionBuilder:
 
         return self
 
+    def merge(
+        self,
+        address: Address[Any],
+        id: str | None,
+        value: dict[str, Any],
+    ) -> Self:
+        for key, item in value.items():
+            self.setrow(
+                address=address,
+                id=id,
+                key=key,
+                value=item,
+            )
+
+        return self
+
     @property
     def commands(self) -> list[CommandPayload]:
         return list(self._commands)
