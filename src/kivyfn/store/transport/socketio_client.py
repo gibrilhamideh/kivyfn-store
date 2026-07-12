@@ -1,9 +1,17 @@
+# kivyfn/store/transport/socketio_client.py
 from __future__ import annotations
+
 from typing import Any, Awaitable, Callable
 
 import socketio
+
 from kivyfn.store.errors.client import StoreConnectionError
-EventCallback = Callable[[dict[str, Any]], None | Awaitable[None]]
+
+
+TransportCallback = Callable[
+    [dict[str, Any]],
+    Awaitable[None],
+]
 
 
 class SocketIOClient:
@@ -11,12 +19,15 @@ class SocketIOClient:
         self,
         url: str,
         *,
-        event_hanlder: EventCallback,
+        event_handler: TransportCallback,
+        signal_handler: TransportCallback,
         timeout: int = 5,
     ) -> None:
         self.url = url
         self.timeout = timeout
-        self.event_hanlder = event_hanlder
+
+        self.event_handler = event_handler
+        self.signal_handler = signal_handler
 
         self.sio = socketio.AsyncClient(
             reconnection=True,
@@ -24,10 +35,19 @@ class SocketIOClient:
             engineio_logger=False,
         )
 
-        self.sio.on("event", self.on_event)
+        self.sio.on(
+            "event",
+            self.on_event,
+        )
+        self.sio.on(
+            "signal",
+            self.on_signal,
+        )
 
     async def connect(self) -> None:
-        await self.sio.connect(self.url)
+        await self.sio.connect(
+            self.url,
+        )
 
     async def disconnect(self) -> None:
         await self.sio.disconnect()
@@ -48,11 +68,27 @@ class SocketIOClient:
                 message,
                 timeout=self.timeout,
             )
+
         except Exception as exc:
             raise StoreConnectionError(
                 f"SocketIO call failed: {event!r}; "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
-    async def on_event(self, message: dict[str, Any]) -> None:
-        self.event_hanlder(message)
+    async def on_event(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        await self.event_handler(
+            message,
+        )
+
+    async def on_signal(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        await self.signal_handler(
+            message,
+        )
+
+

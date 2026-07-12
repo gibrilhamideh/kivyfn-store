@@ -1,11 +1,12 @@
 # kivyfn/store/schema/schema.py
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from kivyfn.store.schema.trigger import Trigger
-from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 from kivyfn.store.errors.store import FieldNotFoundError
+from kivyfn.store.schema.fields import BaseField, ForeignKeyField
+from kivyfn.store.schema.trigger import Trigger
+from kivyfn.store.signals.signal import Signal
 
 
 IndexKey = tuple[str, ...]
@@ -22,15 +23,21 @@ class Schema:
         self.name = self.__class__.__name__
 
         self._fields: dict[str, BaseField] = {}
+        self._signals: dict[str, Signal[Any]] = {}
         self._triggers: list[Trigger] = []
 
         self._indexes: set[IndexKey] = set()
         self._uniques: set[IndexKey] = set()
 
         self._build_fields()
+        self._build_signals()
         self._build_triggers()
         self._build_indexes()
         self._validate_index_keys()
+
+    # -------------------------------------------------
+    # Build
+    # -------------------------------------------------
 
     def _build_fields(self) -> None:
         for name, attr in self.__class__.__dict__.items():
@@ -38,10 +45,16 @@ class Schema:
                 attr.name = name
                 self._fields[name] = attr
 
-    def _build_triggers(self) -> None:
+    def _build_signals(self) -> None:
+        for name, attr in self.__class__.__dict__.items():
+            if isinstance(attr, Signal):
+                attr.name = name
+                self._signals[name] = attr
 
+    def _build_triggers(self) -> None:
         for name, attr in self.__class__.__dict__.items():
             trigger_meta = getattr(attr, "_trigger_meta", None)
+
             if not trigger_meta:
                 continue
 
@@ -62,6 +75,7 @@ class Schema:
 
         for unique in self.uniques:
             key = tuple(unique)
+
             self._uniques.add(key)
             self._indexes.add(key)
 
@@ -76,14 +90,24 @@ class Schema:
             for field_name in key:
                 if field_name not in names:
                     raise ValueError(
-                        f"Unknown field '{field_name}' in index/unique for {self.name}"
+                        f"Unknown field '{field_name}' "
+                        f"in index/unique for {self.name}"
                     )
 
-    def get_field(self, name: str) -> BaseField:
+    # -------------------------------------------------
+    # Fields
+    # -------------------------------------------------
+
+    def get_field(
+        self,
+        name: str,
+    ) -> BaseField:
         try:
             return self._fields[name]
         except KeyError:
-            raise FieldNotFoundError(f"Unknown field '{name}' in {self.name}")
+            raise FieldNotFoundError(
+                f"Unknown field '{name}' in {self.name}"
+            ) from None
 
     def fields(self) -> dict[str, BaseField]:
         return self._fields.copy()
@@ -91,8 +115,43 @@ class Schema:
     def field_names(self) -> set[str]:
         return set(self._fields)
 
+    # -------------------------------------------------
+    # Signals
+    # -------------------------------------------------
+
+    def get_signal(
+        self,
+        name: str,
+    ) -> Signal[Any]:
+        try:
+            return self._signals[name]
+        except KeyError:
+            raise ValueError(
+                f"Unknown signal '{name}' in {self.name}"
+            ) from None
+
+    def signals(self) -> dict[str, Signal[Any]]:
+        return self._signals.copy()
+
+    def signal_names(self) -> set[str]:
+        return set(self._signals)
+
+    def has_signal(
+        self,
+        name: str,
+    ) -> bool:
+        return name in self._signals
+
+    # -------------------------------------------------
+    # Triggers
+    # -------------------------------------------------
+
     def triggers(self) -> list[Trigger]:
         return self._triggers.copy()
+
+    # -------------------------------------------------
+    # Indexes
+    # -------------------------------------------------
 
     def index_keys(self) -> set[IndexKey]:
         return set(self._indexes)
@@ -100,18 +159,31 @@ class Schema:
     def unique_keys(self) -> set[IndexKey]:
         return set(self._uniques)
 
-    def foreign_key_fields(self) -> dict[str, ForeignKeyField]:
+    # -------------------------------------------------
+    # Foreign keys
+    # -------------------------------------------------
+
+    def foreign_key_fields(
+        self,
+    ) -> dict[str, ForeignKeyField]:
         return {
             name: field
             for name, field in self._fields.items()
             if isinstance(field, ForeignKeyField)
         }
 
+    def is_foreignkey(
+        self,
+        name: str,
+    ) -> bool:
+        return name in self.foreign_key_fields()
+
+    # -------------------------------------------------
+    # Schema information
+    # -------------------------------------------------
+
     def is_many(self) -> bool:
         return self.many
-
-    def is_foreignkey(self, name: str) -> bool:
-        return name in self.foreign_key_fields()
 
     def defaults(self) -> dict:
         return {
@@ -119,10 +191,21 @@ class Schema:
             for name, field in self._fields.items()
         }
 
-    def challenge_field(self, name: str, value) -> None:
+    # -------------------------------------------------
+    # Validation
+    # -------------------------------------------------
+
+    def challenge_field(
+        self,
+        name: str,
+        value: Any,
+    ) -> None:
         field = self.get_field(name)
         field.challenge(value)
 
-    def challenge_fields(self, data: dict) -> None:
+    def challenge_fields(
+        self,
+        data: dict[str, Any],
+    ) -> None:
         for name, value in data.items():
             self.challenge_field(name, value)

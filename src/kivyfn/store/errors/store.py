@@ -108,5 +108,18 @@ class FieldNotFoundError(FieldError):
 class FieldValidationError(FieldError):
     code = "FIELD_VALIDATION_ERROR"
 
+class IndexNotFoundError(StoreError):
+    status = 400
+
+    def __init__(
+        self,
+        fields: tuple[str, ...],
+    ) -> None:
+        super().__init__(
+            f"No index exists for fields {fields!r}"
+        )
+
+        self.fields = fields
+
 
 

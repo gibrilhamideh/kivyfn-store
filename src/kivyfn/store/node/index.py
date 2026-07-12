@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, overload
 
 from kivyfn.store.errors.store import ConstraintError
 from kivyfn.store.constants import ConstraintType
+from kivyfn.store.errors.store import IndexNotFoundError
 
 
 IndexKey = tuple[str, ...]
@@ -131,6 +132,29 @@ class IndexManager:
         for index in self._indexes.values():
             index.update(row_id, old_row, new_row)
 
+
+    @overload
+    def lookup(
+        self,
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: Literal[True],
+    ) -> str | None:
+        ...
+
+
+    @overload
+    def lookup(
+        self,
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: Literal[False] = False,
+    ) -> set[str]:
+        ...
+
+
     def lookup(
         self,
         fields: str | tuple[str, ...],
@@ -141,10 +165,14 @@ class IndexManager:
         key = self._normalize_fields(fields)
 
         index = self._indexes.get(key)
-        if index is None:
-            return None if first else set()
 
-        return index.lookup(value, first=first)
+        if index is None:
+            raise IndexNotFoundError(key)
+
+        return index.lookup(
+            value,
+            first=first,
+        )
 
     def _normalize_fields(self, fields: str | tuple[str, ...]) -> IndexKey:
         if isinstance(fields, str):

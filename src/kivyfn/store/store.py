@@ -1,3 +1,4 @@
+# kivyfn/store/store.py
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +12,7 @@ from kivyfn.store.errors.client import (
 )
 from kivyfn.store.events.subscription import SubscriptionEvents
 from kivyfn.store.server import StoreServer
+from kivyfn.store.signals.api import SignalEvents
 from kivyfn.store.transaction import Transaction
 
 
@@ -38,6 +40,9 @@ class Store:
 
         self._ready_event = asyncio.Event()
 
+        self._subscription = SubscriptionEvents(self)
+        self._signal = SignalEvents(self)
+
     # -------------------------------------------------
     # Lifecycle
     # -------------------------------------------------
@@ -49,7 +54,9 @@ class Store:
         log_queue: multiprocessing.Queue,
     ) -> None:
         if self._server is not None:
-            raise StoreStateError("Store server already started")
+            raise StoreStateError(
+                "Store server already started"
+            )
 
         self._ready_event.clear()
 
@@ -67,18 +74,12 @@ class Store:
 
         except Exception as exc:
             await self.stop()
-            self._ready_event.set()
 
             raise StoreStateError(
                 "Store failed to start"
             ) from exc
 
     async def stop(self) -> None:
-        """
-        Stop the store client and server.
-
-        Safe to call multiple times.
-        """
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -102,7 +103,11 @@ class Store:
         self._ready_event.clear()
 
         url = f"http://{self.host}:{self.port}"
-        client = StoreClient(self, url)
+
+        client = StoreClient(
+            self,
+            url,
+        )
 
         try:
             await client.connect()
@@ -140,16 +145,8 @@ class Store:
         return self._client
 
     # -------------------------------------------------
-    # API delegation
+    # Read API
     # -------------------------------------------------
-
-    async def undo(self) -> Response[Any]:
-        await self.ready()
-        return await self.client.undo()
-
-    async def redo(self) -> Response[Any]:
-        await self.ready()
-        return await self.client.redo()
 
     async def snapshot(
         self,
@@ -162,10 +159,27 @@ class Store:
         await self.ready()
 
         return await self.client.snapshot(
-            address,
+            address=address,
             id=id,
             key=key,
             resolve_foreignkeys=resolve_foreignkeys,
+        )
+
+    async def lookup(
+        self,
+        address: Address[T],
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: bool = False,
+    ) -> Response[T | dict[str, T] | None]:
+        await self.ready()
+
+        return await self.client.lookup(
+            address=address,
+            fields=fields,
+            value=value,
+            first=first,
         )
 
     async def to_dict(
@@ -173,12 +187,39 @@ class Store:
         address: Address[T],
     ) -> Response[T]:
         await self.ready()
-        return await self.client.to_dict(address)
+
+        return await self.client.to_dict(
+            address,
+        )
+
+    # -------------------------------------------------
+    # History API
+    # -------------------------------------------------
+
+    async def undo(self) -> Response[Any]:
+        await self.ready()
+
+        return await self.client.undo()
+
+    async def redo(self) -> Response[Any]:
+        await self.ready()
+
+        return await self.client.redo()
+
+    # -------------------------------------------------
+    # API facades
+    # -------------------------------------------------
 
     @property
     def transaction(self) -> Transaction:
-        return Transaction(self)
+        return Transaction(
+            self,
+        )
 
     @property
     def subscription(self) -> SubscriptionEvents:
-        return SubscriptionEvents(self)
+        return self._subscription
+
+    @property
+    def signal(self) -> SignalEvents:
+        return self._signal

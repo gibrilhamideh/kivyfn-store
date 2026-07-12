@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from kivyfn.store.address import Address
 from kivyfn.store.node.index import IndexManager
@@ -156,11 +156,27 @@ class Node:
     # Read / lookup API
     # ---------------------------
 
-    def exists(self, row_id: str) -> bool:
-        if not self.schema.many:
-            raise ValueError("exists() is only valid for many schemas")
+    @overload
+    def lookup(
+        self,
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: Literal[True],
+    ) -> str | None:
+        ...
 
-        return row_id in self.value
+
+    @overload
+    def lookup(
+        self,
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: Literal[False] = False,
+    ) -> set[str]:
+        ...
+
 
     def lookup(
         self,
@@ -169,7 +185,18 @@ class Node:
         *,
         first: bool = False,
     ) -> set[str] | str | None:
-        return self._indexes.lookup(fields, value, first=first)
+        return self._indexes.lookup(
+            fields,
+            value,
+            first=first,
+        )
+
+
+    def exists(self, row_id: str) -> bool:
+        if not self.schema.many:
+            raise ValueError("exists() is only valid for many schemas")
+
+        return row_id in self.value
 
     def snapshot(
         self,

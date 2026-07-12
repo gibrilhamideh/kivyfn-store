@@ -5,8 +5,10 @@ from collections import defaultdict
 from typing import (
     TYPE_CHECKING,
     Any,
+    Awaitable,
     Callable,
     Literal,
+    TypeAlias,
     TypeVar,
     overload,
 )
@@ -22,6 +24,11 @@ from kivyfn.store.events.event import (
     event_from_payload,
 )
 from kivyfn.store.events.subscription import Subscription
+from kivyfn.store.signals.binding import SignalBinding
+from kivyfn.store.signals.event import (
+    SignalEvent,
+    signal_event_from_payload,
+)
 from kivyfn.store.transaction import TransactionResult
 from kivyfn.store.transport import SocketIOClient, response
 from kivyfn.store.transport.response import Response
@@ -32,6 +39,11 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+
+SignalCallback: TypeAlias = Callable[
+    [SignalEvent[T]],
+    None | Awaitable[None],
+]
 
 
 class StoreClient:
@@ -45,8 +57,13 @@ class StoreClient:
 
         self._transport = SocketIOClient(
             url=url,
-            event_hanlder=self.on_event,
+            event_handler=self.on_event,
+            signal_handler=self.on_signal,
         )
+
+        # -------------------------------------------------
+        # Subscriptions
+        # -------------------------------------------------
 
         # event_token -> local subscriptions using this event stream
         self._subscriptions: dict[
@@ -60,6 +77,26 @@ class StoreClient:
             Subscription[Any],
         ] = {}
 
+        # -------------------------------------------------
+        # Signal bindings
+        # -------------------------------------------------
+
+        # event_token -> local bindings using this signal stream
+        self._signal_bindings: dict[
+            str,
+            set[SignalBinding[Any]],
+        ] = defaultdict(set)
+
+        # binding_token -> local signal binding
+        self._signal_bindings_by_token: dict[
+            str,
+            SignalBinding[Any],
+        ] = {}
+
+    # -------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------
+
     async def connect(self) -> None:
         await self._transport.connect()
 
@@ -68,6 +105,13 @@ class StoreClient:
 
         self._subscriptions.clear()
         self._subscriptions_by_token.clear()
+
+        self._signal_bindings.clear()
+        self._signal_bindings_by_token.clear()
+
+    # -------------------------------------------------
+    # Reads
+    # -------------------------------------------------
 
     async def snapshot(
         self,
@@ -87,7 +131,50 @@ class StoreClient:
             },
         )
 
-        return response.from_payload(payload)
+        return response.from_payload(
+            payload,
+        )
+
+    async def lookup(
+        self,
+        address: Address[T],
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: bool = False,
+    ) -> Response[T | dict[str, T] | None]:
+        fields_payload = (
+            [fields]
+            if isinstance(fields, str)
+            else list(fields)
+        )
+
+        payload = await self._transport.call(
+            "lookup",
+            {
+                "address": address.to_list(),
+                "fields": fields_payload,
+                "value": value,
+                "first": first,
+            },
+        )
+
+        return response.from_payload(
+            payload,
+        )
+
+    async def to_dict(
+        self,
+        address: Address[T],
+    ) -> Response[T]:
+        payload = await self._transport.call(
+            "to_dict",
+            address.to_list(),
+        )
+
+        return response.from_payload(
+            payload,
+        )
 
     # -------------------------------------------------
     # Subscriptions
@@ -178,13 +265,19 @@ class StoreClient:
             },
         )
 
-        result = response.from_payload(payload)
+        result = response.from_payload(
+            payload,
+        )
 
         if result.ok is False:
             return result
 
-        subscription_token = result.data["subscription_token"]
-        event_token = result.data["event_token"]
+        subscription_token = result.data[
+            "subscription_token"
+        ]
+        event_token = result.data[
+            "event_token"
+        ]
 
         subscription: Subscription[Any] = Subscription(
             store=self.store,
@@ -218,7 +311,9 @@ class StoreClient:
             },
         )
 
-        result = response.from_payload(payload)
+        result = response.from_payload(
+            payload,
+        )
 
         if result.ok is False:
             return result
@@ -230,6 +325,7 @@ class StoreClient:
 
         if subscription is not None:
             event_token = subscription.event_token
+
             bucket = self._subscriptions.get(
                 event_token,
             )
@@ -248,6 +344,127 @@ class StoreClient:
         return result
 
     # -------------------------------------------------
+    # Signals
+    # -------------------------------------------------
+
+    async def bind_signal(
+        self,
+        address: Address[Any],
+        signal: str,
+        callback: SignalCallback[T],
+        *,
+        id: str | None = None,
+    ) -> Response[SignalBinding[T]]:
+        payload = await self._transport.call(
+            "signal_bind",
+            {
+                "address": address.to_list(),
+                "signal": signal,
+                "id": id,
+            },
+        )
+
+        result = response.from_payload(
+            payload,
+        )
+
+        if result.ok is False:
+            return result
+
+        binding_token = result.data[
+            "binding_token"
+        ]
+        event_token = result.data[
+            "event_token"
+        ]
+
+        binding: SignalBinding[T] = SignalBinding(
+            store=self.store,
+            client=self,
+            token=binding_token,
+            event_token=event_token,
+            callback=callback,
+        )
+
+        self._signal_bindings[event_token].add(
+            binding,
+        )
+
+        self._signal_bindings_by_token[
+            binding_token
+        ] = binding
+
+        return response.success(
+            data=binding,
+            status=result.status,
+        )
+
+    async def unbind_signal(
+        self,
+        token: str,
+    ) -> Response[bool]:
+        payload = await self._transport.call(
+            "signal_unbind",
+            {
+                "token": token,
+            },
+        )
+
+        result = response.from_payload(
+            payload,
+        )
+
+        if result.ok is False:
+            return result
+
+        binding = self._signal_bindings_by_token.pop(
+            token,
+            None,
+        )
+
+        if binding is not None:
+            event_token = binding.event_token
+
+            bucket = self._signal_bindings.get(
+                event_token,
+            )
+
+            if bucket is not None:
+                bucket.discard(
+                    binding,
+                )
+
+                if not bucket:
+                    self._signal_bindings.pop(
+                        event_token,
+                        None,
+                    )
+
+        return result
+
+    async def emit_signal(
+        self,
+        address: Address[Any],
+        signal: str,
+        data: Any = None,
+        *,
+        id: str | None = None,
+    ) -> Response[bool]:
+        payload = await self._transport.call(
+            "signal_emit",
+            {
+                "address": address.to_list(),
+                "signal": signal,
+                "id": id,
+                "data": data,
+            },
+        )
+
+        return response.from_payload(
+            payload,
+        )
+
+    # -------------------------------------------------
     # Transactions
     # -------------------------------------------------
 
@@ -260,7 +477,9 @@ class StoreClient:
             instructions,
         )
 
-        result = response.from_payload(payload)
+        result = response.from_payload(
+            payload,
+        )
 
         if result.ok is False:
             return result
@@ -292,24 +511,11 @@ class StoreClient:
             payload,
         )
 
-    async def to_dict(
-        self,
-        address: Address[T],
-    ) -> Response[T]:
-        payload = await self._transport.call(
-            "to_dict",
-            address.to_list(),
-        )
-
-        return response.from_payload(
-            payload,
-        )
-
     # -------------------------------------------------
     # Server events
     # -------------------------------------------------
 
-    def on_event(
+    async def on_event(
         self,
         message: dict[str, Any],
     ) -> None:
@@ -320,6 +526,22 @@ class StoreClient:
             event_token,
             event_payload,
         )
+
+    async def on_signal(
+        self,
+        message: dict[str, Any],
+    ) -> None:
+        event_token = message["event_token"]
+        signal_payload = message["signal"]
+
+        await self.dispatch_signal(
+            event_token,
+            signal_payload,
+        )
+
+    # -------------------------------------------------
+    # Local dispatch
+    # -------------------------------------------------
 
     def dispatch(
         self,
@@ -339,5 +561,26 @@ class StoreClient:
 
         for subscription in tuple(subscriptions):
             subscription.dispatch(
+                event,
+            )
+
+    async def dispatch_signal(
+        self,
+        event_token: str,
+        payload: dict[str, Any],
+    ) -> None:
+        bindings = self._signal_bindings.get(
+            event_token,
+        )
+
+        if not bindings:
+            return
+
+        event: SignalEvent[Any] = signal_event_from_payload(
+            payload,
+        )
+
+        for binding in tuple(bindings):
+            await binding.dispatch(
                 event,
             )
