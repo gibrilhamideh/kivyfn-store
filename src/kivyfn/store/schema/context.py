@@ -359,7 +359,6 @@ class TriggerContext:
     # ============================================================
     # Foreign-key resolution
     # ============================================================
-
     def resolve_foreignkey(
         self,
         field_name: str,
@@ -378,8 +377,9 @@ class TriggerContext:
         The referenced row is resolved from committed state plus all
         operations visible to this trigger.
         """
-
-        field = self.node.schema.get_field(field_name)
+        field = self.node.schema.get_field(
+            field_name,
+        )
 
         if not isinstance(field, ForeignKeyField):
             raise TypeError(
@@ -388,7 +388,9 @@ class TriggerContext:
             )
 
         source = self.current()
-        foreign_id = source.get(field_name)
+        foreign_id = source.get(
+            field_name,
+        )
 
         if foreign_id is None:
             return None
@@ -399,7 +401,9 @@ class TriggerContext:
                 f"a string row id, got {type(foreign_id).__name__}"
             )
 
-        target_node = self.engine.get_node_by_schema(field.schema)
+        target_node = self.engine.get_node_by_schema(
+            field.schema,
+        )
 
         target_row = self.row(
             target_node,
@@ -407,13 +411,35 @@ class TriggerContext:
         )
 
         if target_row is None:
-            return None
+            raise RuntimeError(
+                "Could not resolve foreign-key target "
+                f"{self.node.schema.name}.{field_name}="
+                f"{foreign_id!r} referencing "
+                f"{target_node.schema.name}"
+            )
 
         return ForeignKeyReference(
             id=foreign_id,
             node=target_node,
             row=target_row,
         )
+
+    def require_foreignkey(
+        self,
+        field_name: str,
+    ) -> ForeignKeyReference:
+        reference = self.resolve_foreignkey(
+            field_name,
+        )
+
+        if reference is None:
+            raise RuntimeError(
+                f"{self.node.schema.name}.{field_name} "
+                "does not contain a foreign-key value"
+            )
+
+        return reference
+
 
     # ============================================================
     # Helpers
