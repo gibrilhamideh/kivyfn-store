@@ -1,27 +1,22 @@
 # kivyfn/store/transaction.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self, TypeAlias
 
-from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.address import Address
+from kivyfn.store.operations import OpCode
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
 
-if TYPE_CHECKING:
-    from kivyfn.store import Store
-    from kivyfn.store.address import Address
-    from kivyfn.store.transport.response import Response
+CommandPayload: TypeAlias = dict[str, Any]
 
 
-CommandPayload = dict[str, Any]
-
-
-class TransactionBuilder:
+class Transaction:
     def __init__(
         self,
         commands: list[CommandPayload] | None = None,
     ) -> None:
-        self._commands: list[CommandPayload] = (
+        self._commands = (
             list(commands)
             if commands is not None
             else []
@@ -35,7 +30,7 @@ class TransactionBuilder:
     ) -> Self:
         self._commands.append(
             {
-                "opcode": InstructionOpCode.SET,
+                "opcode": OpCode.SET,
                 "address": address.to_list(),
                 "key": key,
                 "value": value,
@@ -53,7 +48,7 @@ class TransactionBuilder:
     ) -> Self:
         self._commands.append(
             {
-                "opcode": InstructionOpCode.SETROW,
+                "opcode": OpCode.SETROW,
                 "address": address.to_list(),
                 "id": id,
                 "key": key,
@@ -74,7 +69,7 @@ class TransactionBuilder:
 
         self._commands.append(
             {
-                "opcode": InstructionOpCode.INSERT,
+                "opcode": OpCode.INSERT,
                 "address": address.to_list(),
                 "id": id,
                 "value": value,
@@ -90,7 +85,7 @@ class TransactionBuilder:
     ) -> Self:
         self._commands.append(
             {
-                "opcode": InstructionOpCode.REMOVE,
+                "opcode": OpCode.REMOVE,
                 "address": address.to_list(),
                 "id": id,
             }
@@ -114,28 +109,55 @@ class TransactionBuilder:
 
         return self
 
+    def extend(
+        self,
+        commands: list[CommandPayload],
+    ) -> Self:
+        self._commands.extend(
+            commands,
+        )
+
+        return self
+
+    def clear(self) -> Self:
+        self._commands.clear()
+        return self
+
     @property
     def commands(self) -> list[CommandPayload]:
-        return list(self._commands)
-
-
-class Transaction(TransactionBuilder):
-    def __init__(
-        self,
-        store: Store,
-        commands: list[CommandPayload] | None = None,
-    ) -> None:
-        super().__init__(commands)
-        self._store = store
-
-    async def commit(
-        self,
-    ) -> Response[TransactionResult]:
-        await self._store.ready()
-
-        return await self._store.client.transaction(
-            self.commands
+        return list(
+            self._commands,
         )
+
+    def __len__(self) -> int:
+        return len(
+            self._commands,
+        )
+
+    def __bool__(self) -> bool:
+        return bool(
+            self._commands,
+        )
+
+
+TransactionInput: TypeAlias = (
+    Transaction
+    | list[CommandPayload]
+)
+
+
+def resolve_commands(
+    transaction: TransactionInput,
+) -> list[CommandPayload]:
+    if isinstance(
+        transaction,
+        Transaction,
+    ):
+        return transaction.commands
+
+    return list(
+        transaction,
+    )
 
 
 class TransactionResult:
@@ -145,7 +167,7 @@ class TransactionResult:
         success: bool,
         stage: str,
         compiled: list[Any] | None = None,
-        error: Exception | None = None,
+        error: Exception | str | None = None,
         inserted: list[Any] | None = None,
         removed: list[Any] | None = None,
         updated: list[Any] | None = None,
@@ -154,10 +176,34 @@ class TransactionResult:
         self.stage = stage
         self.compiled = compiled or []
         self.error = error
-
         self.inserted = inserted or []
         self.removed = removed or []
         self.updated = updated or []
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: dict[str, Any],
+    ) -> TransactionResult:
+        return cls(
+            success=payload["success"],
+            stage=payload["stage"],
+            compiled=payload.get(
+                "compiled",
+            ),
+            inserted=payload.get(
+                "inserted",
+            ),
+            removed=payload.get(
+                "removed",
+            ),
+            updated=payload.get(
+                "updated",
+            ),
+            error=payload.get(
+                "error",
+            ),
+        )
 
     def __repr__(self) -> str:
         lines = [
@@ -170,59 +216,68 @@ class TransactionResult:
         ]
 
         if self.compiled:
-            lines.append("  Compiled:")
+            lines.append(
+                "  Compiled:"
+            )
 
             for operation in self.compiled:
-                lines.append(f"    - {operation}")
+                lines.append(
+                    f"    - {operation}"
+                )
 
         if self.error is not None:
-            lines.append("  Error:")
             lines.append(
-                "    "
-                f"{type(self.error).__name__}: "
-                f"{self.error}"
+                "  Error:"
             )
 
-            action = getattr(
+            if isinstance(
                 self.error,
-                "action",
-                None,
-            )
-
-            if action is not None:
-                lines.append("  Failed Action:")
+                Exception,
+            ):
                 lines.append(
-                    f"    intent={action.intent.name}, "
-                    f"address={action.address}, "
-                    f"id={action.id}, "
-                    f"key={action.key}, "
-                    f"source={action.source.name}"
+                    "    "
+                    f"{type(self.error).__name__}: "
+                    f"{self.error}"
                 )
 
-            cause = self.error.__cause__
-
-            if cause is not None:
-                lines.append("  Root Cause:")
-                lines.append(
-                    f"    {type(cause).__name__}: "
-                    f"{cause}"
+                action = getattr(
+                    self.error,
+                    "action",
+                    None,
                 )
 
-        return "\n".join(lines)
+                if action is not None:
+                    lines.append(
+                        "  Failed Action:"
+                    )
 
-    @classmethod
-    def from_payload(
-        cls,
-        payload: dict[str, Any],
-    ) -> TransactionResult:
-        return cls(
-            success=payload["success"],
-            stage=payload["stage"],
-            compiled=payload.get("compiled"),
-            inserted=payload.get("inserted"),
-            removed=payload.get("removed"),
-            updated=payload.get("updated"),
-            error=payload.get("error"),
+                    lines.append(
+                        f"    intent={action.intent.name}, "
+                        f"address={action.address}, "
+                        f"id={action.id}, "
+                        f"key={action.key}, "
+                        f"source={action.source.name}"
+                    )
+
+                cause = self.error.__cause__
+
+                if cause is not None:
+                    lines.append(
+                        "  Root Cause:"
+                    )
+
+                    lines.append(
+                        f"    {type(cause).__name__}: "
+                        f"{cause}"
+                    )
+
+            else:
+                lines.append(
+                    f"    {self.error}"
+                )
+
+        return "\n".join(
+            lines,
         )
 
 

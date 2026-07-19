@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal, overload
 
 from kivyfn.store.errors.store import ConstraintError
-from kivyfn.store.constants import ConstraintType
+from kivyfn.store.errors.constraint import ConstraintType
 from kivyfn.store.errors.store import IndexNotFoundError
 
 

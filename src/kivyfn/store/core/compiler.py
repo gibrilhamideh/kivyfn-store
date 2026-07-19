@@ -3,9 +3,10 @@ from typing import TYPE_CHECKING
 from collections import deque
 
 from kivyfn.store.errors.store import CompilerError, FieldError
-from kivyfn.store.constants import Policy, InstructionOpCode, InstructionSource
+from kivyfn.store.schema.policy import ForeignKeyPolicy
+from kivyfn.store.operations import OpCode, OperationSource
 from kivyfn.store.core.instruction import Instruction
-from kivyfn.store.transaction import TransactionBuilder
+from kivyfn.store.transaction import Transaction
 from kivyfn.store.schema.context import TriggerContext
 from kivyfn.store.core.operations import (
     Operation,
@@ -54,16 +55,16 @@ class Compiler:
     def _compile_action(
         self, node: Node, instruction: Instruction
     ) -> tuple[Operation, Instruction]:
-        if instruction.opcode is InstructionOpCode.SET:
+        if instruction.opcode is OpCode.SET:
             return self._compile_set(node, instruction)
 
-        if instruction.opcode is InstructionOpCode.SETROW:
+        if instruction.opcode is OpCode.SETROW:
             return self._compile_setrow(node, instruction)
 
-        if instruction.opcode is InstructionOpCode.INSERT:
+        if instruction.opcode is OpCode.INSERT:
             return self._compile_insert(node, instruction)
 
-        if instruction.opcode is InstructionOpCode.REMOVE:
+        if instruction.opcode is OpCode.REMOVE:
             return self._compile_remove(node, instruction)
 
         raise RuntimeError(f"Unknown action intent: {instruction.opcode}")
@@ -218,11 +219,11 @@ class Compiler:
             if not trigger.matches(instruction.opcode, instruction.key):
                 continue
 
-            builder = TransactionBuilder()
+            builder = Transaction()
 
             trigger.fn(builder, context)
 
-            instructions = Instruction.construct(builder.commands, source=InstructionSource.TRIGGER)
+            instructions = Instruction.construct(builder.commands, source=OperationSource.TRIGGER)
             derived.extend(instructions)
 
         return derived
@@ -234,7 +235,7 @@ class Compiler:
         self, node: Node, instruction: Instruction
     ) -> list[Instruction]:
         # Only REMOVE triggers FK policies
-        if instruction.opcode is not InstructionOpCode.REMOVE:
+        if instruction.opcode is not OpCode.REMOVE:
             return []
 
         derived: list[Instruction] = []
@@ -259,7 +260,7 @@ class Compiler:
                 continue
 
             # Apply policy
-            if fk.on_delete is Policy.RESTRICT:
+            if fk.on_delete is ForeignKeyPolicy.RESTRICT:
                 raise CompilerError(
                     f"Cannot delete {target_schema} '{removed_id}' "
                     f"because it is referenced by "
@@ -269,13 +270,13 @@ class Compiler:
                     instruction=instruction,
                 )
 
-            if fk.on_delete is Policy.CASCADE:
+            if fk.on_delete is ForeignKeyPolicy.CASCADE:
                 for id in ids:
                     derived.append(
                         Instruction.remove(
                             node.address,  # lazy computed address
                             id,
-                            source=InstructionSource.POLICY,
+                            source=OperationSource.POLICY,
                         )
                     )
 

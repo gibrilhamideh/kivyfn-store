@@ -1,16 +1,16 @@
 from __future__ import annotations
-
 from typing import TypeAlias, TypeVar
-
-from kivyfn.store.events.subscription import Subscription
-from kivyfn.store.transaction import TransactionResult
-from kivyfn.store.transport.response import Response
-
 
 T = TypeVar("T")
 
+from kivyfn.store.local.subscription import LocalSubscription
+from kivyfn.store.remote.subscription import RemoteSubscription
+from kivyfn.store.transaction import TransactionResult
+from kivyfn.store.transport.response import Response
 
-TransactionResponse: TypeAlias = Response[TransactionResult]
+Subscription = LocalSubscription | RemoteSubscription
+
 SubscriptionResponse: TypeAlias = Response[Subscription]
+TransactionResponse: TypeAlias = Response[TransactionResult]
 UnsubscriptionResponse: TypeAlias = Response[bool]
 SnapshotResponse: TypeAlias = Response[T]

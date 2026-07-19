@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from kivyfn.store.schema.fields.base import BaseField
-from kivyfn.store.constants import Policy
+from kivyfn.store.schema.policy import ForeignKeyPolicy
 
 
 class ForeignKeyField(BaseField):
@@ -9,8 +9,8 @@ class ForeignKeyField(BaseField):
         self,
         schema: str,
         *,
-        on_delete: Policy = Policy.RESTRICT,
+        on_delete: ForeignKeyPolicy = ForeignKeyPolicy.RESTRICT,
     ):
         super().__init__()
         self.schema: str = schema
-        self.on_delete: Policy = on_delete
+        self.on_delete: ForeignKeyPolicy = on_delete

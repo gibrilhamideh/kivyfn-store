@@ -5,7 +5,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Generic, Literal, TypeAlias, TypeVar
 
 from kivyfn.store.address import Address
-from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.operations import OpCode
 
 
 T = TypeVar("T")
@@ -23,9 +23,9 @@ class SetEvent:
     old_value: Any
     new_value: Any
 
-    opcode: Literal[InstructionOpCode.SET] = field(
+    opcode: Literal[OpCode.SET] = field(
         init=False,
-        default=InstructionOpCode.SET,
+        default=OpCode.SET,
     )
 
     def payload(self) -> dict[str, Any]:
@@ -58,9 +58,9 @@ class SetRowEvent:
     old_value: Any
     new_value: Any
 
-    opcode: Literal[InstructionOpCode.SETROW] = field(
+    opcode: Literal[OpCode.SETROW] = field(
         init=False,
-        default=InstructionOpCode.SETROW,
+        default=OpCode.SETROW,
     )
 
     def payload(self) -> dict[str, Any]:
@@ -91,9 +91,9 @@ class InsertEvent(Generic[T]):
     id: str
     new_value: T
 
-    opcode: Literal[InstructionOpCode.INSERT] = field(
+    opcode: Literal[OpCode.INSERT] = field(
         init=False,
-        default=InstructionOpCode.INSERT,
+        default=OpCode.INSERT,
     )
 
     def payload(self) -> dict[str, Any]:
@@ -124,9 +124,9 @@ class RemoveEvent(Generic[T]):
     id: str
     old_value: T
 
-    opcode: Literal[InstructionOpCode.REMOVE] = field(
+    opcode: Literal[OpCode.REMOVE] = field(
         init=False,
-        default=InstructionOpCode.REMOVE,
+        default=OpCode.REMOVE,
     )
 
     def payload(self) -> dict[str, Any]:
@@ -156,10 +156,10 @@ StoreEvent: TypeAlias = (
 def event_from_payload(
     payload: dict[str, Any],
 ) -> StoreEvent:
-    opcode = InstructionOpCode(payload["opcode"])
+    opcode = OpCode(payload["opcode"])
     address = Address(*payload["address"])
 
-    if opcode is InstructionOpCode.SET:
+    if opcode is OpCode.SET:
         return SetEvent(
             address=address,
             key=payload["key"],
@@ -167,7 +167,7 @@ def event_from_payload(
             new_value=payload["new_value"],
         )
 
-    if opcode is InstructionOpCode.SETROW:
+    if opcode is OpCode.SETROW:
         return SetRowEvent(
             address=address,
             id=payload["id"],
@@ -176,7 +176,7 @@ def event_from_payload(
             new_value=payload["new_value"],
         )
 
-    if opcode is InstructionOpCode.INSERT:
+    if opcode is OpCode.INSERT:
         return InsertEvent(
             address=address,
             id=payload["id"],

@@ -4,21 +4,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Protocol, TYPE_CHECKING, TypeVar
 
-from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.operations import OpCode
 
 if TYPE_CHECKING:
     from kivyfn.store.schema import Schema
     from kivyfn.store.schema.context import TriggerContext
-    from kivyfn.store.transaction import TransactionBuilder
+    from kivyfn.store.transaction import Transaction
 
 
 @dataclass(frozen=True)
 class Trigger:
-    opcode: InstructionOpCode
+    opcode: OpCode
     field: Optional[str]
     fn: Callable[..., Any]
 
-    def matches(self, opcode: InstructionOpCode, key: Optional[str]) -> bool:
+    def matches(self, opcode: OpCode, key: Optional[str]) -> bool:
         if self.opcode is not opcode:
             return False
 
@@ -32,7 +32,7 @@ class TriggerFunc(Protocol):
     def __call__(
         self,
         schema: Schema,
-        builder: TransactionBuilder,
+        builder: Transaction,
         context: TriggerContext,
     ) -> Any: ...
 
@@ -40,7 +40,7 @@ class TriggerFunc(Protocol):
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def trigger(opcode: InstructionOpCode, *, field: Optional[str] = None):
+def trigger(opcode: OpCode, *, field: Optional[str] = None):
     def decorator(fn: F) -> F:
         trigger_meta = getattr(fn, "_trigger_meta", None)
 

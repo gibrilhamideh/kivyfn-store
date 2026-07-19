@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.constants import InstructionSource
+from kivyfn.store.operations import OperationSource
 from kivyfn.store.core.compiler import Compiler
 from kivyfn.store.core.constraintguard import ConstraintGuard
 from kivyfn.store.core.delta import Delta
@@ -68,7 +68,7 @@ class Execution:
     def execute(self) -> ExecutionResult:
         instructions = Instruction.construct(
             self.commands,
-            InstructionSource.COMMAND,
+            OperationSource.COMMAND,
         )
 
         compiler = Compiler(self.engine, instructions)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.constants import ConstraintType
+from kivyfn.store.errors.constraint import ConstraintType
 from kivyfn.store.errors.store import ConstraintError
 from kivyfn.store.builder.policy import BootPolicy
 

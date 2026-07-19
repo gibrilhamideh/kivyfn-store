@@ -1,2 +1,7 @@
-from .socketio_client import SocketIOClient
-from .socketio_server import SocketIOServer
+from kivyfn.store.transport.socketio.client import SocketIOClientTransport
+from kivyfn.store.transport.socketio.server import SocketIOServerTransport
+
+__all__ = [
+    "SocketIOClientTransport",
+    "SocketIOServerTransport",
+]

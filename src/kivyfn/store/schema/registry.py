@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kivyfn.store.constants import Policy
+from kivyfn.store.schema.policy import ForeignKeyPolicy
 
 
 @dataclass(frozen=True)
@@ -10,7 +10,7 @@ class ForeignKey:
     schema: str
     field: str
     reference: str
-    on_delete: Policy
+    on_delete: ForeignKeyPolicy
 
     def __repr__(self) -> str:
         return (
@@ -32,7 +32,7 @@ class ForeignKeyRegistry:
         schema: str,
         field: str,
         reference: str,
-        on_delete: Policy,
+        on_delete: ForeignKeyPolicy,
     ) -> None:
         key = (schema, field)
 

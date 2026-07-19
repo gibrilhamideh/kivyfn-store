@@ -1,138 +1,498 @@
+# kivyfn/store/server/server.py
 from __future__ import annotations
-from typing import TYPE_CHECKING, Any
 
-import asyncio
-import queue
-import traceback
-import multiprocessing
+from dataclasses import dataclass
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeVar,
+)
 
-from multiprocessing.context import SpawnProcess
+from kivyfn.store.address import Address
+from kivyfn.store.core.engine import Engine
+from kivyfn.store.core.execution import ExecutionResult
+from kivyfn.store.operations import OpCode
+from kivyfn.store.server.transport import StoreServerTransport
+from kivyfn.store.server.signal import (
+    RemoteSignalManager,
+    SignalBindResult,
+    SignalDispatchMessage,
+    SignalUnbindResult,
+)
+from kivyfn.store.server.subscription import (
+    DispatchMessage,
+    RemoteSubscriptionManager,
+    SubscribeResult,
+    UnsubscribeResult,
+)
 
-
-from kivyfn.logging.multiprocessing import configure_process_logging
-from kivyfn.store.errors.client import StoreConnectionError, StoreStateError
-from kivyfn.store.transport import SocketIOServer
 
 if TYPE_CHECKING:
     from kivyfn.store.builder.config import StoreConfig
+    from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
+    from kivyfn.store.server.proxy import StoreServerProxy
+
+
+ResultT = TypeVar("ResultT")
+
+
+@dataclass(frozen=True, slots=True)
+class StoreExecutionResult(Generic[ResultT]):
+    """
+    Result of a server operation that may generate subscription events.
+
+    `result` contains the direct store-domain result of the operation.
+
+    `dispatches` contains transport-independent subscription messages produced
+    from the operation's events. The active server transport is responsible for
+    delivering those messages through its own channel mechanism.
+    """
+
+    result: ResultT
+    dispatches: tuple[DispatchMessage, ...]
 
 
 class StoreServer:
+    """
+    Transport-independent server for a remotely accessible store.
+
+    StoreServer owns:
+
+    - the Engine
+    - server-side subscription management
+    - server-side signal management
+    - one selected server transport
+    - one restricted transport-facing StoreServerProxy
+    - the complete server lifecycle
+
+    Public operation methods accept concrete Python arguments. The selected
+    transport is responsible for parsing its wire protocol before calling the
+    proxy and for serializing returned values afterward.
+
+    StoreServer contains no Socket.IO, aiohttp, Unix-socket, TCP, framing,
+    payload-parsing, room, or connection implementation details.
+    """
+
     def __init__(
-            self,
-            root: Node,
-            config: StoreConfig,
-            host: str,
-            port: int,
-            log_queue: multiprocessing.Queue
+        self,
+        root: Node,
+        config: StoreConfig,
+        transport: StoreServerTransport,
     ) -> None:
-
-        self.root = root
-        self.config = config
-        self.host = host
-        self.port = port
-        self.log_queue = log_queue
-
-        self._ctx = multiprocessing.get_context("spawn")
-        self._process: SpawnProcess | None = None
-        self._ready_queue: multiprocessing.Queue[dict[str, Any]] | None = None
-
-
-    async def start(self, *, timeout: float = 5.0) -> None:
-        if self._process is not None:
-            raise StoreStateError("Store server already started")
-
-        self._ready_queue = self._ctx.Queue()
-
-        self._process = self._ctx.Process(
-            target=_run_transport,
-            kwargs={
-                "root": self.root,
-                "config": self.config,
-                "host": self.host,
-                "port": self.port,
-                "log_queue": self.log_queue,
-                "ready_queue": self._ready_queue
-            },
-            daemon=True,
+        self._engine = Engine(
+            root=root,
+            config=config,
         )
 
-        self._process.start()
+        self._subscriptions = RemoteSubscriptionManager(
+            self._engine,
+        )
+
+        self._signals = RemoteSignalManager(
+            self._engine,
+        )
+
+        self._transport = transport
+
+        # Local import prevents:
+        #
+        # server.py -> proxy.py -> server.py
+        from kivyfn.store.server.proxy import StoreServerProxy
+
+        self._proxy = StoreServerProxy(
+            self,
+        )
+
+        self._running = False
+
+    # -------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------
+
+    async def start(self) -> None:
+        """
+        Boot the owned Engine and start the selected transport.
+
+        Calling start() while already running is safe.
+
+        An Engine may only be booted once, so its own `booted` state is checked
+        before calling boot().
+        """
+        if self._running:
+            return
+
+        if not self._engine.booted:
+            self._engine.boot()
 
         try:
-            message = await asyncio.to_thread(
-                self._ready_queue.get,
-                True,
-                timeout,
+            await self._transport.start(
+                self._proxy,
             )
-        except queue.Empty:
-            self.stop()
-            raise StoreConnectionError("Store server did not become ready in time")
+        except BaseException:
+            raise
 
-        if message["type"] == "ready":
+        self._running = True
+
+    async def stop(self) -> None:
+        """
+        Stop the selected transport.
+
+        Calling stop() while already stopped is safe. The Engine remains
+        booted, allowing the transport to be started again on the same server
+        instance.
+        """
+        if not self._running:
             return
 
-        if message["type"] == "error":
-            self.stop()
-            raise StoreConnectionError(
-                "Store server failed to start:\n"
-                f"{message['error']}\n\n"
-                f"{message['traceback']}"
+        try:
+            await self._transport.stop()
+        finally:
+            self._running = False
+
+    # -------------------------------------------------
+    # Reads
+    # -------------------------------------------------
+
+    def snapshot(
+        self,
+        address: Address[Any],
+        id: str | None = None,
+        key: str | None = None,
+        *,
+        resolve_foreignkeys: bool = False,
+    ) -> Any:
+        """
+        Return a snapshot from a store node.
+
+        The address and optional selectors must already have been parsed by the
+        active transport.
+        """
+        return self._engine.snapshot(
+            address=address,
+            id=id,
+            key=key,
+            resolve_foreignkeys=resolve_foreignkeys,
+        )
+
+    def lookup(
+        self,
+        address: Address[Any],
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: bool = False,
+    ) -> Any:
+        """
+        Look up rows whose selected fields match the supplied value.
+        """
+        return self._engine.lookup(
+            address=address,
+            fields=fields,
+            value=value,
+            first=first,
+        )
+
+    def to_dict(
+        self,
+        address: Address[Any],
+    ) -> Any:
+        """
+        Return the complete value of the requested store node.
+        """
+        return self._engine.to_dict(
+            address,
+        )
+
+    # -------------------------------------------------
+    # Subscriptions
+    # -------------------------------------------------
+
+    def subscribe(
+        self,
+        client_id: str,
+        opcode: OpCode,
+        address: Address[Any],
+        *,
+        id: str | None = None,
+        key: str | None = None,
+        depth: int | None = 0,
+        resolve_foreignkeys: bool = False,
+        propagate_foreignkeys: bool = False,
+    ) -> SubscribeResult:
+        """
+        Register an event subscription for a remote client.
+
+        The result tells the transport whether the client must join the
+        subscription's generic event channel.
+        """
+        return self._subscriptions.subscribe(
+            client_id=client_id,
+            opcode=opcode,
+            address=address,
+            id=id,
+            key=key,
+            depth=depth,
+            resolve_foreignkeys=resolve_foreignkeys,
+            propagate_foreignkeys=propagate_foreignkeys,
+        )
+
+    def unsubscribe(
+        self,
+        client_id: str,
+        subscription_token: str,
+    ) -> UnsubscribeResult:
+        """
+        Remove one event subscription owned by a remote client.
+
+        The result tells the transport whether the client may leave the
+        subscription's generic event channel.
+        """
+        return self._subscriptions.unsubscribe(
+            client_id=client_id,
+            token=subscription_token,
+        )
+
+    # -------------------------------------------------
+    # Signals
+    # -------------------------------------------------
+
+    def bind_signal(
+        self,
+        client_id: str,
+        address: Address[Any],
+        signal: str,
+        *,
+        id: str | None = None,
+    ) -> SignalBindResult:
+        """
+        Bind a remote client to a store signal stream.
+        """
+        return self._signals.bind(
+            client_id=client_id,
+            address=address,
+            signal=signal,
+            id=id,
+        )
+
+    def unbind_signal(
+        self,
+        client_id: str,
+        binding_token: str,
+    ) -> SignalUnbindResult:
+        """
+        Remove one signal binding owned by a remote client.
+        """
+        return self._signals.unbind(
+            client_id=client_id,
+            token=binding_token,
+        )
+
+    def emit_signal(
+        self,
+        address: Address[Any],
+        signal: str,
+        data: Any = None,
+        *,
+        id: str | None = None,
+    ) -> tuple[SignalDispatchMessage, ...]:
+        """
+        Emit a store signal.
+
+        Returns transport-independent dispatch messages. The transport is
+        responsible for delivering each message to its generic channel.
+        """
+        return self._signals.emit(
+            address=address,
+            signal=signal,
+            data=data,
+            id=id,
+        )
+
+    # -------------------------------------------------
+    # Transactions
+    # -------------------------------------------------
+
+    def transaction(
+        self,
+        instructions: list[dict[str, Any]],
+    ) -> StoreExecutionResult[ExecutionResult]:
+        """
+        Execute a transaction and collect subscription dispatches.
+
+        Engine.execute() returns an ExecutionResult. The remote transport
+        serializes that result, and the remote client may later convert the
+        serialized payload into TransactionResult.
+        """
+        result = self._engine.execute(
+            instructions,
+        )
+
+        return StoreExecutionResult(
+            result=result,
+            dispatches=self._dispatch_events(
+                result.events,
+            ),
+        )
+
+    # -------------------------------------------------
+    # Undo / redo
+    # -------------------------------------------------
+
+    def undo(
+        self,
+    ) -> StoreExecutionResult[list[StoreEvent]]:
+        """
+        Undo the latest successful transaction.
+
+        Engine.undo() directly returns the list of events produced by the
+        inverse operations.
+        """
+        events = self._engine.undo()
+
+        return StoreExecutionResult(
+            result=events,
+            dispatches=self._dispatch_events(
+                events,
+            ),
+        )
+
+    def redo(
+        self,
+    ) -> StoreExecutionResult[list[StoreEvent]]:
+        """
+        Reapply the latest undone transaction.
+
+        Engine.redo() directly returns the list of events produced by the
+        reapplied operations.
+        """
+        events = self._engine.redo()
+
+        return StoreExecutionResult(
+            result=events,
+            dispatches=self._dispatch_events(
+                events,
+            ),
+        )
+
+    # -------------------------------------------------
+    # Client lifecycle
+    # -------------------------------------------------
+
+    def disconnect_client(
+        self,
+        client_id: str,
+    ) -> None:
+        """
+        Remove all subscriptions and signal bindings owned by a client.
+
+        Detecting a disconnection belongs to the transport. Cleaning associated
+        store state belongs to StoreServer.
+        """
+        self._subscriptions.remove_client(
+            client_id,
+        )
+
+        self._signals.remove_client(
+            client_id,
+        )
+
+    # -------------------------------------------------
+    # Event dispatch
+    # -------------------------------------------------
+
+    def _dispatch_events(
+        self,
+        events: list[StoreEvent],
+    ) -> tuple[DispatchMessage, ...]:
+        """
+        Convert store events into transport-independent subscription messages.
+        """
+        if not events:
+            return ()
+
+        dispatches: list[DispatchMessage] = []
+
+        for event in events:
+            dispatches.extend(
+                self._subscriptions.dispatch(
+                    event,
+                )
             )
 
-        self.stop()
-        raise StoreConnectionError(f"Unexpected startup message: {message}")
+        return tuple(
+            dispatches,
+        )
 
+    # -------------------------------------------------
+    # State
+    # -------------------------------------------------
 
-    def stop(self) -> None:
-        if self._process is None:
-            return
-
-        self._process.terminate()
-        self._process.join(timeout=2)
-
-        if self._process.is_alive():
-            self._process.kill()
-            self._process.join(timeout=2)
-
-        self._process = None
-        self._ready_queue = None
+    @property
+    def booted(self) -> bool:
+        """
+        Whether the owned Engine has completed booting.
+        """
+        return self._engine.booted
 
     @property
     def running(self) -> bool:
-        return self._process is not None and self._process.is_alive()
+        """
+        Whether this server's selected transport is running.
+        """
+        return self._running
 
+    @property
+    def can_undo(self) -> bool:
+        """
+        Whether the Engine currently has a transaction available to undo.
+        """
+        return self._engine.can_undo
 
-def _run_transport(
-    root,
-    config,
-    host: str,
-    port: int,
-    log_queue: multiprocessing.Queue,
-    ready_queue: multiprocessing.Queue,
-) -> None:
+    @property
+    def can_redo(self) -> bool:
+        """
+        Whether the Engine currently has a transaction available to redo.
+        """
+        return self._engine.can_redo
 
-    configure_process_logging(log_queue)
+    # -------------------------------------------------
+    # Owned components
+    # -------------------------------------------------
 
-    try:
-        transport = SocketIOServer(
-            root=root,
-            config=config,
-            host=host,
-            port=port,
-            on_ready=lambda: ready_queue.put({"type": "ready"}),
-        )
+    @property
+    def engine(self) -> Engine:
+        """
+        Return the Engine owned by this server.
+        """
+        return self._engine
 
-        asyncio.run(transport.run())
+    @property
+    def subscription(self) -> RemoteSubscriptionManager:
+        """
+        Return the server-side subscription manager.
+        """
+        return self._subscriptions
 
-    except Exception as exc:
-        ready_queue.put(
-            {
-                "type": "error",
-                "error": repr(exc),
-                "traceback": traceback.format_exc(),
-            }
-        )
-        raise
+    @property
+    def signal(self) -> RemoteSignalManager:
+        """
+        Return the server-side signal manager.
+        """
+        return self._signals
+
+    @property
+    def transport(self) -> StoreServerTransport:
+        """
+        Return the selected server transport.
+        """
+        return self._transport
+
+    @property
+    def proxy(self) -> StoreServerProxy:
+        """
+        Return the restricted transport-facing server proxy.
+        """
+        return self._proxy
 

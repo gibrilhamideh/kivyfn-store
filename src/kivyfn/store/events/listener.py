@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from dataclasses import dataclass
 from collections import defaultdict
 
-from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.operations import OpCode
 
 if TYPE_CHECKING:
     from kivyfn.store.address import Address
@@ -41,7 +41,7 @@ class ListenerIndex:
         bucket_map: dict | None = None
         bucket_key: object | None = None
 
-        if listener.opcode is InstructionOpCode.SET:
+        if listener.opcode is OpCode.SET:
             if listener.key is not None:
                 bucket_map = self.set_by_key
                 bucket_key = listener.key
@@ -49,13 +49,13 @@ class ListenerIndex:
             else:
                 target_bucket = self.set_all
 
-        elif listener.opcode is InstructionOpCode.INSERT:
+        elif listener.opcode is OpCode.INSERT:
             target_bucket = self.insert_all
 
-        elif listener.opcode is InstructionOpCode.REMOVE:
+        elif listener.opcode is OpCode.REMOVE:
             target_bucket = self.remove_all
 
-        elif listener.opcode is InstructionOpCode.SETROW:
+        elif listener.opcode is OpCode.SETROW:
             if listener.id is not None and listener.key is not None:
                 bucket_map = self.setrow_by_id_key
                 bucket_key = (listener.id, listener.key)
@@ -103,7 +103,7 @@ class ListenerIndex:
     ) -> set[Listener]:
         result: set[Listener] = set()
 
-        if event.opcode is InstructionOpCode.SET:
+        if event.opcode is OpCode.SET:
             result.update(self.set_all)
             result.update(
                 self.set_by_key.get(
@@ -112,13 +112,13 @@ class ListenerIndex:
                 )
             )
 
-        elif event.opcode is InstructionOpCode.INSERT:
+        elif event.opcode is OpCode.INSERT:
             result.update(self.insert_all)
 
-        elif event.opcode is InstructionOpCode.REMOVE:
+        elif event.opcode is OpCode.REMOVE:
             result.update(self.remove_all)
 
-        elif event.opcode is InstructionOpCode.SETROW:
+        elif event.opcode is OpCode.SETROW:
             result.update(self.setrow_all)
 
             result.update(
@@ -148,7 +148,7 @@ class ListenerIndex:
 @dataclass(slots=True, frozen=True)
 class Listener:
     address: Address
-    opcode: InstructionOpCode | None = None
+    opcode: OpCode
     id: str | None = None
     key: str | None = None
     propagate_foreignkeys: bool = False

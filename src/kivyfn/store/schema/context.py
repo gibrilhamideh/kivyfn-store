@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.constants import InstructionOpCode
+from kivyfn.store.operations import OpCode
 from kivyfn.store.schema.fields import ForeignKeyField
 from kivyfn.store.core.operations import (
     InsertOperation,
@@ -85,7 +85,7 @@ class TriggerContext:
         return self.operation.instruction
 
     @property
-    def opcode(self) -> InstructionOpCode:
+    def opcode(self) -> OpCode:
         return self.operation.opcode
 
     @property
@@ -124,16 +124,16 @@ class TriggerContext:
         the operation.
         """
 
-        if self.opcode is InstructionOpCode.SET:
+        if self.opcode is OpCode.SET:
             return self._current_set()
 
-        if self.opcode is InstructionOpCode.INSERT:
+        if self.opcode is OpCode.INSERT:
             return self._current_insert()
 
-        if self.opcode is InstructionOpCode.SETROW:
+        if self.opcode is OpCode.SETROW:
             return self._current_setrow()
 
-        if self.opcode is InstructionOpCode.REMOVE:
+        if self.opcode is OpCode.REMOVE:
             return self._current_remove()
 
         raise RuntimeError(

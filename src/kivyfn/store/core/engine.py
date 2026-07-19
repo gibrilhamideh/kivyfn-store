@@ -1,14 +1,13 @@
 # kivyfn/store/core/engine.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from threading import RLock
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from kivyfn.store.address import Address
 from kivyfn.store.core.boot import StoreBoot
-from kivyfn.store.core.execution import Execution
+from kivyfn.store.core.execution import Execution, ExecutionResult
 from kivyfn.store.core.metadata import EngineMetadata
-from kivyfn.store.events.manager import SubscriptionManager
-from kivyfn.store.signals.manager import SignalManager
 from kivyfn.store.storage import FileStorage
 
 
@@ -16,29 +15,42 @@ if TYPE_CHECKING:
     from kivyfn.store.builder import StoreConfig
     from kivyfn.store.core.operations import Operation
     from kivyfn.store.events.event import StoreEvent
-    from kivyfn.store.events.manager import DispatchMessage
     from kivyfn.store.node import Node
-    from kivyfn.store.signals.manager import (
-        BindSignalResult,
-        SignalDispatchMessage,
-        UnbindSignalResult,
-    )
-    from kivyfn.store.transport import SocketIOServer
+
+
+T = TypeVar("T")
 
 
 class Engine:
+    """
+    Synchronous store execution engine.
+
+    The engine owns:
+    - node metadata
+    - synchronous reads
+    - transaction execution
+    - persistence
+    - undo and redo history
+
+    The engine does not own:
+    - transports
+    - client connections
+    - subscriptions
+    - signal bindings
+    - process lifecycle
+    - asyncio tasks
+
+    All public operations are protected by a reentrant lock so an Engine
+    instance can safely be used by LocalStore from multiple threads.
+    """
+
     def __init__(
         self,
-        transport: SocketIOServer,
         root: Node,
         config: StoreConfig,
     ) -> None:
-        self.transport = transport
         self.config = config
         self.metadata = EngineMetadata.build(root)
-
-        self.subscriptions = SubscriptionManager(self)
-        self.signals = SignalManager(self)
 
         self._storage = FileStorage(
             self.config.storage_path,
@@ -46,6 +58,40 @@ class Engine:
 
         self._history: list[list[Operation]] = []
         self._redo: list[list[Operation]] = []
+
+        self._lock = RLock()
+        self._booted = False
+
+    # -------------------------------------------------
+    # Lifecycle
+    # -------------------------------------------------
+
+    def boot(self) -> None:
+        """
+        Load and validate persistent state.
+
+        An Engine instance may only be booted once.
+        """
+        with self._lock:
+            if self._booted:
+                raise RuntimeError("Store engine is already booted")
+
+            StoreBoot(
+                self,
+            ).boot()
+
+            self._booted = True
+
+    @property
+    def booted(self) -> bool:
+        with self._lock:
+            return self._booted
+
+    def _require_booted(self) -> None:
+        if not self._booted:
+            raise RuntimeError(
+                "Store engine must be booted before use"
+            )
 
     # -------------------------------------------------
     # Node lookup
@@ -76,92 +122,157 @@ class Engine:
         )
 
     # -------------------------------------------------
-    # Read
+    # Reads
     # -------------------------------------------------
-
-    def lookup(
-        self,
-        payload: dict[str, Any],
-    ) -> Any:
-        address = Address(*payload["address"])
-        node = self.get_node_by_address(address)
-
-        fields = tuple(payload["fields"])
-
-        if payload["first"]:
-            row_id = node.lookup(
-                fields=fields,
-                value=payload["value"],
-                first=True,
-            )
-
-            if row_id is None:
-                return None
-
-            return node.snapshot(
-                id=row_id,
-            )
-
-        row_ids = node.lookup(
-            fields=fields,
-            value=payload["value"],
-            first=False,
-        )
-
-        return {
-            row_id: node.snapshot(id=row_id)
-            for row_id in row_ids
-        }
-
 
     def snapshot(
         self,
-        payload: dict[str, Any],
+        address: Address[T],
+        id: str | None = None,
+        key: str | None = None,
+        *,
+        resolve_foreignkeys: bool = False,
     ) -> Any:
-        address = Address(
-            *payload["address"],
-        )
+        with self._lock:
+            self._require_booted()
 
-        node = self.get_node_by_address(
-            address,
-        )
+            node = self.get_node_by_address(
+                address,
+            )
 
-        data = node.snapshot(
-            id=payload.get("id"),
-            key=payload.get("key"),
-        )
+            data = node.snapshot(
+                id=id,
+                key=key,
+            )
 
-        if not payload.get(
-            "resolve_foreignkeys",
-            False,
-        ):
-            return data
+            if not resolve_foreignkeys:
+                return data
 
-        if data is None or payload.get("key") is not None:
-            return data
+            if data is None or key is not None:
+                return data
 
-        if node.schema.many and payload.get("id") is None:
-            return {
-                row_id: self.resolve_foreignkeys(
-                    node,
-                    row,
+            if node.schema.many and id is None:
+                return {
+                    row_id: self._resolve_foreignkeys(
+                        node=node,
+                        row=row,
+                        visited={
+                            (
+                                node.schema.name,
+                                row_id,
+                            )
+                        },
+                    )
+                    for row_id, row in data.items()
+                }
+
+            row_id = id if node.schema.many else None
+
+            return self._resolve_foreignkeys(
+                node=node,
+                row=data,
+                visited={
+                    (
+                        node.schema.name,
+                        row_id,
+                    )
+                },
+            )
+
+    def lookup(
+        self,
+        address: Address[T],
+        fields: str | tuple[str, ...],
+        value: Any,
+        *,
+        first: bool = False,
+    ) -> Any:
+        with self._lock:
+            self._require_booted()
+
+            node = self.get_node_by_address(
+                address,
+            )
+
+            lookup_fields = (
+                (fields,)
+                if isinstance(fields, str)
+                else fields
+            )
+
+            if first:
+                row_id = node.lookup(
+                    fields=lookup_fields,
+                    value=value,
+                    first=True,
                 )
-                for row_id, row in data.items()
+
+                if row_id is None:
+                    return None
+
+                return node.snapshot(
+                    id=row_id,
+                )
+
+            row_ids = node.lookup(
+                fields=lookup_fields,
+                value=value,
+                first=False,
+            )
+
+            return {
+                row_id: node.snapshot(
+                    id=row_id,
+                )
+                for row_id in row_ids
             }
 
-        return self.resolve_foreignkeys(
-            node,
-            data,
-        )
+    def to_dict(
+        self,
+        address: Address[T],
+    ) -> Any:
+        with self._lock:
+            self._require_booted()
+
+            node = self.get_node_by_address(
+                address,
+            )
+
+            return node.snapshot()
+
+    # -------------------------------------------------
+    # Foreign-key resolution
+    # -------------------------------------------------
 
     def resolve_foreignkeys(
         self,
         node: Node,
         row: dict[str, Any],
     ) -> dict[str, Any]:
+        """
+        Resolve foreign-key rows into a flattened dictionary.
+
+        Cyclic foreign-key graphs are detected and do not recurse forever.
+        """
+        with self._lock:
+            self._require_booted()
+
+            return self._resolve_foreignkeys(
+                node=node,
+                row=row,
+                visited=set(),
+            )
+
+    def _resolve_foreignkeys(
+        self,
+        *,
+        node: Node,
+        row: dict[str, Any],
+        visited: set[tuple[str, str | None]],
+    ) -> dict[str, Any]:
         resolved = dict(row)
 
-        for foreignkey in node.schema.foreign_key_fields():
+        for foreignkey, field in node.schema.foreign_key_fields().items():
             foreign_id = row.get(
                 foreignkey,
             )
@@ -169,147 +280,174 @@ class Engine:
             if foreign_id is None:
                 continue
 
-            field = node.schema.get_field(
-                foreignkey,
-            )
-
             referenced_node = self.get_node_by_schema(
-                field.schema,  # pyright: ignore[reportAttributeAccessIssue]
+                field.schema,
             )
 
-            referenced_row = referenced_node.snapshot(
-                id=foreign_id,
+            reference = (
+                referenced_node.schema.name,
+                str(foreign_id),
             )
 
-            if referenced_row is None:
+            if reference in visited:
                 continue
 
+            referenced_row = referenced_node.snapshot(
+                id=str(foreign_id),
+            )
+
+            if not isinstance(referenced_row, dict):
+                continue
+
+            nested_visited = set(
+                visited,
+            )
+            nested_visited.add(
+                reference,
+            )
+
             resolved.update(
-                self.resolve_foreignkeys(
-                    referenced_node,
-                    referenced_row,
+                self._resolve_foreignkeys(
+                    node=referenced_node,
+                    row=referenced_row,
+                    visited=nested_visited,
                 )
             )
 
         return resolved
 
     # -------------------------------------------------
-    # Subscriptions
-    # -------------------------------------------------
-
-    def subscribe(
-        self,
-        sid: str,
-        payload: dict[str, Any],
-    ):
-        return self.subscriptions.subscribe(
-            sid,
-            payload,
-        )
-
-    def unsubscribe(
-        self,
-        sid: str,
-        payload: dict[str, Any],
-    ):
-        return self.subscriptions.unsubscribe(
-            sid,
-            payload["token"],
-        )
-
-    def dispatch(
-        self,
-        event: StoreEvent,
-    ) -> list[DispatchMessage]:
-        return self.subscriptions.dispatch(
-            event,
-        )
-
-    # -------------------------------------------------
-    # Signals
-    # -------------------------------------------------
-
-    def bind_signal(
-        self,
-        sid: str,
-        payload: dict[str, Any],
-    ) -> BindSignalResult:
-        return self.signals.bind(
-            sid,
-            payload,
-        )
-
-    def unbind_signal(
-        self,
-        sid: str,
-        payload: dict[str, Any],
-    ) -> UnbindSignalResult:
-        return self.signals.unbind(
-            sid,
-            payload["token"],
-        )
-
-    def emit_signal(
-        self,
-        payload: dict[str, Any],
-    ) -> list[SignalDispatchMessage]:
-        return self.signals.emit(
-            payload,
-        )
-
-    # -------------------------------------------------
-    # Client lifecycle
-    # -------------------------------------------------
-
-    def remove_sid(
-        self,
-        sid: str,
-    ) -> None:
-        self.subscriptions.remove_sid(
-            sid,
-        )
-
-        self.signals.remove_sid(
-            sid,
-        )
-
-    # -------------------------------------------------
-    # Execute
+    # Transactions
     # -------------------------------------------------
 
     def execute(
         self,
         commands: list[dict[str, Any]],
-    ) -> tuple[Any, list[DispatchMessage]]:
-        execution = Execution(
-            self,
-            commands,
-        ).execute()
+    ) -> ExecutionResult:
+        """
+        Compile, validate, and execute a transaction atomically with respect
+        to other Engine callers.
 
-        self.to_disk(
-            execution.touched_nodes,
-        )
+        Failed compilation or validation does not mutate or persist state.
+        """
+        with self._lock:
+            self._require_booted()
 
-        messages: list[DispatchMessage] = []
+            result = Execution(
+                self,
+                commands,
+            ).execute()
 
-        for event in execution.events:
-            messages.extend(
-                self.dispatch(
-                    event,
-                )
+            if not result.success:
+                return result
+
+            self.to_disk(
+                result.touched_nodes,
             )
 
-        return execution, messages
+            operations = list(
+                result.compiled,
+            )
+
+            if operations:
+                self._history.append(
+                    operations,
+                )
+                self._redo.clear()
+
+            return result
 
     # -------------------------------------------------
     # Undo / Redo
     # -------------------------------------------------
 
-    def undo(self) -> None:
-        pass
+    def undo(self) -> list[StoreEvent]:
+        """
+        Undo the most recent successful transaction.
 
-    def redo(self) -> None:
-        pass
+        Returns the events produced by the inverse operations.
+        """
+        with self._lock:
+            self._require_booted()
+
+            if not self._history:
+                return []
+
+            operations = self._history.pop()
+            events: list[StoreEvent] = []
+
+            for operation in reversed(
+                operations,
+            ):
+                event = operation.undo()
+
+                if event is not None:
+                    events.append(
+                        event,
+                    )
+
+            self.to_disk(
+                {
+                    operation.node
+                    for operation in operations
+                }
+            )
+
+            self._redo.append(
+                operations,
+            )
+
+            return events
+
+    def redo(self) -> list[StoreEvent]:
+        """
+        Reapply the most recently undone transaction.
+
+        Returns the events produced by the reapplied operations.
+        """
+        with self._lock:
+            self._require_booted()
+
+            if not self._redo:
+                return []
+
+            operations = self._redo.pop()
+            events: list[StoreEvent] = []
+
+            for operation in operations:
+                event = operation.execute()
+
+                if event is not None:
+                    events.append(
+                        event,
+                    )
+
+            self.to_disk(
+                {
+                    operation.node
+                    for operation in operations
+                }
+            )
+
+            self._history.append(
+                operations,
+            )
+
+            return events
+
+    @property
+    def can_undo(self) -> bool:
+        with self._lock:
+            return bool(
+                self._history,
+            )
+
+    @property
+    def can_redo(self) -> bool:
+        with self._lock:
+            return bool(
+                self._redo,
+            )
 
     # -------------------------------------------------
     # Persistence
@@ -319,23 +457,21 @@ class Engine:
         self,
         nodes: set[Node],
     ) -> None:
-        for node in nodes:
-            if not self.metadata.is_persistent(
-                node,
-            ):
-                continue
+        """
+        Persist the supplied nodes.
 
-            self._storage.write(
-                node.schema.name,
-                node.value,
-                store_version=self.config.store_version,
-            )
+        Callers must already hold the engine lock when this participates in a
+        larger operation. RLock also permits safe direct use.
+        """
+        with self._lock:
+            for node in nodes:
+                if not self.metadata.is_persistent(
+                    node,
+                ):
+                    continue
 
-    # -------------------------------------------------
-    # Boot
-    # -------------------------------------------------
-
-    def boot(self) -> None:
-        StoreBoot(
-            self,
-        ).boot()
+                self._storage.write(
+                    node.schema.name,
+                    node.value,
+                    store_version=self.config.store_version,
+                )

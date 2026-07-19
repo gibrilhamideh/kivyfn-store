@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 from kivyfn.store.errors.store import FieldNotFoundError
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 from kivyfn.store.schema.trigger import Trigger
-from kivyfn.store.signals.signal import Signal
+from kivyfn.store.schema.signal import Signal
 
 
 IndexKey = tuple[str, ...]

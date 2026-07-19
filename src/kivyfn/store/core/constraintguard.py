@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Any, TYPE_CHECKING
 
 from kivyfn.store.errors.store import ConstraintError
-from kivyfn.store.constants import Policy, ConstraintType
+from kivyfn.store.errors.constraint import ConstraintType
+from kivyfn.store.schema.policy import ForeignKeyPolicy
 
 if TYPE_CHECKING:
     from kivyfn.store.core.delta import Delta
@@ -148,7 +149,7 @@ class ConstraintGuard:
             fks = self.engine.metadata.referenced_by(target_node.schema.name)
 
             for fk in fks:
-                if fk.on_delete is not Policy.RESTRICT:
+                if fk.on_delete is not ForeignKeyPolicy.RESTRICT:
                     continue
 
                 referencing_node = self.engine.get_node_by_schema(fk.schema)

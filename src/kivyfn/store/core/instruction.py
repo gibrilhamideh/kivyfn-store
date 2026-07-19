@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from kivyfn.store.address import Address
-from kivyfn.store.constants import InstructionOpCode, InstructionSource
+from kivyfn.store.operations import OpCode, OperationSource
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -16,12 +16,12 @@ class Instruction:
     multiple primitive Actions before compilation.
     """
 
-    opcode: InstructionOpCode
+    opcode: OpCode
     address: Address
     value: Optional[Any] = None
     id: Optional[str] = None
     key: Optional[str] = None
-    source: InstructionSource
+    source: OperationSource
 
     # --------------------
     # Representation
@@ -68,13 +68,13 @@ class Instruction:
 
     @staticmethod
     def set(
-        address: Address, key: str, value: Any, source: InstructionSource
+        address: Address, key: str, value: Any, source: OperationSource
     ) -> Instruction:
         """
         Primitive single-schema field mutation.
         """
         return Instruction(
-            opcode=InstructionOpCode.SET,
+            opcode=OpCode.SET,
             address=address,
             key=key,
             value=value,
@@ -87,13 +87,13 @@ class Instruction:
         id: str,
         key: str,
         value: Any,
-        source: InstructionSource,
+        source: OperationSource,
     ) -> Instruction:
         """
         Primitive collection row field mutation.
         """
         return Instruction(
-            opcode=InstructionOpCode.SETROW,
+            opcode=OpCode.SETROW,
             address=address,
             id=id,
             key=key,
@@ -106,7 +106,7 @@ class Instruction:
         address: Address,
         id: str,
         value: dict,
-        source: InstructionSource,
+        source: OperationSource,
     ) -> Instruction:
         """
         Primitive row insertion into a collection node.
@@ -122,7 +122,7 @@ class Instruction:
             This method does not generate identifiers.
         """
         return Instruction(
-            opcode=InstructionOpCode.INSERT,
+            opcode=OpCode.INSERT,
             address=address,
             id=id,
             value=value,
@@ -130,24 +130,24 @@ class Instruction:
         )
 
     @staticmethod
-    def remove(address: Address, id: str, source: InstructionSource) -> Instruction:
+    def remove(address: Address, id: str, source: OperationSource) -> Instruction:
         """
         Primitive row removal from collection.
         """
         return Instruction(
-            opcode=InstructionOpCode.REMOVE,
+            opcode=OpCode.REMOVE,
             address=address,
             id=id,
             source=source,
         )
 
     @classmethod
-    def compile(cls, payload: dict, source: InstructionSource) -> Instruction:
-        opcode: str = InstructionOpCode(payload["opcode"])
+    def compile(cls, payload: dict, source: OperationSource) -> Instruction:
+        opcode: str = OpCode(payload["opcode"])
         address = payload["address"]
         address = Address(*address)
 
-        if opcode is InstructionOpCode.SET:
+        if opcode is OpCode.SET:
             return cls.set(
                 address=address,
                 key=payload["key"],
@@ -155,7 +155,7 @@ class Instruction:
                 source=source,
             )
 
-        if opcode is InstructionOpCode.SETROW:
+        if opcode is OpCode.SETROW:
             return cls.setrow(
                 address=address,
                 id=payload["id"],
@@ -164,18 +164,18 @@ class Instruction:
                 source=source,
             )
 
-        if opcode is InstructionOpCode.INSERT:
+        if opcode is OpCode.INSERT:
             return cls.insert(
                 address=address, id=payload["id"], value=payload["value"], source=source
             )
 
-        if opcode is InstructionOpCode.REMOVE:
+        if opcode is OpCode.REMOVE:
             return cls.remove(address=address, id=payload["id"], source=source)
 
         raise ValueError(f"Unsupported opcode: {opcode}")
 
     @classmethod
     def construct(
-        cls, commands: list[dict], source: InstructionSource
+        cls, commands: list[dict], source: OperationSource
     ) -> list[Instruction]:
         return [cls.compile(item, source) for item in commands]
