@@ -18,7 +18,24 @@ class StoreStateError(StoreRuntimeError):
     """
 
 
-class StoreUnavailableError(StoreRuntimeError):
+class StoreTransportError(StoreRuntimeError):
+    """
+    A remote store transport failed while carrying a request, response,
+    subscription event, or signal.
+
+    This is the broad base class for transport-level failures, including:
+
+    - connection failures;
+    - request timeouts;
+    - malformed protocol data;
+    - incompatible client and server protocol behavior.
+
+    Application code may catch this exception when every remote transport
+    failure should enter the same unavailable or recovery workflow.
+    """
+
+
+class StoreUnavailableError(StoreTransportError):
     """
     The store cannot currently be reached or used.
 
@@ -40,7 +57,7 @@ class StoreTimeoutError(StoreUnavailableError):
     """
 
 
-class StoreProtocolError(StoreRuntimeError):
+class StoreProtocolError(StoreTransportError):
     """
     A remote peer or transport produced data that violates the store protocol.
 

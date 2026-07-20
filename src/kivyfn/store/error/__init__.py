@@ -43,6 +43,7 @@ from kivyfn.store.error.operation import (
     UniqueConstraintError,
 )
 from kivyfn.store.error.runtime import (
+    StoreTransportError,
     StoreConnectionError,
     StoreInternalError,
     StoreProtocolError,
@@ -93,6 +94,7 @@ __all__ = [
     "StoreProtocolError",
     "StoreRuntimeError",
     "StoreStateError",
+    "StoreTransportError",
     "StoreTimeoutError",
     "StoreUnavailableError",
     "UniqueConstraintError",
