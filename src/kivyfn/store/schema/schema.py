@@ -1,12 +1,20 @@
 # kivyfn/store/schema/schema.py
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, ClassVar
 
-from kivyfn.store.errors.store import FieldNotFoundError
-from kivyfn.store.schema.fields import BaseField, ForeignKeyField
-from kivyfn.store.schema.trigger import Trigger
+from kivyfn.store.error import (
+    FieldError,
+    FieldErrorDetail,
+    FieldNotFoundError,
+)
+from kivyfn.store.schema.fields import (
+    BaseField,
+    ForeignKeyField,
+)
 from kivyfn.store.schema.signal import Signal
+from kivyfn.store.schema.trigger import Trigger
 
 
 IndexKey = tuple[str, ...]
@@ -53,12 +61,19 @@ class Schema:
 
     def _build_triggers(self) -> None:
         for name, attr in self.__class__.__dict__.items():
-            trigger_meta = getattr(attr, "_trigger_meta", None)
+            trigger_meta = getattr(
+                attr,
+                "_trigger_meta",
+                None,
+            )
 
             if not trigger_meta:
                 continue
 
-            bound_method = getattr(self, name)
+            bound_method = getattr(
+                self,
+                name,
+            )
 
             for trigger in trigger_meta:
                 self._triggers.append(
@@ -71,7 +86,9 @@ class Schema:
 
     def _build_indexes(self) -> None:
         for index in self.indexes:
-            self._indexes.add(tuple(index))
+            self._indexes.add(
+                tuple(index),
+            )
 
         for unique in self.uniques:
             key = tuple(unique)
@@ -81,17 +98,20 @@ class Schema:
 
         for name, field in self._fields.items():
             if isinstance(field, ForeignKeyField):
-                self._indexes.add((name,))
+                self._indexes.add(
+                    (name,),
+                )
 
     def _validate_index_keys(self) -> None:
-        names = set(self._fields)
+        field_names = set(self._fields)
 
         for key in self._indexes | self._uniques:
             for field_name in key:
-                if field_name not in names:
+                if field_name not in field_names:
                     raise ValueError(
-                        f"Unknown field '{field_name}' "
-                        f"in index/unique for {self.name}"
+                        f"Unknown field {field_name!r} "
+                        f"in index or unique constraint "
+                        f"for {self.name}"
                     )
 
     # -------------------------------------------------
@@ -106,7 +126,14 @@ class Schema:
             return self._fields[name]
         except KeyError:
             raise FieldNotFoundError(
-                f"Unknown field '{name}' in {self.name}"
+                (
+                    f"Field {name!r} does not exist "
+                    f"in schema {self.name}"
+                ),
+                detail=FieldErrorDetail(
+                    schema=self.name,
+                    field=name,
+                ),
             ) from None
 
     def fields(self) -> dict[str, BaseField]:
@@ -127,7 +154,7 @@ class Schema:
             return self._signals[name]
         except KeyError:
             raise ValueError(
-                f"Unknown signal '{name}' in {self.name}"
+                f"Unknown signal {name!r} in {self.name}"
             ) from None
 
     def signals(self) -> dict[str, Signal[Any]]:
@@ -185,9 +212,13 @@ class Schema:
     def is_many(self) -> bool:
         return self.many
 
-    def defaults(self) -> dict:
+    def defaults(self) -> dict[str, Any]:
         return {
-            name: getattr(field, "default", None)
+            name: getattr(
+                field,
+                "default",
+                None,
+            )
             for name, field in self._fields.items()
         }
 
@@ -201,11 +232,27 @@ class Schema:
         value: Any,
     ) -> None:
         field = self.get_field(name)
-        field.challenge(value)
+
+        try:
+            field.challenge(value)
+        except FieldError as exc:
+            detail = exc.detail
+
+            if isinstance(detail, FieldErrorDetail):
+                exc.detail = replace(
+                    detail,
+                    schema=self.name,
+                    field=detail.field or name,
+                )
+
+            raise
 
     def challenge_fields(
         self,
         data: dict[str, Any],
     ) -> None:
         for name, value in data.items():
-            self.challenge_field(name, value)
+            self.challenge_field(
+                name,
+                value,
+            )

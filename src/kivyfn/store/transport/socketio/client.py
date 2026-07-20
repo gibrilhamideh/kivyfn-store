@@ -5,11 +5,16 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import socketio
-from socketio.exceptions import TimeoutError as SocketIOTimeoutError
+from socketio.exceptions import (
+    TimeoutError as SocketIOTimeoutError,
+)
 
-from kivyfn.store.errors.client import (
+from kivyfn.logging import get_logger
+from kivyfn.store.error import (
     StoreConnectionError,
+    StoreProtocolError,
     StoreStateError,
+    StoreTimeoutError,
 )
 
 
@@ -19,18 +24,23 @@ TransportHandler = Callable[
 ]
 
 
+logger = get_logger(__name__)
+
+
 class SocketIOClientTransport:
     """
     Asynchronous Socket.IO transport for RemoteStoreClient.
 
     Responsibilities:
-    - own and configure python-socketio's AsyncClient
-    - connect and disconnect from the remote endpoint
-    - perform request/response calls
-    - forward incoming store events and signals to registered handlers
 
-    This class contains no store, schema, transaction, subscription, or signal
-    domain logic.
+    - own and configure python-socketio's AsyncClient;
+    - connect and disconnect from the remote endpoint;
+    - perform request/response calls;
+    - translate Socket.IO failures into store runtime errors;
+    - forward incoming store events and signals to registered handlers.
+
+    This transport contains no store, schema, transaction, subscription,
+    signal, or response-domain logic.
     """
 
     def __init__(
@@ -119,6 +129,11 @@ class SocketIOClientTransport:
     # -------------------------------------------------
 
     async def connect(self) -> None:
+        """
+        Connect to the configured Socket.IO endpoint.
+
+        Calling connect while already connected is safe.
+        """
         if self.connected:
             return
 
@@ -131,6 +146,12 @@ class SocketIOClientTransport:
                 wait_timeout=self.timeout,
             )
 
+        except SocketIOTimeoutError as exc:
+            raise StoreTimeoutError(
+                "Socket.IO connection timed out for "
+                f"{self.url!r}"
+            ) from exc
+
         except Exception as exc:
             raise StoreConnectionError(
                 "Failed to connect to remote store at "
@@ -139,10 +160,16 @@ class SocketIOClientTransport:
 
         if not self.connected:
             raise StoreConnectionError(
-                f"Socket.IO connection to {self.url!r} did not become active"
+                f"Socket.IO connection to {self.url!r} "
+                "did not become active"
             )
 
     async def disconnect(self) -> None:
+        """
+        Disconnect from the Socket.IO endpoint.
+
+        Calling disconnect while already disconnected is safe.
+        """
         if not self.connected:
             return
 
@@ -170,8 +197,14 @@ class SocketIOClientTransport:
         event: str,
         message: Any | None = None,
     ) -> Any:
+        """
+        Perform one Socket.IO acknowledgement call.
+
+        This method only returns the raw acknowledgement payload. Interpreting
+        the store Response belongs to RemoteStoreClient.
+        """
         if not self.connected:
-            raise StoreConnectionError(
+            raise StoreStateError(
                 "Socket.IO transport is not connected"
             )
 
@@ -183,7 +216,7 @@ class SocketIOClientTransport:
             )
 
         except SocketIOTimeoutError as exc:
-            raise StoreConnectionError(
+            raise StoreTimeoutError(
                 f"Socket.IO call timed out: {event!r}"
             ) from exc
 
@@ -199,8 +232,11 @@ class SocketIOClientTransport:
 
     async def _on_event(
         self,
-        message: dict[str, Any],
+        message: Any,
     ) -> None:
+        """
+        Validate and forward one incoming subscription event.
+        """
         handler = self._event_handler
 
         if handler is None:
@@ -208,22 +244,31 @@ class SocketIOClientTransport:
                 "Socket.IO event handler has not been configured"
             )
 
-        if not isinstance(
-            message,
-            dict,
-        ):
-            raise ValueError(
+        if not isinstance(message, dict):
+            raise StoreProtocolError(
                 "Socket.IO store event payload must be an object"
             )
 
-        await handler(
-            message,
-        )
+        try:
+            await handler(
+                message,
+            )
+
+        except StoreProtocolError:
+            raise
+
+        except Exception:
+            logger.exception(
+                "Remote store event handler failed"
+            )
 
     async def _on_signal(
         self,
-        message: dict[str, Any],
+        message: Any,
     ) -> None:
+        """
+        Validate and forward one incoming signal dispatch.
+        """
         handler = self._signal_handler
 
         if handler is None:
@@ -231,17 +276,23 @@ class SocketIOClientTransport:
                 "Socket.IO signal handler has not been configured"
             )
 
-        if not isinstance(
-            message,
-            dict,
-        ):
-            raise ValueError(
+        if not isinstance(message, dict):
+            raise StoreProtocolError(
                 "Socket.IO signal payload must be an object"
             )
 
-        await handler(
-            message,
-        )
+        try:
+            await handler(
+                message,
+            )
+
+        except StoreProtocolError:
+            raise
+
+        except Exception:
+            logger.exception(
+                "Remote store signal handler failed"
+            )
 
     # -------------------------------------------------
     # Validation
@@ -250,12 +301,14 @@ class SocketIOClientTransport:
     def _require_handlers(self) -> None:
         if self._event_handler is None:
             raise StoreStateError(
-                "Socket.IO event handler must be configured before connecting"
+                "Socket.IO event handler must be configured "
+                "before connecting"
             )
 
         if self._signal_handler is None:
             raise StoreStateError(
-                "Socket.IO signal handler must be configured before connecting"
+                "Socket.IO signal handler must be configured "
+                "before connecting"
             )
 
 

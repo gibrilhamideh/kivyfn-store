@@ -1,35 +1,60 @@
+# kivyfn/store/core/boot.py
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.errors.constraint import ConstraintType
-from kivyfn.store.errors.store import ConstraintError
 from kivyfn.store.builder.policy import BootPolicy
+from kivyfn.store.error import (
+    ConstraintErrorDetail,
+    ForeignKeyNotFoundError,
+)
+
 
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
     from kivyfn.store.node import Node
 
+# TODO: Replace silent row skipping with explicit boot diagnostics so
+# invalid persisted rows are reported with their schema, row ID, and failure.
+# BootPolicy should then decide whether to raise, erase, or recover selectively.
 
 class StoreBoot:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+    ) -> None:
         self.engine = engine
 
     def boot(self) -> None:
         try:
             raw_store = self._load_store()
-            raw_data = self._extract_data(raw_store)
-            migrated_data = self._migrate(raw_data, raw_store)
+            raw_data = self._extract_data(
+                raw_store,
+            )
 
-            self._build_nodes(migrated_data)
+            migrated_data = self._migrate(
+                raw_data,
+                raw_store,
+            )
+
+            self._build_nodes(
+                migrated_data,
+            )
+
             self._validate_foreign_keys()
             self._save_nodes()
 
         except Exception:
-            if self.engine.config.boot_policy is BootPolicy.RAISE:
+            if (
+                self.engine.config.boot_policy
+                is BootPolicy.RAISE
+            ):
                 raise
 
-            if self.engine.config.boot_policy is BootPolicy.ERASE:
+            if (
+                self.engine.config.boot_policy
+                is BootPolicy.ERASE
+            ):
                 self._erase_and_boot_empty()
                 return
 
@@ -39,13 +64,17 @@ class StoreBoot:
     # Load
     # -------------------------------------------------
 
-    def _load_store(self) -> dict[str, dict[str, Any] | None]:
+    def _load_store(
+        self,
+    ) -> dict[str, dict[str, Any] | None]:
         schema_names = [
             node.schema.name
             for node in self.engine.metadata.persistent_nodes
         ]
 
-        return self.engine._storage.load_store(schema_names)
+        return self.engine._storage.load_store(
+            schema_names,
+        )
 
     def _extract_data(
         self,
@@ -54,13 +83,17 @@ class StoreBoot:
         data: dict[str, Any] = {}
 
         for node in self.engine.metadata.persistent_nodes:
-            payload = raw_store.get(node.schema.name)
+            payload = raw_store.get(
+                node.schema.name,
+            )
 
             if not isinstance(payload, dict):
                 data[node.schema.name] = None
                 continue
 
-            data[node.schema.name] = payload.get("data")
+            data[node.schema.name] = payload.get(
+                "data",
+            )
 
         return data
 
@@ -73,7 +106,10 @@ class StoreBoot:
         data: dict[str, Any],
         raw_store: dict[str, dict[str, Any] | None],
     ) -> dict[str, Any]:
-        current_version = self._lowest_store_version(raw_store)
+        current_version = self._lowest_store_version(
+            raw_store,
+        )
+
         target_version = self.engine.config.store_version
 
         if current_version > target_version:
@@ -89,11 +125,14 @@ class StoreBoot:
                 migration = self.engine.config.migrations[index]
             except IndexError:
                 raise RuntimeError(
-                    f"Missing migration for store version "
+                    "Missing migration for store version "
                     f"{current_version} -> {current_version + 1}"
                 ) from None
 
-            data = migration.run(data)
+            data = migration.run(
+                data,
+            )
+
             current_version += 1
 
         return data
@@ -108,42 +147,76 @@ class StoreBoot:
             if not isinstance(payload, dict):
                 continue
 
-            metadata = payload.get("metadata", {})
+            metadata = payload.get(
+                "metadata",
+                {},
+            )
+
             if not isinstance(metadata, dict):
                 continue
 
-            version = metadata.get("store_version", 1)
+            version = metadata.get(
+                "store_version",
+                1,
+            )
 
-            if not isinstance(version, int) or version < 1:
-                raise RuntimeError(f"Invalid store_version: {version!r}")
+            if (
+                not isinstance(version, int)
+                or version < 1
+            ):
+                raise RuntimeError(
+                    f"Invalid store_version: {version!r}"
+                )
 
-            versions.append(version)
+            versions.append(
+                version,
+            )
 
         if not versions:
             return self.engine.config.store_version
 
-        return min(versions)
+        return min(
+            versions,
+        )
 
     # -------------------------------------------------
     # Build
     # -------------------------------------------------
 
-    def _build_nodes(self, data: dict[str, Any]) -> None:
+    def _build_nodes(
+        self,
+        data: dict[str, Any],
+    ) -> None:
         for node in self.engine.metadata.persistent_nodes:
-            node_data = data.get(node.schema.name)
-            node.build(node_data)
+            node_data = data.get(
+                node.schema.name,
+            )
+
+            node.build(
+                node_data,
+            )
 
     # -------------------------------------------------
-    # Foreign Key Validation
+    # Foreign-key validation
     # -------------------------------------------------
 
-    def _validate_foreign_keys(self) -> None:
+    def _validate_foreign_keys(
+        self,
+    ) -> None:
         for node in self.engine.metadata.persistent_nodes:
             if node.schema.many:
                 for row_id, row in node.value.items():
-                    self._validate_row_foreign_keys(node, row_id, row)
+                    self._validate_row_foreign_keys(
+                        node,
+                        row_id,
+                        row,
+                    )
             else:
-                self._validate_row_foreign_keys(node, None, node.value)
+                self._validate_row_foreign_keys(
+                    node,
+                    None,
+                    node.value,
+                )
 
     def _validate_row_foreign_keys(
         self,
@@ -151,51 +224,83 @@ class StoreBoot:
         row_id: str | None,
         row: dict[str, Any],
     ) -> None:
-        for field_name, field in node.schema.foreign_key_fields().items():
-            foreign_id = row.get(field_name)
+        foreign_keys = (
+            node.schema.foreign_key_fields()
+        )
+
+        for field_name, field in foreign_keys.items():
+            foreign_id = row.get(
+                field_name,
+            )
 
             if foreign_id is None:
                 continue
 
-            ref_node = self.engine.get_node_by_schema(field.schema)
+            reference_node = self.engine.get_node_by_schema(
+                field.schema,
+            )
 
-            if not ref_node.schema.many:
-                raise ConstraintError(
-                    f"Foreign key target must be a many schema: "
-                    f"{field.schema}",
-                    constraint_type=ConstraintType.FOREIGN_KEY,
+            if not reference_node.schema.many:
+                raise ValueError(
+                    "Foreign-key target must be a many schema: "
+                    f"{field.schema}"
                 )
 
-            if not ref_node.exists(str(foreign_id)):
-                location = node.schema.name
-                if row_id is not None:
-                    location += f"[{row_id}]"
+            reference_id = str(
+                foreign_id,
+            )
 
-                raise ConstraintError(
-                    f"Foreign key constraint violated: "
+            if reference_node.exists(
+                reference_id,
+            ):
+                continue
+
+            location = node.schema.name
+
+            if row_id is not None:
+                location += f"[{row_id}]"
+
+            raise ForeignKeyNotFoundError(
+                (
+                    "Foreign-key constraint violated: "
                     f"{location}.{field_name} references missing "
-                    f"{field.schema}[{foreign_id}]",
-                    constraint_type=ConstraintType.FOREIGN_KEY,
-                )
+                    f"{field.schema}[{foreign_id}]"
+                ),
+                detail=ConstraintErrorDetail(
+                    schema=node.schema.name,
+                    fields=(field_name,),
+                    value=foreign_id,
+                    row_id=row_id,
+                    reference_schema=field.schema,
+                ),
+            )
 
     # -------------------------------------------------
     # Save
     # -------------------------------------------------
 
-    def _save_nodes(self) -> None:
+    def _save_nodes(
+        self,
+    ) -> None:
         for node in self.engine.metadata.persistent_nodes:
             self.engine._storage.write(
                 node.schema.name,
                 node.value,
-                store_version=self.engine.config.store_version,
+                store_version=(
+                    self.engine.config.store_version
+                ),
             )
 
     # -------------------------------------------------
-    # Erase Recovery
+    # Erase recovery
     # -------------------------------------------------
 
-    def _erase_and_boot_empty(self) -> None:
+    def _erase_and_boot_empty(
+        self,
+    ) -> None:
         for node in self.engine.metadata.persistent_nodes:
-            node.build(None)
+            node.build(
+                None,
+            )
 
         self._save_nodes()

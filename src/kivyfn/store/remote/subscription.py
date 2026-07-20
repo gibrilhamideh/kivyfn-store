@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import weakref
+
 from collections.abc import Callable
 from typing import (
     TYPE_CHECKING,
@@ -17,7 +18,6 @@ from typing import (
 
 from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
-from kivyfn.store.operations import OpCode
 from kivyfn.store.events.event import (
     InsertEvent,
     RemoveEvent,
@@ -25,7 +25,8 @@ from kivyfn.store.events.event import (
     SetRowEvent,
     StoreEvent,
 )
-from kivyfn.store.transport.response import Response
+from kivyfn.store.operations import OpCode
+from kivyfn.store.response import Response
 
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ EventT = TypeVar(
 )
 
 RowT = TypeVar("RowT")
+
 
 EventCallback = Callable[
     [EventT],
@@ -188,10 +190,10 @@ class RemoteSubscription(Generic[EventT]):
 
     The remote server owns the actual subscription. This local object owns:
 
-    - the remote subscription token
-    - the incoming event-stream token
-    - the local callback reference
-    - asynchronous disposal of the remote subscription
+    - the remote subscription token;
+    - the incoming event-stream token;
+    - the local callback reference;
+    - asynchronous disposal of the remote subscription.
 
     dispose() is idempotent after a successful remote unsubscribe.
     """
@@ -215,11 +217,14 @@ class RemoteSubscription(Generic[EventT]):
         self._client_ref = weakref.ref(
             client,
         )
+
         self._token = token
         self._event_token = event_token
+
         self._callback = _CallbackReference(
             callback,
         )
+
         self._disposed = False
 
     async def dispose(
@@ -228,8 +233,8 @@ class RemoteSubscription(Generic[EventT]):
         """
         Remove the subscription from the remote server.
 
-        Returns None when the binding was already disposed or its owning client
-        no longer exists.
+        Returns None when the subscription was already disposed or its owning
+        client no longer exists.
         """
         if self._disposed:
             return None
@@ -272,14 +277,18 @@ class RemoteSubscription(Generic[EventT]):
                 event,
             )
 
-            if inspect.isawaitable(result):
+            if inspect.isawaitable(
+                result,
+            ):
                 close = getattr(
                     result,
                     "close",
                     None,
                 )
 
-                if callable(close):
+                if callable(
+                    close,
+                ):
                     close()
 
                 raise TypeError(
@@ -409,10 +418,11 @@ class RemoteSubscriptionManager:
     def _validate_depth(
         depth: int | None,
     ) -> None:
-        if depth is not None and depth < 0:
+        if (
+            depth is not None
+            and depth < 0
+        ):
             raise ValueError(
                 "Subscription depth must be zero, positive, or None"
             )
-
-
 

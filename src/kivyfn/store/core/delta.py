@@ -1,7 +1,16 @@
-from collections import defaultdict
+# kivyfn/store/core/delta.py
+from __future__ import annotations
 
+from collections import defaultdict
+from typing import Any
+
+from kivyfn.store.error import (
+    RowAlreadyExistsError,
+    RowErrorDetail,
+    RowNotFoundError,
+    RowOperationConflictError,
+)
 from kivyfn.store.node import Node
-from kivyfn.store.errors.store import CompilerError
 
 from .operations import (
     InsertOperation,
@@ -26,158 +35,342 @@ class Delta:
     # Init
     # ============================================================
 
-    def __init__(self, engine, operations):
+    def __init__(
+        self,
+        engine: Any,
+        operations: list[Any],
+    ) -> None:
         self.engine = engine
 
         # node -> {id -> full row}
-        self._inserted = defaultdict(dict)
+        self._inserted: defaultdict[
+            Node,
+            dict[str, dict[str, Any]],
+        ] = defaultdict(dict)
 
         # node -> set[id]
-        self._removed = defaultdict(set)
+        self._removed: defaultdict[
+            Node,
+            set[str],
+        ] = defaultdict(set)
 
         # node -> {id -> {field -> value}}
-        self._updated = defaultdict(lambda: defaultdict(dict))
+        self._updated: defaultdict[
+            Node,
+            defaultdict[str, dict[str, Any]],
+        ] = defaultdict(
+            lambda: defaultdict(dict)
+        )
 
         # metadata
         self._touched_nodes: set[Node] = set()
-        self._touched_fields = defaultdict(set)
 
-        for op in operations:
-            self._touched_nodes.add(op.node)
+        self._touched_fields: defaultdict[
+            Node,
+            set[str],
+        ] = defaultdict(set)
 
-            if isinstance(op, InsertOperation):
-                self._insert(op.node, op.id, op.value)
+        for operation in operations:
+            self._touched_nodes.add(
+                operation.node,
+            )
 
-            elif isinstance(op, RemoveOperation):
-                self._remove(op.node, op.id)
+            if isinstance(operation, InsertOperation):
+                self._insert(
+                    operation.node,
+                    operation.id,
+                    operation.value,
+                )
 
-            elif isinstance(op, SetRowOperation):
-                self._update(op.node, op.id, op.key, op.new_value)
+            elif isinstance(operation, RemoveOperation):
+                self._remove(
+                    operation.node,
+                    operation.id,
+                )
+
+            elif isinstance(operation, SetRowOperation):
+                self._update(
+                    operation.node,
+                    operation.id,
+                    operation.key,
+                    operation.new_value,
+                )
 
     # ============================================================
     # Structural Rules
     # ============================================================
-    def _insert(self, node, id, row):
-        # Case 1: Insert after remove → treat as replace
-        if id in self._removed[node]:
-            self._removed[node].remove(id)
 
-        # Case 2: Duplicate insert in same transaction
-        if id in self._inserted[node]:
-            raise CompilerError(f"Duplicate insert id '{id}' in same transaction", node=node, schema=node.schema)
+    def _insert(
+        self,
+        node: Node,
+        row_id: str,
+        row: dict[str, Any],
+    ) -> None:
+        # Insert after remove is treated as a replacement.
+        if row_id in self._removed[node]:
+            self._removed[node].remove(
+                row_id,
+            )
 
-        # Case 3: Insert existing base id (unless removed first)
-        if id in node.value and id not in self._removed[node]:
-            raise CompilerError(f"Insert id '{id}' already exists", node=node, schema=node.schema)
+        # Duplicate insert in the same transaction.
+        if row_id in self._inserted[node]:
+            raise RowOperationConflictError(
+                (
+                    f"Row {row_id!r} is inserted more than once "
+                    "in the same transaction"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="insert",
+                    conflicting_operation="insert",
+                ),
+            )
 
-        self._inserted[node][id] = dict(row)
+        # Insert existing base ID, unless it was removed first.
+        if (
+            row_id in node.value
+            and row_id not in self._removed[node]
+        ):
+            raise RowAlreadyExistsError(
+                (
+                    f"Row {row_id!r} already exists "
+                    f"in schema {node.schema.name}"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="insert",
+                ),
+            )
+
+        self._inserted[node][row_id] = dict(
+            row,
+        )
 
         for field in row:
-            self._touched_fields[node].add(field)
+            self._touched_fields[node].add(
+                field,
+            )
 
-    def _remove(self, node, id):
-        # Removing inserted row cancels insertion
-        if id in self._inserted[node]:
-            del self._inserted[node][id]
+    def _remove(
+        self,
+        node: Node,
+        row_id: str,
+    ) -> None:
+        # Removing a row inserted in this transaction cancels the insertion.
+        if row_id in self._inserted[node]:
+            del self._inserted[node][row_id]
             return
 
-        # Duplicate remove
-        if id in self._removed[node]:
-            raise CompilerError(f"Duplicate remove id '{id}' in same transaction", node=node, schema=node.schema)
+        # Duplicate remove.
+        if row_id in self._removed[node]:
+            raise RowOperationConflictError(
+                (
+                    f"Row {row_id!r} is removed more than once "
+                    "in the same transaction"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="remove",
+                    conflicting_operation="remove",
+                ),
+            )
 
-        # Removing non-existent row
-        if id not in node.value:
-            raise CompilerError(f"Cannot remove non-existent id '{id}'", node=node, schema=node.schema)
+        # Removing a nonexistent row.
+        if row_id not in node.value:
+            raise RowNotFoundError(
+                (
+                    f"Cannot remove nonexistent row {row_id!r} "
+                    f"from schema {node.schema.name}"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="remove",
+                ),
+            )
 
-        self._removed[node].add(id)
+        self._removed[node].add(
+            row_id,
+        )
 
-        # Drop pending updates
-        self._updated[node].pop(id, None)
+        # Drop pending updates.
+        self._updated[node].pop(
+            row_id,
+            None,
+        )
 
-    def _update(self, node, id, field, value):
-        self._touched_fields[node].add(field)
+    def _update(
+        self,
+        node: Node,
+        row_id: str,
+        field: str,
+        value: Any,
+    ) -> None:
+        self._touched_fields[node].add(
+            field,
+        )
 
-        # Update inserted row
-        if id in self._inserted[node]:
-            self._inserted[node][id][field] = value
+        # Updating a row inserted in this transaction updates that row.
+        if row_id in self._inserted[node]:
+            self._inserted[node][row_id][field] = value
             return
 
-        # Update removed row
-        if id in self._removed[node]:
-            raise CompilerError(f"Cannot update removed id '{id}'", node=node, schema=node.schema)
+        # Updating a row removed in this transaction is a conflict.
+        if row_id in self._removed[node]:
+            raise RowOperationConflictError(
+                (
+                    f"Cannot update removed row {row_id!r} "
+                    f"in schema {node.schema.name}"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="setrow",
+                    conflicting_operation="remove",
+                ),
+            )
 
-        # Update non-existent row
-        if id not in node.value:
-            raise CompilerError(f"Cannot update non-existent id '{id}'", node=node, schema=node.schema)
+        # Updating a nonexistent row.
+        if row_id not in node.value:
+            raise RowNotFoundError(
+                (
+                    f"Cannot update nonexistent row {row_id!r} "
+                    f"in schema {node.schema.name}"
+                ),
+                detail=RowErrorDetail(
+                    schema=node.schema.name,
+                    address=node.address.parts,
+                    row_id=row_id,
+                    operation="setrow",
+                ),
+            )
 
-        self._updated[node][id][field] = value
+        self._updated[node][row_id][field] = value
 
     # ============================================================
     # Logical Resolution API
     # ============================================================
 
-    def exists(self, node, id):
+    def exists(
+        self,
+        node: Node,
+        row_id: str,
+    ) -> bool:
         """
-        Logical existence after delta applied.
+        Return whether a row logically exists after applying the delta.
         """
-        if id in self._inserted[node]:
+        if row_id in self._inserted[node]:
             return True
-        if id in self._removed[node]:
+
+        if row_id in self._removed[node]:
             return False
-        return id in node.value
 
-    def value(self, node, id, field):
+        return row_id in node.value
+
+    def value(
+        self,
+        node: Node,
+        row_id: str,
+        field: str,
+    ) -> Any:
         """
-        Logical field value after delta applied.
+        Resolve a logical field value after applying the delta.
         """
+        if row_id in self._inserted[node]:
+            return self._inserted[node][row_id].get(
+                field,
+            )
 
-        # Inserted row overrides everything
-        if id in self._inserted[node]:
-            return self._inserted[node][id].get(field)
-
-        # Removed row does not exist
-        if id in self._removed[node]:
+        if row_id in self._removed[node]:
             return None
 
-        # Updated field
-        updated_fields = self._updated[node].get(id)
-        if updated_fields and field in updated_fields:
+        updated_fields = self._updated[node].get(
+            row_id,
+        )
+
+        if (
+            updated_fields
+            and field in updated_fields
+        ):
             return updated_fields[field]
 
-        # Fallback to base state
-        row = node.value.get(id)
-        return row.get(field) if row else None
+        row = node.value.get(
+            row_id,
+        )
 
-    def ids(self, node):
+        return (
+            row.get(field)
+            if row
+            else None
+        )
+
+    def ids(
+        self,
+        node: Node,
+    ) -> set[str]:
         """
-        Logical id set after delta applied.
+        Return the logical row IDs after applying the delta.
         """
-        base_ids = set(node.value.keys())
+        base_ids = set(
+            node.value.keys(),
+        )
 
         if self._removed[node]:
-            base_ids -= self.removed_ids(node)
+            base_ids -= self.removed_ids(
+                node,
+            )
 
         if self._inserted[node]:
-            base_ids |= self.inserted_ids(node)
+            base_ids |= self.inserted_ids(
+                node,
+            )
 
         return base_ids
 
-    def removed_ids(self, node: Node) -> set:
-        return set(self._removed[node])
+    def removed_ids(
+        self,
+        node: Node,
+    ) -> set[str]:
+        return set(
+            self._removed[node],
+        )
 
-    def inserted_ids(self, node: Node) -> set:
-        return set(self._inserted[node].keys())
+    def inserted_ids(
+        self,
+        node: Node,
+    ) -> set[str]:
+        return set(
+            self._inserted[node].keys(),
+        )
 
-    def updated_ids(self, node: Node) -> set:
-        return set(self._updated[node].keys())
+    def updated_ids(
+        self,
+        node: Node,
+    ) -> set[str]:
+        return set(
+            self._updated[node].keys(),
+        )
 
     # ============================================================
     # Metadata
     # ============================================================
 
     @property
-    def touched_nodes(self):
+    def touched_nodes(
+        self,
+    ) -> set[Node]:
         return self._touched_nodes
 
-    def touched_fields(self, node: Node) -> set[str]:
+    def touched_fields(
+        self,
+        node: Node,
+    ) -> set[str]:
         return self._touched_fields[node]

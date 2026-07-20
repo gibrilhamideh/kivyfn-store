@@ -6,7 +6,7 @@ T = TypeVar("T")
 from kivyfn.store.local.subscription import LocalSubscription
 from kivyfn.store.remote.subscription import RemoteSubscription
 from kivyfn.store.transaction import TransactionResult
-from kivyfn.store.transport.response import Response
+from kivyfn.store.response import Response
 
 Subscription = LocalSubscription | RemoteSubscription
 

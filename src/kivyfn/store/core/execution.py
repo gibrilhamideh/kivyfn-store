@@ -1,8 +1,9 @@
+# kivyfn/store/core/execution.py
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.operations import OperationSource
 from kivyfn.store.core.compiler import Compiler
 from kivyfn.store.core.constraintguard import ConstraintGuard
 from kivyfn.store.core.delta import Delta
@@ -13,7 +14,14 @@ from kivyfn.store.core.operations import (
     SetOperation,
     SetRowOperation,
 )
-from kivyfn.store.errors.store import CompilerError, ConstraintError, StoreError
+from kivyfn.store.error import (
+    StoreErrorContext,
+    StoreErrorStage,
+    StoreOperationError,
+    encode_failure,
+)
+from kivyfn.store.operations import OperationSource
+
 
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
@@ -28,13 +36,13 @@ class ExecutionResult:
         success: bool,
         stage: str,
         compiled: list | None = None,
-        error: StoreError | None = None,
+        error: StoreOperationError | None = None,
         inserted: list | None = None,
         removed: list | None = None,
         updated: list | None = None,
         events: list[StoreEvent] | None = None,
         touched_nodes: set[Node] | None = None,
-    ):
+    ) -> None:
         self.success = success
         self.stage = stage
         self.compiled = compiled or []
@@ -46,7 +54,7 @@ class ExecutionResult:
         self.touched_nodes = touched_nodes or set()
 
     def payload(self) -> dict[str, Any]:
-        data = {
+        data: dict[str, Any] = {
             "success": self.success,
             "stage": self.stage,
             "inserted": self.inserted,
@@ -55,13 +63,19 @@ class ExecutionResult:
         }
 
         if self.error is not None:
-            data["error"] = self.error.payload()
+            data["error"] = encode_failure(
+                self.error.failure(),
+            )
 
         return data
 
 
 class Execution:
-    def __init__(self, engine: Engine, commands: list):
+    def __init__(
+        self,
+        engine: Engine,
+        commands: list,
+    ) -> None:
         self.engine = engine
         self.commands = commands
 
@@ -71,82 +85,134 @@ class Execution:
             OperationSource.COMMAND,
         )
 
-        compiler = Compiler(self.engine, instructions)
+        compiler = Compiler(
+            self.engine,
+            instructions,
+        )
 
         try:
             compiled_ops = compiler.compile()
-        except CompilerError as exc:
+        except StoreOperationError as exc:
+            self._attach_stage(
+                exc,
+                StoreErrorStage.COMPILE,
+            )
+
             return ExecutionResult(
                 success=False,
-                stage="compile",
+                stage=StoreErrorStage.COMPILE.value,
                 compiled=compiler.operations,
                 error=exc,
             )
 
         try:
-            delta = Delta(self.engine, compiled_ops)
-        except CompilerError as exc:
+            delta = Delta(
+                self.engine,
+                compiled_ops,
+            )
+        except StoreOperationError as exc:
+            self._attach_stage(
+                exc,
+                StoreErrorStage.DELTA,
+            )
+
             return ExecutionResult(
                 success=False,
-                stage="delta",
+                stage=StoreErrorStage.DELTA.value,
                 compiled=compiled_ops,
                 error=exc,
             )
 
         try:
-            ConstraintGuard(self.engine).validate(delta)
-        except ConstraintError as exc:
+            ConstraintGuard(
+                self.engine,
+            ).validate(
+                delta,
+            )
+        except StoreOperationError as exc:
+            self._attach_stage(
+                exc,
+                StoreErrorStage.VALIDATE,
+            )
+
             return ExecutionResult(
                 success=False,
-                stage="validate",
+                stage=StoreErrorStage.VALIDATE.value,
                 compiled=compiled_ops,
                 error=exc,
             )
 
         events: list[StoreEvent] = []
-        inserted = []
-        removed = []
-        updated = []
+        inserted: list[dict[str, Any]] = []
+        removed: list[dict[str, Any]] = []
+        updated: list[dict[str, Any]] = []
 
-        for op in compiled_ops:
-            event = op.execute()
+        for operation in compiled_ops:
+            event = operation.execute()
 
-            if isinstance(op, InsertOperation):
+            if isinstance(operation, InsertOperation):
                 inserted.append(
                     {
-                        "address": op.address.to_list(),
-                        "id": op.id,
-                        "source": op.source.value,
+                        "address": operation.address.to_list(),
+                        "id": operation.id,
+                        "source": operation.source.value,
                     }
                 )
 
-            elif isinstance(op, RemoveOperation):
+            elif isinstance(operation, RemoveOperation):
                 removed.append(
                     {
-                        "address": op.address.to_list(),
-                        "id": op.id,
-                        "source": op.source.value,
+                        "address": operation.address.to_list(),
+                        "id": operation.id,
+                        "source": operation.source.value,
                     }
                 )
 
-            elif isinstance(op, (SetOperation, SetRowOperation)):
+            elif isinstance(
+                operation,
+                (
+                    SetOperation,
+                    SetRowOperation,
+                ),
+            ):
                 updated.append(
                     {
-                        "address": op.address.to_list(),
-                        "source": op.source.value,
+                        "address": operation.address.to_list(),
+                        "source": operation.source.value,
                     }
                 )
 
             if event is not None:
-                events.append(event)
+                events.append(
+                    event,
+                )
 
         return ExecutionResult(
             success=True,
-            stage="execute",
+            stage=StoreErrorStage.EXECUTE.value,
             compiled=compiled_ops,
             inserted=inserted,
             removed=removed,
             updated=updated,
             events=events,
             touched_nodes=delta.touched_nodes,
+        )
+
+    def _attach_stage(
+        self,
+        error: StoreOperationError,
+        stage: StoreErrorStage,
+    ) -> None:
+        if error.context is None:
+            error.context = StoreErrorContext(
+                stage=stage,
+            )
+            return
+
+        if error.context.stage is not None:
+            return
+
+        error.context = replace(
+            error.context,
+            stage=stage,
         )

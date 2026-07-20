@@ -1,11 +1,36 @@
+# kivyfn/store/events/subscription.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol, TypeVar
+from kivyfn.store.events.event import StoreEvent
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
 if TYPE_CHECKING:
     from kivyfn.store.events.listener import Listener
     from kivyfn.store.node import Node
+
+EventT_co = TypeVar(
+    "EventT_co",
+    bound=StoreEvent,
+    covariant=True,
+)
+
+class Subscription(
+    Protocol[EventT_co],
+):
+    """
+    Public transport-independent subscription handle.
+
+    Concrete implementations may be local or remote.
+    """
+
+    @property
+    def token(self) -> str:
+        ...
+
+    @property
+    def disposed(self) -> bool:
+        ...
 
 
 class EngineSubscription:

@@ -6,17 +6,23 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from kivyfn.store.address import Address
 from kivyfn.store.core.engine import Engine
-from kivyfn.store.errors.client import StoreStateError
+from kivyfn.store.error import (
+    StoreOperationError,
+    StoreStateError,
+)
 from kivyfn.store.local.signal import LocalSignalManager
 from kivyfn.store.local.subscription import LocalSubscriptionManager
+from kivyfn.store.response import (
+    Response,
+    failure,
+    success,
+)
 from kivyfn.store.transaction import (
     Transaction,
     TransactionInput,
     TransactionResult,
     resolve_commands,
 )
-from kivyfn.store.transport import response
-from kivyfn.store.transport.response import Response
 
 
 if TYPE_CHECKING:
@@ -43,14 +49,17 @@ class LocalStore:
 
     LocalStore owns:
 
-    - one synchronous Engine
-    - local event subscriptions
-    - local signal bindings
-    - lifecycle state
+    - one synchronous Engine;
+    - local event subscriptions;
+    - local signal bindings;
+    - lifecycle state.
 
     Public operations are serialized through a reentrant lock. This allows
     access from multiple threads while permitting callbacks to re-enter the
     store from the same thread.
+
+    Expected store-operation failures are returned as FailureResponse values.
+    Lifecycle and unexpected runtime failures remain exceptions.
     """
 
     def __init__(
@@ -105,7 +114,7 @@ class LocalStore:
         Shut down the local store and release local runtime state.
 
         Existing event subscriptions and signal bindings are disposed.
-        Calling shutdown() repeatedly is safe.
+        Calling shutdown repeatedly is safe.
         """
         with self._lock:
             if self._shutdown:
@@ -137,12 +146,15 @@ class LocalStore:
         Whether the store is currently booted and usable.
         """
         with self._lock:
-            return self._booted and not self._shutdown
+            return (
+                self._booted
+                and not self._shutdown
+            )
 
     @property
     def is_shutdown(self) -> bool:
         """
-        Whether shutdown() permanently closed this LocalStore instance.
+        Whether shutdown permanently closed this LocalStore instance.
         """
         with self._lock:
             return self._shutdown
@@ -152,7 +164,9 @@ class LocalStore:
     # -------------------------------------------------
 
     @property
-    def subscription(self) -> LocalSubscriptionManager:
+    def subscription(
+        self,
+    ) -> LocalSubscriptionManager:
         """
         Return the local subscription manager.
 
@@ -163,7 +177,9 @@ class LocalStore:
             return self._subscriptions
 
     @property
-    def signal(self) -> LocalSignalManager:
+    def signal(
+        self,
+    ) -> LocalSignalManager:
         """
         Return the local signal manager.
 
@@ -188,21 +204,26 @@ class LocalStore:
         """
         Return a snapshot of a node, row, or field.
 
-        Foreign keys are returned as stored unless resolve_foreignkeys is True.
+        Foreign keys are returned as stored unless resolve_foreignkeys is true.
         """
         with self._lock:
             self._require_booted()
 
-            data = self._engine.snapshot(
-                address=address,
-                id=id,
-                key=key,
-                resolve_foreignkeys=resolve_foreignkeys,
-            )
+            try:
+                data = self._engine.snapshot(
+                    address=address,
+                    id=id,
+                    key=key,
+                    resolve_foreignkeys=resolve_foreignkeys,
+                )
 
-            return response.success(
-                data=data,
-                status=200,
+            except StoreOperationError as exc:
+                return failure(
+                    exc.failure(),
+                )
+
+            return success(
+                data,
             )
 
     def lookup(
@@ -216,22 +237,27 @@ class LocalStore:
         """
         Look up rows using an indexed field or indexed field combination.
 
-        When first is True, return the first matching row or None. Otherwise,
+        When first is true, return the first matching row or None. Otherwise,
         return matching rows keyed by row ID.
         """
         with self._lock:
             self._require_booted()
 
-            data = self._engine.lookup(
-                address=address,
-                fields=fields,
-                value=value,
-                first=first,
-            )
+            try:
+                data = self._engine.lookup(
+                    address=address,
+                    fields=fields,
+                    value=value,
+                    first=first,
+                )
 
-            return response.success(
-                data=data,
-                status=200,
+            except StoreOperationError as exc:
+                return failure(
+                    exc.failure(),
+                )
+
+            return success(
+                data,
             )
 
     def to_dict(
@@ -244,13 +270,18 @@ class LocalStore:
         with self._lock:
             self._require_booted()
 
-            data = self._engine.to_dict(
-                address,
-            )
+            try:
+                data = self._engine.to_dict(
+                    address,
+                )
 
-            return response.success(
-                data=data,
-                status=200,
+            except StoreOperationError as exc:
+                return failure(
+                    exc.failure(),
+                )
+
+            return success(
+                data,
             )
 
     # -------------------------------------------------
@@ -266,12 +297,15 @@ class LocalStore:
 
         The transaction may be supplied as either:
 
-        - a Transaction instance
-        - a raw list of command payloads
+        - a Transaction instance;
+        - a raw list of command payloads.
 
         Events are dispatched only after execution and persistence succeed.
         The store lock remains held through event delivery so another thread
         cannot interleave a transaction between mutation and notification.
+
+        Expected compilation, delta, and validation failures are returned as
+        FailureResponse values. Unexpected execution failures propagate.
 
         Example:
 
@@ -302,9 +336,8 @@ class LocalStore:
                         "Transaction failed without an error"
                     )
 
-                return response.failure(
-                    status=error.status,
-                    error=error.payload(),
+                return failure(
+                    error.failure(),
                 )
 
             self._subscriptions.dispatch_many(
@@ -315,16 +348,17 @@ class LocalStore:
                 execution.payload(),
             )
 
-            return response.success(
-                data=result,
-                status=200,
+            return success(
+                result,
             )
 
     # -------------------------------------------------
     # Undo / Redo
     # -------------------------------------------------
 
-    def undo(self) -> Response[list[StoreEvent]]:
+    def undo(
+        self,
+    ) -> Response[list[StoreEvent]]:
         """
         Undo the latest committed transaction.
 
@@ -333,18 +367,25 @@ class LocalStore:
         with self._lock:
             self._require_booted()
 
-            events = self._engine.undo()
+            try:
+                events = self._engine.undo()
+
+            except StoreOperationError as exc:
+                return failure(
+                    exc.failure(),
+                )
 
             self._subscriptions.dispatch_many(
                 events,
             )
 
-            return response.success(
-                data=events,
-                status=200,
+            return success(
+                events,
             )
 
-    def redo(self) -> Response[list[StoreEvent]]:
+    def redo(
+        self,
+    ) -> Response[list[StoreEvent]]:
         """
         Redo the latest transaction that was previously undone.
 
@@ -353,15 +394,20 @@ class LocalStore:
         with self._lock:
             self._require_booted()
 
-            events = self._engine.redo()
+            try:
+                events = self._engine.redo()
+
+            except StoreOperationError as exc:
+                return failure(
+                    exc.failure(),
+                )
 
             self._subscriptions.dispatch_many(
                 events,
             )
 
-            return response.success(
-                data=events,
-                status=200,
+            return success(
+                events,
             )
 
     @property
@@ -398,6 +444,9 @@ class LocalStore:
     # -------------------------------------------------
     # Helpers
     # -------------------------------------------------
-    def transaction(self) -> Transaction:
+
+    def transaction(
+        self,
+    ) -> Transaction:
         return Transaction()
 

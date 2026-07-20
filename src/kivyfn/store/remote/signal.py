@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import weakref
+
 from collections.abc import Awaitable, Callable
 from typing import (
     TYPE_CHECKING,
@@ -15,9 +16,12 @@ from typing import (
 
 from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
+from kivyfn.store.error import StoreProtocolError
+from kivyfn.store.response import (
+    Response,
+    success,
+)
 from kivyfn.store.signals.event import SignalEvent
-from kivyfn.store.transport import response
-from kivyfn.store.transport.response import Response
 
 
 if TYPE_CHECKING:
@@ -114,9 +118,11 @@ class RemoteSignalBinding(Generic[T]):
         self._address = address
         self._signal = signal
         self._id = id
+
         self._callback = _CallbackReference(
             callback,
         )
+
         self._disposed = False
 
     async def dispose(
@@ -141,7 +147,7 @@ class RemoteSignalBinding(Generic[T]):
             self._token,
         )
 
-        if result.ok is not False:
+        if result.ok:
             self._mark_disposed()
 
         return result
@@ -271,9 +277,9 @@ class RemoteSignalManager:
         )
 
         if result.ok is False:
-            return response.failure(
-                status=result.status,
-                error=result.error,
+            return cast(
+                Response[RemoteSignalBinding[T]],
+                result,
             )
 
         data = result.data
@@ -282,8 +288,8 @@ class RemoteSignalManager:
             data,
             dict,
         ):
-            raise RuntimeError(
-                "Remote signal-bind response must contain an object"
+            raise StoreProtocolError(
+                "Remote signal-bind response data must be an object"
             )
 
         binding_token = data.get(
@@ -294,20 +300,22 @@ class RemoteSignalManager:
             "event_token",
         )
 
-        if not isinstance(
-            binding_token,
-            str,
+        if (
+            not isinstance(binding_token, str)
+            or not binding_token
         ):
-            raise RuntimeError(
-                "Remote signal-bind response is missing binding_token"
+            raise StoreProtocolError(
+                "Remote signal-bind response is missing a valid "
+                "binding_token"
             )
 
-        if not isinstance(
-            event_token,
-            str,
+        if (
+            not isinstance(event_token, str)
+            or not event_token
         ):
-            raise RuntimeError(
-                "Remote signal-bind response is missing event_token"
+            raise StoreProtocolError(
+                "Remote signal-bind response is missing a valid "
+                "event_token"
             )
 
         binding: RemoteSignalBinding[T] = RemoteSignalBinding(
@@ -324,9 +332,8 @@ class RemoteSignalManager:
             binding,
         )
 
-        return response.success(
-            data=binding,
-            status=result.status,
+        return success(
+            binding,
         )
 
     async def emit(

@@ -1,39 +1,52 @@
+# kivyfn/store/schema/fields/data/datafield.py
 from __future__ import annotations
+
 from typing import Any
 
+from kivyfn.store.error import (
+    FieldErrorDetail,
+    FieldValidationError,
+)
 from kivyfn.store.schema.fields.base import BaseField
-from kivyfn.store.errors.store import FieldValidationError
 
 
 class DataField(BaseField):
     """
-    Base class for all schema fields.
+    Base class for schema data fields.
 
-    Fields are DESCRIPTORS on Schema classes.
-    They define structure and validation rules only.
+    Fields are descriptors declared on Schema classes. They define data
+    structure and validation rules only.
     """
 
     def __init__(
         self,
         *,
-        default=None,
-        allow_none=False,
-    ):
+        default: Any = None,
+        allow_none: bool = False,
+    ) -> None:
         super().__init__()
-        self.default: Any = default
-        self.allow_none: bool = allow_none
+
+        self.default = default
+        self.allow_none = allow_none
 
     @property
-    def metadata(self):
+    def metadata(self) -> dict[str, Any]:
         return {
             "default": self.default,
             "allow_none": self.allow_none,
         }
 
-    def challenge(self, value: Any) -> None:
+    def challenge(
+        self,
+        value: Any,
+    ) -> None:
         if value is None and not self.allow_none:
             raise FieldValidationError(
-                "value not allowed to be None",
-                field=self.name,
-                value=value,
+                "Value cannot be None",
+                detail=FieldErrorDetail(
+                    field=self.name,
+                    value=value,
+                    rule="allow_none",
+                    allow_none=False,
+                ),
             )

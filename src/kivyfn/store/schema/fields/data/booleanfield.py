@@ -1,23 +1,38 @@
+# kivyfn/store/schema/fields/data/boolean.py
+from __future__ import annotations
+
+from typing import Any
+
+from kivyfn.store.error import (
+    FieldErrorDetail,
+    FieldValidationError,
+)
 from kivyfn.store.schema.fields.data.datafield import DataField
-from kivyfn.store.errors.store import FieldValidationError
 
 
 class BooleanField(DataField):
     """
     Strict boolean field.
-    Accepts bool only.
-    No coercion, no normalization.
+
+    Accepts bool only. No coercion or normalization is performed.
     """
 
-    def challenge(self, value):
+    def challenge(
+        self,
+        value: Any,
+    ) -> None:
         super().challenge(value)
 
         if value is None:
-            return  # already validated by allow_none
+            return
 
         if not isinstance(value, bool):
             raise FieldValidationError(
-                "Expected boolean",
-                field=self.name,
-                value=value,
+                "Expected a boolean value",
+                detail=FieldErrorDetail(
+                    field=self.name,
+                    value=value,
+                    rule="type",
+                    expected="bool",
+                ),
             )

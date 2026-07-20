@@ -1,14 +1,22 @@
+# kivyfn/store/core/constraintguard.py
 from __future__ import annotations
-from typing import Any, TYPE_CHECKING
 
-from kivyfn.store.errors.store import ConstraintError
-from kivyfn.store.errors.constraint import ConstraintType
+from typing import TYPE_CHECKING, Any, cast
+
+from kivyfn.store.error import (
+    ConstraintErrorDetail,
+    ForeignKeyNotFoundError,
+    ForeignKeyRestrictedError,
+    ProtocolValue,
+    UniqueConstraintError,
+)
 from kivyfn.store.schema.policy import ForeignKeyPolicy
+
 
 if TYPE_CHECKING:
     from kivyfn.store.core.delta import Delta
     from kivyfn.store.core.engine import Engine
-
+    from kivyfn.store.node import Node
 
 
 class ConstraintGuard:
@@ -16,183 +24,320 @@ class ConstraintGuard:
     Enforces relational invariants against a Delta view.
 
     Validates:
-        - Uniqueness
-        - Foreign key existence
-        - Restrict delete
+        - uniqueness;
+        - foreign-key existence;
+        - restricted deletion.
 
-    Does NOT mutate state.
+    Does not mutate state.
     """
 
-    def __init__(self, engine: Engine):
+    def __init__(
+        self,
+        engine: Engine,
+    ) -> None:
         self.engine = engine
 
     # ============================================================
     # Public API
     # ============================================================
-    def validate(self, delta: Delta):
+
+    def validate(
+        self,
+        delta: Delta,
+    ) -> None:
         self._validate_uniques(delta)
         self._validate_fk_existence(delta)
         self._validate_restrict(delta)
 
     # ============================================================
-    # UNIQUE CONSTRAINTS
+    # Unique constraints
     # ============================================================
-    def _validate_uniques(self, delta: Delta):
+
+    def _validate_uniques(
+        self,
+        delta: Delta,
+    ) -> None:
         for node in delta.touched_nodes:
-            candidate_ids = delta.updated_ids(node) | delta.inserted_ids(node)
+            candidate_ids = (
+                delta.updated_ids(node)
+                | delta.inserted_ids(node)
+            )
 
             for unique_key in node.schema.unique_keys():
-                # Only validate this unique if one of its fields was touched
+                # Only validate this unique constraint when at least one of
+                # its fields was touched.
                 if not set(unique_key) & delta.touched_fields(node):
                     continue
 
-                seen: set[Any] = set()
+                seen: dict[Any, str] = {}
 
-                for id in candidate_ids:
-                    if not delta.exists(node, id):
+                for row_id in candidate_ids:
+                    if not delta.exists(
+                        node,
+                        row_id,
+                    ):
                         continue
 
-                    value = self._build_unique_value(delta, node, id, unique_key)
+                    value = self._build_unique_value(
+                        delta,
+                        node,
+                        row_id,
+                        unique_key,
+                    )
 
-                    if self._is_empty_unique_value(value):
+                    if self._is_empty_unique_value(
+                        value,
+                    ):
                         continue
 
-                    # 1. Collision inside same transaction
-                    if value in seen:
-                        raise ConstraintError(
-                            message=(
-                                f"Unique constraint violated on "
-                                f"{node.schema.name}.{'.'.join(unique_key)}"
+                    # Collision inside the same transaction.
+                    existing_row_id = seen.get(
+                        value,
+                    )
+
+                    if existing_row_id is not None:
+                        raise UniqueConstraintError(
+                            (
+                                "Unique constraint violated on "
+                                f"{node.schema.name}."
+                                f"{'.'.join(unique_key)}"
                             ),
-                            constraint_type=ConstraintType.UNIQUE,
-                            schema=node.schema,
-                            field=".".join(unique_key),
-                            value=value,
+                            detail=ConstraintErrorDetail(
+                                schema=node.schema.name,
+                                fields=unique_key,
+                                value=self._protocol_value(value),
+                                row_id=row_id,
+                                existing_row_id=existing_row_id,
+                            ),
                         )
 
-                    seen.add(value)
+                    seen[value] = row_id
 
-                    # 2. Collision with base state
-                    existing_id = node.lookup(unique_key, value, first=True)
+                    # Collision with the base state.
+                    existing_row_id = node.lookup(
+                        unique_key,
+                        value,
+                        first=True,
+                    )
 
-                    if not isinstance(existing_id, str) or existing_id == id:
+                    if (
+                        not isinstance(existing_row_id, str)
+                        or existing_row_id == row_id
+                    ):
                         continue
 
-                    if not delta.exists(node, existing_id):
+                    if not delta.exists(
+                        node,
+                        existing_row_id,
+                    ):
                         continue
 
                     existing_future_value = self._build_unique_value(
                         delta,
                         node,
-                        existing_id,
+                        existing_row_id,
                         unique_key,
                     )
 
                     if existing_future_value == value:
-                        raise ConstraintError(
-                            message=(
-                                f"Unique constraint violated on "
-                                f"{node.schema.name}.{'.'.join(unique_key)}"
+                        raise UniqueConstraintError(
+                            (
+                                "Unique constraint violated on "
+                                f"{node.schema.name}."
+                                f"{'.'.join(unique_key)}"
                             ),
-                            constraint_type=ConstraintType.UNIQUE,
-                            schema=node.schema,
-                            field=".".join(unique_key),
-                            value=value,
+                            detail=ConstraintErrorDetail(
+                                schema=node.schema.name,
+                                fields=unique_key,
+                                value=self._protocol_value(value),
+                                row_id=row_id,
+                                existing_row_id=existing_row_id,
+                            ),
                         )
 
     # ============================================================
-    # FOREIGN KEY EXISTENCE
+    # Foreign-key existence
     # ============================================================
-    def _validate_fk_existence(self, delta: Delta):
+
+    def _validate_fk_existence(
+        self,
+        delta: Delta,
+    ) -> None:
         for node in delta.touched_nodes:
-            # Foreign keys where this node is the source
-            fks = self.engine.metadata.foreign_keys_of(node.schema.name)
-            if not fks:
+            foreign_keys = self.engine.metadata.foreign_keys_of(
+                node.schema.name,
+            )
+
+            if not foreign_keys:
                 continue
 
-            for fk in fks:
-                # Only validate if FK field was touched
-                if fk.field not in delta.touched_fields(node):
+            for foreign_key in foreign_keys:
+                # Only validate a foreign key when its field was touched.
+                if foreign_key.field not in delta.touched_fields(node):
                     continue
 
-                target_node = self.engine.get_node_by_schema(fk.reference)
+                target_node = self.engine.get_node_by_schema(
+                    foreign_key.reference,
+                )
 
-                # Only check changed rows
-                candidate_ids = delta.inserted_ids(node) | delta.updated_ids(node)
+                candidate_ids = (
+                    delta.inserted_ids(node)
+                    | delta.updated_ids(node)
+                )
 
-                for id in candidate_ids:
-                    foreignkey = delta.value(node, id, fk.field)
+                for row_id in candidate_ids:
+                    value = delta.value(
+                        node,
+                        row_id,
+                        foreign_key.field,
+                    )
 
-                    # NULL foreign keys allowed
-                    if foreignkey is None:
+                    # Null foreign keys are allowed.
+                    if value is None:
                         continue
 
-                    # Check logical existence in future state
-                    if not delta.exists(target_node, foreignkey):
-                        raise ConstraintError(
-                            message=(
-                                f"Foreign key constraint failed on "
-                                f"{node.schema.name}.{fk.field} "
-                                f"-> {fk.reference}"
+                    if not delta.exists(
+                        target_node,
+                        value,
+                    ):
+                        raise ForeignKeyNotFoundError(
+                            (
+                                "Foreign key constraint failed on "
+                                f"{node.schema.name}."
+                                f"{foreign_key.field} -> "
+                                f"{foreign_key.reference}"
                             ),
-                            constraint_type=ConstraintType.FK_MISSING,
-                            schema=node.schema,
-                            field=fk.field,
-                            value=foreignkey,
+                            detail=ConstraintErrorDetail(
+                                schema=node.schema.name,
+                                fields=(foreign_key.field,),
+                                value=self._protocol_value(value),
+                                row_id=row_id,
+                                reference_schema=foreign_key.reference,
+                                reference_field=foreign_key.field,
+                            ),
                         )
 
     # ============================================================
-    # RESTRICT DELETE
+    # Restricted deletion
     # ============================================================
-    def _validate_restrict(self, delta: Delta):
-        for target_node, removed_ids in delta._removed.items():
-            fks = self.engine.metadata.referenced_by(target_node.schema.name)
 
-            for fk in fks:
-                if fk.on_delete is not ForeignKeyPolicy.RESTRICT:
+    def _validate_restrict(
+        self,
+        delta: Delta,
+    ) -> None:
+        for target_node, removed_ids in delta._removed.items():
+            foreign_keys = self.engine.metadata.referenced_by(
+                target_node.schema.name,
+            )
+
+            for foreign_key in foreign_keys:
+                if (
+                    foreign_key.on_delete
+                    is not ForeignKeyPolicy.RESTRICT
+                ):
                     continue
 
-                referencing_node = self.engine.get_node_by_schema(fk.schema)
+                referencing_node = self.engine.get_node_by_schema(
+                    foreign_key.schema,
+                )
 
                 for removed_id in removed_ids:
-                    referencing_ids = referencing_node.lookup(fk.field, removed_id)
+                    referencing_ids = referencing_node.lookup(
+                        foreign_key.field,
+                        removed_id,
+                    )
+
                     if not isinstance(referencing_ids, set):
                         continue
 
-                    for ref_id in referencing_ids:
-                        # If referencing row is deleted in this transaction → safe
-                        if not delta.exists(referencing_node, ref_id):
+                    for referencing_row_id in referencing_ids:
+                        # A referencing row deleted in this transaction is safe.
+                        if not delta.exists(
+                            referencing_node,
+                            referencing_row_id,
+                        ):
                             continue
 
-                        future_value = delta.value(referencing_node, ref_id, fk.field)
+                        future_value = delta.value(
+                            referencing_node,
+                            referencing_row_id,
+                            foreign_key.field,
+                        )
 
                         if future_value == removed_id:
-                            raise ConstraintError(
-                                message=(
-                                    f"Cannot delete {target_node.schema.name} "
-                                    f"'{removed_id}' because it is still referenced "
-                                    f"by {fk.schema}.{fk.field}"
+                            raise ForeignKeyRestrictedError(
+                                (
+                                    f"Cannot delete "
+                                    f"{target_node.schema.name} "
+                                    f"{removed_id!r} because it is "
+                                    f"still referenced by "
+                                    f"{foreign_key.schema}."
+                                    f"{foreign_key.field}"
                                 ),
-                                constraint_type=ConstraintType.FK_RESTRICT,
-                                schema=target_node.schema,
-                                field=fk.field,
-                                value=removed_id,
+                                detail=ConstraintErrorDetail(
+                                    schema=target_node.schema.name,
+                                    row_id=removed_id,
+                                    referencing_schema=foreign_key.schema,
+                                    referencing_field=foreign_key.field,
+                                    referencing_row_ids=(
+                                        referencing_row_id,
+                                    ),
+                                ),
                             )
 
     # ============================================================
     # Helpers
     # ============================================================
-    def _build_unique_value(self, delta: Delta, node, id: str, fields: tuple[str, ...]):
+
+    def _build_unique_value(
+        self,
+        delta: Delta,
+        node: Node,
+        row_id: str,
+        fields: tuple[str, ...],
+    ) -> Any:
         if len(fields) == 1:
-            return delta.value(node, id, fields[0])
+            return delta.value(
+                node,
+                row_id,
+                fields[0],
+            )
 
-        return tuple(delta.value(node, id, field) for field in fields)
+        return tuple(
+            delta.value(
+                node,
+                row_id,
+                field,
+            )
+            for field in fields
+        )
 
-    def _is_empty_unique_value(self, value: Any) -> bool:
+    def _is_empty_unique_value(
+        self,
+        value: Any,
+    ) -> bool:
         if value is None:
             return True
 
         if isinstance(value, tuple):
-            return any(part is None for part in value)
+            return any(
+                part is None
+                for part in value
+            )
 
         return False
+
+    def _protocol_value(
+        self,
+        value: Any,
+    ) -> ProtocolValue:
+        if isinstance(value, tuple):
+            return [
+                self._protocol_value(part)
+                for part in value
+            ]
+
+        return cast(
+            ProtocolValue,
+            value,
+        )

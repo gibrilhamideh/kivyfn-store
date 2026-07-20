@@ -2,13 +2,28 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import socketio
+
 from aiohttp import web
 
+from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
+from kivyfn.store.error import (
+    InstructionErrorDetail,
+    InvalidInstructionError,
+    StoreErrorCategory,
+    StoreErrorCode,
+    StoreErrorStatus,
+    StoreFailure,
+    StoreOperationError,
+)
 from kivyfn.store.operations import OpCode
+from kivyfn.store.response import (
+    failure,
+    success,
+)
 from kivyfn.store.server.signal import SignalDispatchMessage
 from kivyfn.store.server.subscription import DispatchMessage
 
@@ -17,34 +32,37 @@ if TYPE_CHECKING:
     from kivyfn.store.server.proxy import StoreServerProxy
 
 
+logger = get_logger(__name__)
+
+
 class SocketIOServerTransport:
     """
     Socket.IO server transport for StoreServer.
 
     This transport owns:
 
-    - the Socket.IO AsyncServer
-    - the aiohttp application
-    - the aiohttp application runner and TCP site
-    - host, port, and Socket.IO path configuration
-    - Socket.IO handler registration
-    - client connection identifiers
-    - Socket.IO room membership
-    - wire-payload parsing and validation
-    - response serialization
-    - subscription dispatch delivery
-    - signal dispatch delivery
-    - disconnected-client notification
+    - the Socket.IO AsyncServer;
+    - the aiohttp application;
+    - the aiohttp application runner and TCP site;
+    - host, port, and Socket.IO path configuration;
+    - Socket.IO handler registration;
+    - client connection identifiers;
+    - Socket.IO room membership;
+    - wire-payload parsing and validation;
+    - response serialization;
+    - subscription dispatch delivery;
+    - signal dispatch delivery;
+    - disconnected-client notification.
 
     The transport does not own or access:
 
-    - Engine
-    - RemoteSubscriptionManager
-    - RemoteSignalManager
-    - StoreServer lifecycle or internal state
+    - Engine;
+    - RemoteSubscriptionManager;
+    - RemoteSignalManager;
+    - StoreServer lifecycle or internal state.
 
-    Incoming Socket.IO payloads are parsed into concrete Python arguments before
-    being passed to the restricted StoreServerProxy.
+    Incoming Socket.IO payloads are parsed into concrete Python arguments
+    before being passed to the restricted StoreServerProxy.
     """
 
     def __init__(
@@ -92,11 +110,9 @@ class SocketIOServerTransport:
         proxy: StoreServerProxy,
     ) -> None:
         """
-        Start the Socket.IO server and expose the supplied StoreServerProxy.
+        Start the Socket.IO server and expose the supplied proxy.
 
-        Calling start while already running is safe when the same transport
-        instance is used. The proxy is retained only while the transport is
-        running.
+        Calling start while already running is safe.
         """
         if self._running:
             return
@@ -129,7 +145,7 @@ class SocketIOServerTransport:
 
     async def stop(self) -> None:
         """
-        Stop the Socket.IO server and release all aiohttp resources.
+        Stop the Socket.IO server and release aiohttp resources.
 
         Calling stop while already stopped is safe.
         """
@@ -152,54 +168,30 @@ class SocketIOServerTransport:
 
     @property
     def running(self) -> bool:
-        """
-        Return whether the Socket.IO transport is currently running.
-        """
         return self._running
 
     @property
     def host(self) -> str:
-        """
-        Return the configured TCP host.
-        """
         return self._host
 
     @property
     def port(self) -> int:
-        """
-        Return the configured TCP port.
-        """
         return self._port
 
     @property
     def socketio_path(self) -> str:
-        """
-        Return the configured Socket.IO endpoint path.
-        """
         return self._socketio_path
 
     @property
     def server(self) -> socketio.AsyncServer:
-        """
-        Return the underlying Socket.IO AsyncServer.
-
-        This is exposed for advanced Socket.IO configuration and inspection.
-        Store operations must still go through StoreServerProxy.
-        """
         return self._server
 
     @property
     def application(self) -> web.Application:
-        """
-        Return the aiohttp application owned by this transport.
-        """
         return self._application
 
     @property
     def endpoint(self) -> dict[str, Any]:
-        """
-        Return the Socket.IO connection information.
-        """
         return {
             "transport": "socketio",
             "host": self._host,
@@ -212,12 +204,6 @@ class SocketIOServerTransport:
     # -------------------------------------------------
 
     def _require_proxy(self) -> StoreServerProxy:
-        """
-        Return the active StoreServerProxy.
-
-        Raises RuntimeError when a request is handled before the transport has
-        been started or after it has been stopped.
-        """
         proxy = self._proxy
 
         if proxy is None:
@@ -232,9 +218,6 @@ class SocketIOServerTransport:
     # -------------------------------------------------
 
     def _register_handlers(self) -> None:
-        """
-        Register every Socket.IO request and lifecycle handler.
-        """
         self._server.on(
             "connect",
             self._on_connect,
@@ -310,9 +293,6 @@ class SocketIOServerTransport:
         environ: dict[str, Any],
         auth: Any = None,
     ) -> bool:
-        """
-        Accept a new Socket.IO client connection.
-        """
         return True
 
     async def _on_disconnect(
@@ -320,9 +300,6 @@ class SocketIOServerTransport:
         sid: str,
         reason: str | None = None,
     ) -> None:
-        """
-        Notify StoreServer that a Socket.IO client disconnected.
-        """
         proxy = self._proxy
 
         if proxy is None:
@@ -341,9 +318,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and execute a snapshot request.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -375,6 +349,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="snapshot",
             )
 
     async def _on_lookup(
@@ -382,9 +357,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and execute a lookup request.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -414,6 +386,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="lookup",
             )
 
     async def _on_to_dict(
@@ -421,9 +394,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and execute a complete-node snapshot request.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -442,6 +412,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="to_dict",
             )
 
     # -------------------------------------------------
@@ -453,9 +424,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and register a store-event subscription.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -500,7 +468,9 @@ class SocketIOServerTransport:
 
             return self._success(
                 {
-                    "subscription_token": result.subscription_token,
+                    "subscription_token": (
+                        result.subscription_token
+                    ),
                     "event_token": result.event_token,
                 }
             )
@@ -508,6 +478,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="subscribe",
             )
 
     async def _on_unsubscribe(
@@ -515,9 +486,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and remove a store-event subscription.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -544,6 +512,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="unsubscribe",
             )
 
     # -------------------------------------------------
@@ -555,9 +524,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and register a remote signal binding.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -594,6 +560,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="signal_bind",
             )
 
     async def _on_signal_unbind(
@@ -601,9 +568,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and remove a remote signal binding.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -630,6 +594,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="signal_unbind",
             )
 
     async def _on_signal_emit(
@@ -637,9 +602,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse, emit, and dispatch a store signal.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -673,6 +635,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="signal_emit",
             )
 
     # -------------------------------------------------
@@ -684,9 +647,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Parse and execute a store transaction.
-        """
         try:
             payload = self._require_message(
                 message,
@@ -709,6 +669,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="transaction",
             )
 
     async def _on_undo(
@@ -716,9 +677,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any = None,
     ) -> dict[str, Any]:
-        """
-        Undo the latest reversible transaction and dispatch its events.
-        """
         try:
             result = self._require_proxy().undo()
 
@@ -733,6 +691,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="undo",
             )
 
     async def _on_redo(
@@ -740,9 +699,6 @@ class SocketIOServerTransport:
         sid: str,
         message: Any = None,
     ) -> dict[str, Any]:
-        """
-        Redo the latest undone transaction and dispatch its events.
-        """
         try:
             result = self._require_proxy().redo()
 
@@ -757,6 +713,7 @@ class SocketIOServerTransport:
         except Exception as exc:
             return self._failure_from_exception(
                 exc,
+                operation="redo",
             )
 
     # -------------------------------------------------
@@ -767,9 +724,6 @@ class SocketIOServerTransport:
         self,
         messages: tuple[DispatchMessage, ...],
     ) -> None:
-        """
-        Deliver subscription messages through Socket.IO rooms.
-        """
         for message in messages:
             await self._server.emit(
                 "event",
@@ -781,9 +735,6 @@ class SocketIOServerTransport:
         self,
         messages: tuple[SignalDispatchMessage, ...],
     ) -> None:
-        """
-        Deliver signal messages through Socket.IO rooms.
-        """
         for message in messages:
             await self._server.emit(
                 "signal",
@@ -799,13 +750,7 @@ class SocketIOServerTransport:
     def _require_message(
         message: Any,
     ) -> dict[str, Any]:
-        """
-        Require a Socket.IO request payload object.
-        """
-        if not isinstance(
-            message,
-            dict,
-        ):
+        if not isinstance(message, dict):
             raise TypeError(
                 "Socket.IO request payload must be an object"
             )
@@ -816,19 +761,21 @@ class SocketIOServerTransport:
     def _parse_address(
         message: dict[str, Any],
     ) -> Address[Any]:
-        """
-        Parse a store Address from a Socket.IO payload.
-        """
         value = message.get(
             "address",
         )
 
-        if not isinstance(
-            value,
-            list,
-        ):
+        if not isinstance(value, list):
             raise TypeError(
                 "Store address must be a list"
+            )
+
+        if not all(
+            isinstance(part, str)
+            for part in value
+        ):
+            raise TypeError(
+                "Store address must contain only strings"
             )
 
         return Address(
@@ -839,9 +786,6 @@ class SocketIOServerTransport:
     def _parse_opcode(
         message: dict[str, Any],
     ) -> OpCode:
-        """
-        Parse a concrete subscription OpCode.
-        """
         value = message.get(
             "opcode",
         )
@@ -859,17 +803,11 @@ class SocketIOServerTransport:
     def _parse_lookup_fields(
         message: dict[str, Any],
     ) -> str | tuple[str, ...]:
-        """
-        Parse lookup fields from a string or list of strings.
-        """
         value = message.get(
             "fields",
         )
 
-        if isinstance(
-            value,
-            str,
-        ):
+        if isinstance(value, str):
             if not value:
                 raise TypeError(
                     "Lookup field must be non-empty"
@@ -877,10 +815,7 @@ class SocketIOServerTransport:
 
             return value
 
-        if isinstance(
-            value,
-            list,
-        ):
+        if isinstance(value, list):
             if not value or not all(
                 isinstance(field, str) and field
                 for field in value
@@ -902,17 +837,14 @@ class SocketIOServerTransport:
         message: dict[str, Any],
         key: str,
     ) -> str:
-        """
-        Parse a required non-empty string.
-        """
         value = message.get(
             key,
         )
 
-        if not isinstance(
-            value,
-            str,
-        ) or not value:
+        if (
+            not isinstance(value, str)
+            or not value
+        ):
             raise TypeError(
                 f"{key} must be a non-empty string"
             )
@@ -924,9 +856,6 @@ class SocketIOServerTransport:
         message: dict[str, Any],
         key: str,
     ) -> str | None:
-        """
-        Parse an optional string.
-        """
         value = message.get(
             key,
         )
@@ -948,18 +877,12 @@ class SocketIOServerTransport:
         *,
         default: bool,
     ) -> bool:
-        """
-        Parse a concrete boolean option.
-        """
         value = message.get(
             key,
             default,
         )
 
-        if not isinstance(
-            value,
-            bool,
-        ):
+        if not isinstance(value, bool):
             raise TypeError(
                 f"{key} must be a boolean"
             )
@@ -970,12 +893,6 @@ class SocketIOServerTransport:
     def _parse_depth(
         message: dict[str, Any],
     ) -> int | None:
-        """
-        Parse foreign-key subscription depth.
-
-        None represents unlimited propagation. Integer values must be zero or
-        positive.
-        """
         value = message.get(
             "depth",
             0,
@@ -1003,17 +920,11 @@ class SocketIOServerTransport:
     def _parse_instructions(
         message: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        """
-        Parse a transaction instruction list.
-        """
         value = message.get(
             "instructions",
         )
 
-        if not isinstance(
-            value,
-            list,
-        ):
+        if not isinstance(value, list):
             raise TypeError(
                 "Transaction instructions must be a list"
             )
@@ -1036,72 +947,72 @@ class SocketIOServerTransport:
     def _success(
         cls,
         data: Any,
-        *,
-        status: int = 200,
     ) -> dict[str, Any]:
-        """
-        Build a successful Socket.IO acknowledgement envelope.
-        """
-        return {
-            "ok": True,
-            "status": status,
-            "data": cls._serialize(
+        response = success(
+            cls._serialize(
                 data,
-            ),
-            "error": None,
-        }
+            )
+        )
+
+        return response.payload()
 
     @staticmethod
     def _failure(
-        error: str,
-        *,
-        status: int,
+        store_failure: StoreFailure,
     ) -> dict[str, Any]:
-        """
-        Build a failed Socket.IO acknowledgement envelope.
-        """
-        return {
-            "ok": False,
-            "status": status,
-            "data": None,
-            "error": error,
-        }
+        return failure(
+            store_failure,
+        ).payload()
 
     @classmethod
     def _failure_from_exception(
         cls,
         exc: Exception,
+        *,
+        operation: str,
     ) -> dict[str, Any]:
-        """
-        Convert an exception into a Socket.IO acknowledgement failure.
-        """
+        if isinstance(exc, StoreOperationError):
+            return cls._failure(
+                exc.failure(),
+            )
+
         if isinstance(
             exc,
-            KeyError,
+            (
+                TypeError,
+                ValueError,
+                KeyError,
+            ),
         ):
-            status = 404
+            request_error = InvalidInstructionError(
+                str(exc) or "Invalid store request",
+                detail=InstructionErrorDetail(
+                    opcode=operation,
+                ),
+            )
 
-        elif isinstance(
-            exc,
-            (TypeError, ValueError),
-        ):
-            status = 400
+            return cls._failure(
+                request_error.failure(),
+            )
 
-        else:
-            status = 500
-
-        message = str(
-            exc,
+        logger.exception(
+            "Unexpected remote store request failure",
+            extra={
+                "operation": operation,
+                "exception_type": type(exc).__name__,
+            },
         )
 
-        if not message:
-            message = type(
-                exc,
-            ).__name__
-
         return cls._failure(
-            message,
-            status=status,
+            StoreFailure(
+                code=StoreErrorCode.INTERNAL_ERROR,
+                category=StoreErrorCategory.INTERNAL,
+                status=StoreErrorStatus.INTERNAL,
+                message=(
+                    "The remote store encountered an "
+                    "unexpected internal error"
+                ),
+            )
         )
 
     @classmethod
@@ -1117,20 +1028,19 @@ class SocketIOServerTransport:
 
         if isinstance(
             value,
-            (str, int, float, bool),
+            (
+                str,
+                int,
+                float,
+                bool,
+            ),
         ):
             return value
 
-        if isinstance(
-            value,
-            Address,
-        ):
+        if isinstance(value, Address):
             return value.to_list()
 
-        if isinstance(
-            value,
-            dict,
-        ):
+        if isinstance(value, dict):
             return {
                 str(key): cls._serialize(
                     item,
@@ -1140,7 +1050,11 @@ class SocketIOServerTransport:
 
         if isinstance(
             value,
-            (list, tuple, set),
+            (
+                list,
+                tuple,
+                set,
+            ),
         ):
             return [
                 cls._serialize(
@@ -1155,7 +1069,7 @@ class SocketIOServerTransport:
         ):
             return cls._serialize(
                 asdict(
-                    value,
+                    cast(Any, value),
                 )
             )
 
@@ -1165,9 +1079,7 @@ class SocketIOServerTransport:
             None,
         )
 
-        if callable(
-            payload,
-        ):
+        if callable(payload):
             return cls._serialize(
                 payload(),
             )
@@ -1178,9 +1090,7 @@ class SocketIOServerTransport:
             None,
         )
 
-        if callable(
-            to_dict,
-        ):
+        if callable(to_dict):
             return cls._serialize(
                 to_dict(),
             )

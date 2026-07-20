@@ -4,18 +4,18 @@ from __future__ import annotations
 from typing import Any, TypeVar
 
 from kivyfn.store.address import Address
-from kivyfn.store.errors.client import StoreStateError
+from kivyfn.store.error import StoreStateError
 from kivyfn.store.remote.client import RemoteStoreClient
 from kivyfn.store.remote.signal import RemoteSignalManager
 from kivyfn.store.remote.subscription import RemoteSubscriptionManager
 from kivyfn.store.remote.transport import RemoteClientTransport
+from kivyfn.store.response import Response
 from kivyfn.store.transaction import (
     Transaction,
     TransactionInput,
     TransactionResult,
     resolve_commands,
 )
-from kivyfn.store.transport.response import Response
 
 
 T = TypeVar("T")
@@ -27,13 +27,17 @@ class RemoteStore:
 
     RemoteStore owns:
 
-    - one remote client connection
-    - remote subscriptions
-    - remote signal bindings
+    - one remote client connection;
+    - remote subscriptions;
+    - remote signal bindings.
 
     It has no knowledge of where or how the server is hosted. The server may
     run in another process, another application, another machine, or a cloud
     environment.
+
+    Expected store-operation failures are returned as FailureResponse values
+    by RemoteStoreClient. Lifecycle, transport, timeout, connection, and
+    protocol failures remain exceptions.
     """
 
     def __init__(
@@ -68,7 +72,7 @@ class RemoteStore:
         """
         Connect to the remote store server.
 
-        Calling connect() while already connected is safe.
+        Calling connect while already connected is safe.
         """
         await self._client.connect()
 
@@ -76,7 +80,7 @@ class RemoteStore:
         """
         Disconnect from the remote store server.
 
-        Calling disconnect() while already disconnected is safe.
+        Calling disconnect while already disconnected is safe.
         """
         await self._client.disconnect()
 
@@ -101,13 +105,18 @@ class RemoteStore:
     # -------------------------------------------------
     # Public managers
     # -------------------------------------------------
+
     @property
-    def subscription(self) -> RemoteSubscriptionManager:
+    def subscription(
+        self,
+    ) -> RemoteSubscriptionManager:
         self._require_connected()
         return self._subscriptions
 
     @property
-    def signal(self) -> RemoteSignalManager:
+    def signal(
+        self,
+    ) -> RemoteSignalManager:
         self._require_connected()
         return self._signals
 
@@ -181,23 +190,35 @@ class RemoteStore:
     # Undo / Redo
     # -------------------------------------------------
 
-    async def undo(self) -> Response[Any]:
+    async def undo(
+        self,
+    ) -> Response[Any]:
         self._require_connected()
+
         return await self._client.undo()
 
-    async def redo(self) -> Response[Any]:
+    async def redo(
+        self,
+    ) -> Response[Any]:
         self._require_connected()
+
         return await self._client.redo()
 
     # -------------------------------------------------
     # Internal access
     # -------------------------------------------------
+
     @property
-    def client(self) -> RemoteStoreClient:
+    def client(
+        self,
+    ) -> RemoteStoreClient:
         return self._client
 
     # -------------------------------------------------
     # Helpers
     # -------------------------------------------------
-    def transaction(self) -> Transaction:
+
+    def transaction(
+        self,
+    ) -> Transaction:
         return Transaction()

@@ -8,11 +8,15 @@ from typing import (
     Literal,
     Protocol,
     TypeVar,
+    cast,
     overload,
 )
 
 from kivyfn.store.address import Address
-from kivyfn.store.operations import OpCode
+from kivyfn.store.error import (
+    StoreProtocolError,
+    StoreStateError,
+)
 from kivyfn.store.events.event import (
     InsertEvent,
     RemoveEvent,
@@ -21,14 +25,18 @@ from kivyfn.store.events.event import (
     StoreEvent,
     event_from_payload,
 )
+from kivyfn.store.operations import OpCode
 from kivyfn.store.remote.subscription import (
     EventCallback,
     RemoteSubscription,
 )
-from kivyfn.store.transaction import TransactionResult
-from kivyfn.store.transport import response
-from kivyfn.store.transport.response import Response
 from kivyfn.store.remote.transport import RemoteClientTransport
+from kivyfn.store.response import (
+    Response,
+    from_payload,
+    success,
+)
+from kivyfn.store.transaction import TransactionResult
 
 
 T = TypeVar("T")
@@ -41,22 +49,23 @@ TransportHandler = Callable[
 ]
 
 
-
-
-
 class RemoteSignalBindingProtocol(Protocol):
     """
     Minimal signal-binding interface required by RemoteStoreClient.
 
-    The concrete RemoteSignalBinding will be implemented in remote/signal.py.
+    The concrete RemoteSignalBinding is implemented in remote/signal.py.
     """
 
     @property
-    def token(self) -> str:
+    def token(
+        self,
+    ) -> str:
         ...
 
     @property
-    def event_token(self) -> str:
+    def event_token(
+        self,
+    ) -> str:
         ...
 
     async def dispatch(
@@ -65,7 +74,9 @@ class RemoteSignalBindingProtocol(Protocol):
     ) -> bool:
         ...
 
-    def _mark_disposed(self) -> None:
+    def _mark_disposed(
+        self,
+    ) -> None:
         ...
 
 
@@ -74,12 +85,17 @@ class RemoteStoreClient:
     Transport-independent remote-store client.
 
     Responsibilities:
-    - connection lifecycle
-    - request/response calls
-    - remote subscription creation and tracking
-    - remote signal-binding tracking
-    - incoming event and signal dispatch
-    - local cleanup when disconnected
+
+    - connection lifecycle;
+    - request and response calls;
+    - response-envelope validation;
+    - remote subscription creation and tracking;
+    - remote signal-binding tracking;
+    - incoming event and signal dispatch;
+    - local cleanup when disconnected.
+
+    Expected store failures are returned as FailureResponse values.
+    Connection, timeout, state, and protocol failures remain exceptions.
 
     The client knows nothing about Socket.IO specifically.
     """
@@ -93,6 +109,7 @@ class RemoteStoreClient:
         self._transport.set_event_handler(
             self.on_event,
         )
+
         self._transport.set_signal_handler(
             self.on_signal,
         )
@@ -125,23 +142,39 @@ class RemoteStoreClient:
     # Lifecycle
     # -------------------------------------------------
 
-    async def connect(self) -> None:
+    async def connect(
+        self,
+    ) -> None:
         if self.connected:
             return
 
         await self._transport.connect()
 
-    async def disconnect(self) -> None:
+    async def disconnect(
+        self,
+    ) -> None:
         if self.connected:
             await self._transport.disconnect()
 
         self._clear_local_state()
 
     @property
-    def connected(self) -> bool:
+    def connected(
+        self,
+    ) -> bool:
         return self._transport.connected
 
-    def _clear_local_state(self) -> None:
+    def _require_connected(
+        self,
+    ) -> None:
+        if not self.connected:
+            raise StoreStateError(
+                "Remote store client is not connected"
+            )
+
+    def _clear_local_state(
+        self,
+    ) -> None:
         subscriptions = tuple(
             self._subscriptions_by_token.values(),
         )
@@ -163,6 +196,26 @@ class RemoteStoreClient:
             binding._mark_disposed()
 
     # -------------------------------------------------
+    # Transport request helper
+    # -------------------------------------------------
+
+    async def _request(
+        self,
+        event: str,
+        message: Any | None = None,
+    ) -> Response[Any]:
+        self._require_connected()
+
+        payload = await self._transport.call(
+            event,
+            message,
+        )
+
+        return from_payload(
+            payload,
+        )
+
+    # -------------------------------------------------
     # Reads
     # -------------------------------------------------
 
@@ -174,7 +227,7 @@ class RemoteStoreClient:
         *,
         resolve_foreignkeys: bool = False,
     ) -> Response[Any]:
-        payload = await self._transport.call(
+        return await self._request(
             "snapshot",
             {
                 "address": address.to_list(),
@@ -182,10 +235,6 @@ class RemoteStoreClient:
                 "key": key,
                 "resolve_foreignkeys": resolve_foreignkeys,
             },
-        )
-
-        return response.from_payload(
-            payload,
         )
 
     async def lookup(
@@ -202,7 +251,7 @@ class RemoteStoreClient:
             else list(fields)
         )
 
-        payload = await self._transport.call(
+        result = await self._request(
             "lookup",
             {
                 "address": address.to_list(),
@@ -212,23 +261,25 @@ class RemoteStoreClient:
             },
         )
 
-        return response.from_payload(
-            payload,
+        return cast(
+            Response[T | dict[str, T] | None],
+            result,
         )
 
     async def to_dict(
         self,
         address: Address[T],
     ) -> Response[T]:
-        payload = await self._transport.call(
+        result = await self._request(
             "to_dict",
             {
                 "address": address.to_list(),
             },
         )
 
-        return response.from_payload(
-            payload,
+        return cast(
+            Response[T],
+            result,
         )
 
     # -------------------------------------------------
@@ -307,7 +358,7 @@ class RemoteStoreClient:
         resolve_foreignkeys: bool = False,
         propagate_foreignkeys: bool = False,
     ) -> Response[RemoteSubscription[Any]]:
-        payload = await self._transport.call(
+        result = await self._request(
             "subscribe",
             {
                 "address": address.to_list(),
@@ -320,35 +371,51 @@ class RemoteStoreClient:
             },
         )
 
-        result = response.from_payload(
-            payload,
-        )
-
-        if not result.ok:
-            return result
+        if result.ok is False:
+            return cast(
+                Response[RemoteSubscription[Any]],
+                result,
+            )
 
         data = result.data
 
-        if not isinstance(data, dict):
-            raise RuntimeError(
-                "Remote subscribe response must contain an object"
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise StoreProtocolError(
+                "Remote subscribe response data must be an object"
             )
 
         subscription_token = data.get(
             "subscription_token",
         )
+
         event_token = data.get(
             "event_token",
         )
 
-        if not isinstance(subscription_token, str):
-            raise RuntimeError(
-                "Remote subscribe response is missing subscription_token"
+        if (
+            not isinstance(subscription_token, str)
+            or not subscription_token
+        ):
+            raise StoreProtocolError(
+                "Remote subscribe response is missing a valid "
+                "subscription_token"
             )
 
-        if not isinstance(event_token, str):
-            raise RuntimeError(
-                "Remote subscribe response is missing event_token"
+        if (
+            not isinstance(event_token, str)
+            or not event_token
+        ):
+            raise StoreProtocolError(
+                "Remote subscribe response is missing a valid event_token"
+            )
+
+        if subscription_token in self._subscriptions_by_token:
+            raise StoreProtocolError(
+                "Remote server returned a duplicate subscription token: "
+                f"{subscription_token!r}"
             )
 
         subscription: RemoteSubscription[Any] = RemoteSubscription(
@@ -368,24 +435,19 @@ class RemoteStoreClient:
             subscription_token
         ] = subscription
 
-        return response.success(
-            data=subscription,
-            status=result.status,
+        return success(
+            subscription,
         )
 
     async def unsubscribe(
         self,
         token: str,
     ) -> Response[bool]:
-        payload = await self._transport.call(
+        result = await self._request(
             "unsubscribe",
             {
-                "token": token,
+                "subscription_token": token,
             },
-        )
-
-        result = response.from_payload(
-            payload,
         )
 
         if result.ok:
@@ -393,7 +455,10 @@ class RemoteStoreClient:
                 token,
             )
 
-        return result
+        return cast(
+            Response[bool],
+            result,
+        )
 
     def _remove_subscription(
         self,
@@ -408,6 +473,7 @@ class RemoteStoreClient:
             return None
 
         event_token = subscription.event_token
+
         bucket = self._subscriptions.get(
             event_token,
         )
@@ -444,7 +510,7 @@ class RemoteStoreClient:
         RemoteSignalManager creates the local binding object and registers it
         through register_signal_binding().
         """
-        payload = await self._transport.call(
+        result = await self._request(
             "signal_bind",
             {
                 "address": address.to_list(),
@@ -453,23 +519,20 @@ class RemoteStoreClient:
             },
         )
 
-        return response.from_payload(
-            payload,
+        return cast(
+            Response[dict[str, Any]],
+            result,
         )
 
     async def request_signal_unbind(
         self,
         token: str,
     ) -> Response[bool]:
-        payload = await self._transport.call(
+        result = await self._request(
             "signal_unbind",
             {
-                "token": token,
+                "binding_token": token,
             },
-        )
-
-        result = response.from_payload(
-            payload,
         )
 
         if result.ok:
@@ -477,7 +540,10 @@ class RemoteStoreClient:
                 token,
             )
 
-        return result
+        return cast(
+            Response[bool],
+            result,
+        )
 
     async def emit_signal(
         self,
@@ -487,7 +553,7 @@ class RemoteStoreClient:
         *,
         id: str | None = None,
     ) -> Response[bool]:
-        payload = await self._transport.call(
+        result = await self._request(
             "signal_emit",
             {
                 "address": address.to_list(),
@@ -497,8 +563,9 @@ class RemoteStoreClient:
             },
         )
 
-        return response.from_payload(
-            payload,
+        return cast(
+            Response[bool],
+            result,
         )
 
     def register_signal_binding(
@@ -506,8 +573,8 @@ class RemoteStoreClient:
         binding: RemoteSignalBindingProtocol,
     ) -> None:
         if binding.token in self._signal_bindings_by_token:
-            raise RuntimeError(
-                f"Signal binding token already registered: "
+            raise StoreStateError(
+                "Signal binding token is already registered: "
                 f"{binding.token!r}"
             )
 
@@ -560,48 +627,56 @@ class RemoteStoreClient:
         self,
         instructions: list[dict[str, Any]],
     ) -> Response[TransactionResult]:
-        payload = await self._transport.call(
+        result = await self._request(
             "transaction",
-            instructions,
+            {
+                "instructions": instructions,
+            },
         )
 
-        result = response.from_payload(
-            payload,
-        )
-
-        if not result.ok:
-            return result
-
-        if not isinstance(result.data, dict):
-            raise RuntimeError(
-                "Remote transaction response must contain an object"
+        if result.ok is False:
+            return cast(
+                Response[TransactionResult],
+                result,
             )
 
-        transaction_result = TransactionResult.from_payload(
-            result.data,
+        data = result.data
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise StoreProtocolError(
+                "Remote transaction response data must be an object"
+            )
+
+        try:
+            transaction_result = TransactionResult.from_payload(
+                data,
+            )
+
+        except Exception as exc:
+            raise StoreProtocolError(
+                "Remote transaction response contains an invalid "
+                "transaction result"
+            ) from exc
+
+        return success(
+            transaction_result,
         )
 
-        return response.success(
-            data=transaction_result,
-            status=result.status,
-        )
-
-    async def undo(self) -> Response[Any]:
-        payload = await self._transport.call(
+    async def undo(
+        self,
+    ) -> Response[Any]:
+        return await self._request(
             "undo",
         )
 
-        return response.from_payload(
-            payload,
-        )
-
-    async def redo(self) -> Response[Any]:
-        payload = await self._transport.call(
+    async def redo(
+        self,
+    ) -> Response[Any]:
+        return await self._request(
             "redo",
-        )
-
-        return response.from_payload(
-            payload,
         )
 
     # -------------------------------------------------
@@ -615,18 +690,25 @@ class RemoteStoreClient:
         event_token = message.get(
             "event_token",
         )
+
         event_payload = message.get(
             "event",
         )
 
-        if not isinstance(event_token, str):
-            raise ValueError(
-                "Remote event message is missing event_token"
+        if (
+            not isinstance(event_token, str)
+            or not event_token
+        ):
+            raise StoreProtocolError(
+                "Remote event message is missing a valid event_token"
             )
 
-        if not isinstance(event_payload, dict):
-            raise ValueError(
-                "Remote event message is missing event payload"
+        if not isinstance(
+            event_payload,
+            dict,
+        ):
+            raise StoreProtocolError(
+                "Remote event message is missing an event payload"
             )
 
         subscriptions = tuple(
@@ -639,9 +721,15 @@ class RemoteStoreClient:
         if not subscriptions:
             return
 
-        event: StoreEvent = event_from_payload(
-            event_payload,
-        )
+        try:
+            event: StoreEvent = event_from_payload(
+                event_payload,
+            )
+
+        except Exception as exc:
+            raise StoreProtocolError(
+                "Remote event payload is invalid"
+            ) from exc
 
         dead_tokens: list[str] = []
 
@@ -664,23 +752,32 @@ class RemoteStoreClient:
     ) -> None:
         # Imported lazily so remote/client.py does not create an import cycle
         # with remote/signal.py.
-        from kivyfn.store.signals.event import signal_event_from_payload
+        from kivyfn.store.signals.event import (
+            signal_event_from_payload,
+        )
 
         event_token = message.get(
             "event_token",
         )
+
         signal_payload = message.get(
             "signal",
         )
 
-        if not isinstance(event_token, str):
-            raise ValueError(
-                "Remote signal message is missing event_token"
+        if (
+            not isinstance(event_token, str)
+            or not event_token
+        ):
+            raise StoreProtocolError(
+                "Remote signal message is missing a valid event_token"
             )
 
-        if not isinstance(signal_payload, dict):
-            raise ValueError(
-                "Remote signal message is missing signal payload"
+        if not isinstance(
+            signal_payload,
+            dict,
+        ):
+            raise StoreProtocolError(
+                "Remote signal message is missing a signal payload"
             )
 
         bindings = tuple(
@@ -693,9 +790,15 @@ class RemoteStoreClient:
         if not bindings:
             return
 
-        event = signal_event_from_payload(
-            signal_payload,
-        )
+        try:
+            event = signal_event_from_payload(
+                signal_payload,
+            )
+
+        except Exception as exc:
+            raise StoreProtocolError(
+                "Remote signal payload is invalid"
+            ) from exc
 
         dead_tokens: list[str] = []
 
