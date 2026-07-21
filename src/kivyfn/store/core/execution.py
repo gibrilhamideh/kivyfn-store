@@ -53,6 +53,21 @@ class ExecutionResult:
         self.events = events or []
         self.touched_nodes = touched_nodes or set()
 
+    def __repr__(self) -> str:
+        return (
+            f"{type(self).__name__}("
+            f"success={self.success!r}, "
+            f"stage={self.stage!r}, "
+            f"compiled={self.compiled!r}, "
+            f"error={self.error!r}, "
+            f"inserted={self.inserted!r}, "
+            f"removed={self.removed!r}, "
+            f"updated={self.updated!r}, "
+            f"events={self.events!r}, "
+            f"touched_nodes={self.touched_nodes!r}"
+            f")"
+        )
+
     def payload(self) -> dict[str, Any]:
         data: dict[str, Any] = {
             "success": self.success,

@@ -1,4 +1,4 @@
-# kivyfn/store/transport/socketio_server.py
+# kivyfn/store/transport/socketio/server.py
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
@@ -30,6 +30,7 @@ from kivyfn.store.server.subscription import DispatchMessage
 
 if TYPE_CHECKING:
     from kivyfn.store.server.proxy import StoreServerProxy
+    from kivyfn.store.core.execution import ExecutionResult
 
 
 logger = get_logger(__name__)
@@ -652,18 +653,19 @@ class SocketIOServerTransport:
                 message,
             )
 
-            result = self._require_proxy().transaction(
+            execution = self._require_proxy().transaction(
                 instructions=self._parse_instructions(
                     payload,
                 ),
             )
 
-            await self._emit_subscription_messages(
-                result.dispatches,
-            )
+            if execution.result.success:
+                await self._emit_subscription_messages(
+                    execution.dispatches,
+                )
 
-            return self._success(
-                result.result,
+            return self._execution_response(
+                execution.result,
             )
 
         except Exception as exc:
@@ -1098,4 +1100,23 @@ class SocketIOServerTransport:
         raise TypeError(
             "Value is not Socket.IO serializable: "
             f"{type(value).__name__}"
+        )
+
+    @classmethod
+    def _execution_response(
+        cls,
+        result: ExecutionResult,
+    ) -> dict[str, Any]:
+        if result.success:
+            return cls._success(
+                result,
+            )
+
+        if result.error is None:
+            raise RuntimeError(
+                "Failed execution result has no error"
+            )
+
+        return cls._failure(
+            result.error.failure(),
         )
