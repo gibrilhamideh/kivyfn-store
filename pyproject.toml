@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = [
+    "setuptools>=68",
+    "wheel",
+]
 build-backend = "setuptools.build_meta"
 
 
@@ -11,25 +14,33 @@ readme = "README.md"
 requires-python = ">=3.10"
 
 authors = [
-    { name = "Gabtech", email = "gibrilhamideh@gmail.com" }
+    { name = "Gabtech", email = "gibrilhamideh@gmail.com" },
 ]
 
 dependencies = [
     "kivy>=2.3.0",
     "kivyfn",
     "uuid6",
-    "python-socketio[aiohttp]>=5.11,<6"
+    "python-socketio>=5.11",
+    "aiohttp>=3.9"
 ]
 
 
+[dependency-groups]
+dev = [
+    "kivy-stubs",
+]
+
+
+[tool.uv.sources]
+kivyfn = { path = "../kivyfn", editable = true }
+kivy-stubs = { path = "../kivy-stubs", editable = true }
+
+
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = { "" = "src" }
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
-
-[project.optional-dependencies]
-dev = [
-    "kivy-stubs>=0.1.0"
-]

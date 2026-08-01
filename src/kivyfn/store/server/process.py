@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any, cast
 from kivyfn.runtime.process import FnProcessContext
 from kivyfn.store.server.server import StoreServer
 from kivyfn.store.server.types import ServerTransportFactory
+from kivyfn.logging import get_logger
 
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from kivyfn.store.builder.config import StoreConfig
@@ -129,6 +131,7 @@ class StoreServerProcess:
 
         try:
             await server.start()
+            logger.info("Store server started.")
 
             context.ready(
                 transport.endpoint,
@@ -137,3 +140,4 @@ class StoreServerProcess:
             await stopped.wait()
         finally:
             await server.stop()
+            logger.info("Store server stopped.")
