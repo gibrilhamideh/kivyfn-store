@@ -1,8 +1,9 @@
 # kivyfn/store/transport/socketio/server.py
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
 from typing import TYPE_CHECKING, Any, cast
+from dataclasses import asdict, is_dataclass
+from collections import defaultdict
 
 import socketio
 
@@ -726,11 +727,32 @@ class SocketIOServerTransport:
         self,
         messages: tuple[DispatchMessage, ...],
     ) -> None:
+        if not messages:
+            return
+
+        messages_by_client: dict[
+            str,
+            list[dict[str, Any]],
+        ] = defaultdict(list)
+
         for message in messages:
+            participants = self._server.manager.get_participants(
+                "/",
+                message.channel,
+            )
+
+            for sid, _engineio_sid in participants:
+                messages_by_client[sid].append(
+                    message.payload,
+                )
+
+        for sid, payloads in messages_by_client.items():
             await self._server.emit(
-                "event",
-                message.payload,
-                room=message.channel,
+                "events",
+                {
+                    "events": payloads,
+                },
+                to=sid,
             )
 
     async def _emit_signal_messages(

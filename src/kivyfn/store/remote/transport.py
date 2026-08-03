@@ -5,6 +5,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 
+EventBatchHandler = Callable[
+    [list[dict[str, Any]]],
+    Awaitable[None],
+]
+
 TransportHandler = Callable[
     [dict[str, Any]],
     Awaitable[None],
@@ -21,7 +26,7 @@ class RemoteClientTransport(Protocol):
 
     def set_event_handler(
         self,
-        handler: TransportHandler,
+        handler: EventBatchHandler,
     ) -> None:
         ...
 

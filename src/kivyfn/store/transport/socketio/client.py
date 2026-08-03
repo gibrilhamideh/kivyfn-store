@@ -5,9 +5,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import socketio
-from socketio.exceptions import (
-    TimeoutError as SocketIOTimeoutError,
-)
+from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
 from kivyfn.logging import get_logger
 from kivyfn.store.error import (
@@ -17,6 +15,11 @@ from kivyfn.store.error import (
     StoreTimeoutError,
 )
 
+
+EventBatchHandler = Callable[
+    [list[dict[str, Any]]],
+    Awaitable[None],
+]
 
 TransportHandler = Callable[
     [dict[str, Any]],
@@ -37,7 +40,7 @@ class SocketIOClientTransport:
     - connect and disconnect from the remote endpoint;
     - perform request/response calls;
     - translate Socket.IO failures into store runtime errors;
-    - forward incoming store events and signals to registered handlers.
+    - forward incoming store event batches and signals to handlers.
 
     This transport contains no store, schema, transaction, subscription,
     signal, or response-domain logic.
@@ -85,7 +88,7 @@ class SocketIOClientTransport:
         self.url = url
         self.timeout = timeout
 
-        self._event_handler: TransportHandler | None = None
+        self._event_handler: EventBatchHandler | None = None
         self._signal_handler: TransportHandler | None = None
 
         self._client = socketio.AsyncClient(
@@ -99,8 +102,8 @@ class SocketIOClientTransport:
         )
 
         self._client.on(
-            "event",
-            self._on_event,
+            "events",
+            self._on_events,
         )
 
         self._client.on(
@@ -114,7 +117,7 @@ class SocketIOClientTransport:
 
     def set_event_handler(
         self,
-        handler: TransportHandler,
+        handler: EventBatchHandler,
     ) -> None:
         self._event_handler = handler
 
@@ -184,9 +187,7 @@ class SocketIOClientTransport:
 
     @property
     def connected(self) -> bool:
-        return bool(
-            self._client.connected
-        )
+        return bool(self._client.connected)
 
     # -------------------------------------------------
     # Calls
@@ -200,8 +201,8 @@ class SocketIOClientTransport:
         """
         Perform one Socket.IO acknowledgement call.
 
-        This method only returns the raw acknowledgement payload. Interpreting
-        the store Response belongs to RemoteStoreClient.
+        This method only returns the raw acknowledgement payload.
+        Interpreting the store response belongs to RemoteStoreClient.
         """
         if not self.connected:
             raise StoreStateError(
@@ -230,12 +231,12 @@ class SocketIOClientTransport:
     # Incoming events
     # -------------------------------------------------
 
-    async def _on_event(
+    async def _on_events(
         self,
         message: Any,
     ) -> None:
         """
-        Validate and forward one incoming subscription event.
+        Validate and forward one incoming transaction event batch.
         """
         handler = self._event_handler
 
@@ -246,20 +247,31 @@ class SocketIOClientTransport:
 
         if not isinstance(message, dict):
             raise StoreProtocolError(
-                "Socket.IO store event payload must be an object"
+                "Socket.IO store events payload must be an object"
+            )
+
+        events = message.get("events")
+
+        if not isinstance(events, list):
+            raise StoreProtocolError(
+                "Socket.IO store events payload must contain "
+                "an events list"
+            )
+
+        if not all(isinstance(event, dict) for event in events):
+            raise StoreProtocolError(
+                "Every Socket.IO store event must be an object"
             )
 
         try:
-            await handler(
-                message,
-            )
+            await handler(events)
 
         except StoreProtocolError:
             raise
 
         except Exception:
             logger.exception(
-                "Remote store event handler failed"
+                "Remote store event batch handler failed"
             )
 
     async def _on_signal(
@@ -282,9 +294,7 @@ class SocketIOClientTransport:
             )
 
         try:
-            await handler(
-                message,
-            )
+            await handler(message)
 
         except StoreProtocolError:
             raise
