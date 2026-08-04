@@ -67,7 +67,7 @@ class Builder:
         self._store_version = version
         return self
 
-    def boot_policy(self, policy: Literal["erase", "raise"]) -> Builder:
+    def boot_policy(self, policy: Literal["erase", "raise", "recover"]) -> Builder:
         boot_policy = BootPolicy(policy)
 
         self._boot_policy = boot_policy
