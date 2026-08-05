@@ -96,11 +96,24 @@ class Node:
                 )
                 continue
 
-            built = self._build_default(
-                row,
-                recover=recover,
-                row_id=row_id,
-            )
+            try:
+                built = self._build_default(
+                    row,
+                    recover=recover,
+                    row_id=row_id,
+                )
+            except FieldValidationError as error:
+                if not recover:
+                    raise
+
+                logger.error(
+                    "Removing persisted row %s[%s]: "
+                    "field could not be recovered: %s",
+                    self.schema.name,
+                    row_id,
+                    error,
+                )
+                continue
 
             try:
                 self._insert_built(row_id, built)
