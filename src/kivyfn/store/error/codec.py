@@ -229,14 +229,6 @@ def _decode_context(
             field="context.stage",
         )
 
-    address = values.get("address")
-
-    if address is not None:
-        values["address"] = _decode_string_tuple(
-            address,
-            field="context.address",
-        )
-
     return _construct_dataclass(
         StoreErrorContext,
         values,
