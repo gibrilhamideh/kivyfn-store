@@ -29,6 +29,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "kivy-stubs",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
 ]
 
 

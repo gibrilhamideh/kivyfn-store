@@ -1,31 +1,23 @@
 # kivyfn/store/transport/socketio/client.py
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import socketio
 from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
 from kivyfn.logging import get_logger
+from kivyfn.store.remote.transport import (
+    EventBatchHandler,
+    LifecycleHandler,
+    TransportHandler,
+)
 from kivyfn.store.error import (
     StoreConnectionError,
     StoreProtocolError,
     StoreStateError,
     StoreTimeoutError,
 )
-
-
-EventBatchHandler = Callable[
-    [list[dict[str, Any]]],
-    Awaitable[None],
-]
-
-TransportHandler = Callable[
-    [dict[str, Any]],
-    Awaitable[None],
-]
-
 
 logger = get_logger(__name__)
 
@@ -90,6 +82,7 @@ class SocketIOClientTransport:
 
         self._event_handler: EventBatchHandler | None = None
         self._signal_handler: TransportHandler | None = None
+        self._lifecycle_handler: LifecycleHandler | None = None
 
         self._client = socketio.AsyncClient(
             reconnection=reconnection,
@@ -99,6 +92,16 @@ class SocketIOClientTransport:
             randomization_factor=randomization_factor,
             logger=logger,
             engineio_logger=engineio_logger,
+        )
+
+        self._client.on(
+            "connect",
+            self._on_connect,
+        )
+
+        self._client.on(
+            "disconnect",
+            self._on_disconnect,
         )
 
         self._client.on(
@@ -126,6 +129,12 @@ class SocketIOClientTransport:
         handler: TransportHandler,
     ) -> None:
         self._signal_handler = handler
+
+    def set_lifecycle_handler(
+        self,
+        handler: LifecycleHandler,
+    ) -> None:
+        self._lifecycle_handler = handler
 
     # -------------------------------------------------
     # Lifecycle
@@ -231,6 +240,21 @@ class SocketIOClientTransport:
     # Incoming events
     # -------------------------------------------------
 
+    async def _on_connect(self) -> None:
+        handler = self._lifecycle_handler
+
+        if handler is not None:
+            handler("connected")
+
+    async def _on_disconnect(
+        self,
+        _reason: str | None = None,
+    ) -> None:
+        handler = self._lifecycle_handler
+
+        if handler is not None:
+            handler("disconnected")
+
     async def _on_events(
         self,
         message: Any,
@@ -318,6 +342,12 @@ class SocketIOClientTransport:
         if self._signal_handler is None:
             raise StoreStateError(
                 "Socket.IO signal handler must be configured "
+                "before connecting"
+            )
+
+        if self._lifecycle_handler is None:
+            raise StoreStateError(
+                "Socket.IO lifecycle handler must be configured "
                 "before connecting"
             )
 

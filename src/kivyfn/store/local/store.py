@@ -10,13 +10,20 @@ from kivyfn.store.error import (
     StoreOperationError,
     StoreStateError,
 )
+from kivyfn.store.local.query import (
+    LocalQuerySubscription,
+    LocalQuerySubscriptionManager,
+    QueryCallback,
+)
 from kivyfn.store.local.signal import LocalSignalManager
 from kivyfn.store.local.subscription import LocalSubscriptionManager
+from kivyfn.store.query import Query, QueryResult
 from kivyfn.store.response import (
     Response,
     failure,
     success,
 )
+from kivyfn.store.storage import ThreadPersistenceCoordinator
 from kivyfn.store.transaction import (
     Transaction,
     TransactionInput,
@@ -80,6 +87,13 @@ class LocalStore:
             self._engine,
         )
 
+        self._queries = LocalQuerySubscriptionManager(
+            self._engine,
+        )
+        self._persistence = ThreadPersistenceCoordinator(
+            self._engine,
+        )
+
         self._lock = RLock()
         self._booted = False
         self._shutdown = False
@@ -107,6 +121,7 @@ class LocalStore:
                 )
 
             self._engine.boot()
+            self._persistence.start()
             self._booted = True
 
     def shutdown(self) -> None:
@@ -120,10 +135,17 @@ class LocalStore:
             if self._shutdown:
                 return
 
-            self._subscriptions.clear()
-            self._signals.clear()
-
             self._booted = False
+
+            try:
+                self._persistence.stop(flush=True)
+            except BaseException:
+                self._booted = True
+                raise
+
+            self._subscriptions.clear()
+            self._queries.clear()
+            self._signals.clear()
             self._shutdown = True
 
     def _require_booted(self) -> None:
@@ -284,6 +306,29 @@ class LocalStore:
                 data,
             )
 
+    def fetch(
+        self,
+        query: Query,
+    ) -> Response[QueryResult]:
+        with self._lock:
+            self._require_booted()
+
+            try:
+                data = self._engine.fetch(query)
+            except StoreOperationError as exc:
+                return failure(exc.failure())
+
+            return success(data)
+
+    def subscribe(
+        self,
+        query: Query,
+        callback: QueryCallback,
+    ) -> LocalQuerySubscription:
+        with self._lock:
+            self._require_booted()
+            return self._queries.subscribe(query, callback)
+
     # -------------------------------------------------
     # Transactions
     # -------------------------------------------------
@@ -300,8 +345,9 @@ class LocalStore:
         - a Transaction instance;
         - a raw list of command payloads.
 
-        Events are dispatched only after execution and persistence succeed.
-        The store lock remains held through event delivery so another thread
+        Events are dispatched after execution and any immediate persistence.
+        Delayed schemas are marked dirty before dispatch. The store lock
+        remains held through event delivery so another thread
         cannot interleave a transaction between mutation and notification.
 
         Expected compilation, delta, and validation failures are returned as
@@ -343,6 +389,7 @@ class LocalStore:
             self._subscriptions.dispatch_many(
                 execution.events,
             )
+            self._queries.dispatch_many(execution.events)
 
             result = TransactionResult.from_payload(
                 execution.payload(),
@@ -378,6 +425,7 @@ class LocalStore:
             self._subscriptions.dispatch_many(
                 events,
             )
+            self._queries.dispatch_many(events)
 
             return success(
                 events,
@@ -405,6 +453,7 @@ class LocalStore:
             self._subscriptions.dispatch_many(
                 events,
             )
+            self._queries.dispatch_many(events)
 
             return success(
                 events,

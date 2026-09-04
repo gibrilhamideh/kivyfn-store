@@ -49,6 +49,8 @@ class SingleNodeState(
         "on_loaded",
         "on_change",
         "on_set_failed",
+        "on_sync_lost",
+        "on_resynchronized",
     )
 
     def __init__(
@@ -78,6 +80,10 @@ class SingleNodeState(
             on_loaded=self._on_adapter_loaded,
             on_set=self._on_adapter_set,
             on_set_failed=self._on_adapter_set_failed,
+            on_sync_lost=self._on_adapter_sync_lost,
+            on_resynchronized=(
+                self._on_adapter_resynchronized
+            ),
         )
 
     # -------------------------------------------------
@@ -154,6 +160,29 @@ class SingleNodeState(
             error,
         )
 
+    def _on_adapter_sync_lost(
+        self,
+        _adapter: Adapter[ModelT],
+        reason: str,
+    ) -> None:
+        self.dispatch(
+            "on_sync_lost",
+            reason,
+        )
+
+    def _on_adapter_resynchronized(
+        self,
+        adapter: Adapter[ModelT],
+        reason: str,
+    ) -> None:
+        self.state._hydrate(
+            adapter.data,
+        )
+        self.dispatch(
+            "on_resynchronized",
+            reason,
+        )
+
     # -------------------------------------------------
     # State
     # -------------------------------------------------
@@ -184,5 +213,17 @@ class SingleNodeState(
         key: str,
         previous_value: Any,
         error: Any,
+    ) -> None:
+        pass
+
+    def on_sync_lost(
+        self,
+        reason: str,
+    ) -> None:
+        pass
+
+    def on_resynchronized(
+        self,
+        reason: str,
     ) -> None:
         pass

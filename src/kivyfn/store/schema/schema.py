@@ -23,6 +23,7 @@ IndexKey = tuple[str, ...]
 class Schema:
     many: ClassVar[bool] = False
     persistent: ClassVar[bool] = False
+    persist_interval: ClassVar[str | None] = None
 
     indexes: ClassVar[list[IndexKey]] = []
     uniques: ClassVar[list[IndexKey]] = []

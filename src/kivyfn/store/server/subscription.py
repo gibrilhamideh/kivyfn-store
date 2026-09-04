@@ -524,9 +524,13 @@ class RemoteSubscriptionManager:
             )
 
             for translated in translated_events:
+                unrevisioned = translated.copy_with(
+                    server_instance_id=None,
+                    revision=None,
+                )
                 messages.extend(
                     self._dispatch_listeners(
-                        translated,
+                        unrevisioned,
                     )
                 )
 

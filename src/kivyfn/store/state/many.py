@@ -58,6 +58,8 @@ class ManyNodeState(
         "on_merge_failed",
         "on_remove_failed",
         "on_difference_failed",
+        "on_sync_lost",
+        "on_resynchronized",
     )
 
     def __init__(
@@ -92,6 +94,10 @@ class ManyNodeState(
             on_merge_failed=self._on_adapter_merge_failed,
             on_remove_failed=self._on_adapter_remove_failed,
             on_difference_failed=self._on_adapter_difference_failed,
+            on_sync_lost=self._on_adapter_sync_lost,
+            on_resynchronized=(
+                self._on_adapter_resynchronized
+            ),
         )
 
     # -------------------------------------------------
@@ -370,6 +376,39 @@ class ManyNodeState(
             error,
         )
 
+    def _on_adapter_sync_lost(
+        self,
+        _adapter: ManyAdapter[RowT],
+        reason: str,
+    ) -> None:
+        self.dispatch(
+            "on_sync_lost",
+            reason,
+        )
+
+    def _on_adapter_resynchronized(
+        self,
+        adapter: ManyAdapter[RowT],
+        reason: str,
+    ) -> None:
+        rows: dict[str, StateT] = {}
+        current_ids = set(adapter.data)
+
+        for id, state in self.state.items():
+            if id not in current_ids:
+                state.exists = False
+
+        for id, values in adapter.data.items():
+            state = self.ref(id)
+            state._hydrate(values)
+            rows[id] = state
+
+        self.state = rows
+        self.dispatch(
+            "on_resynchronized",
+            reason,
+        )
+
     # -------------------------------------------------
     # State
     # -------------------------------------------------
@@ -432,5 +471,17 @@ class ManyNodeState(
         self,
         desired: Mapping[str, RowT],
         error: Any,
+    ) -> None:
+        pass
+
+    def on_sync_lost(
+        self,
+        reason: str,
+    ) -> None:
+        pass
+
+    def on_resynchronized(
+        self,
+        reason: str,
     ) -> None:
         pass

@@ -1,8 +1,7 @@
-# kivyfn/store/remote/transport.py
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 
 EventBatchHandler = Callable[
@@ -15,14 +14,19 @@ TransportHandler = Callable[
     Awaitable[None],
 ]
 
+LifecycleEvent = Literal[
+    "connected",
+    "disconnected",
+]
+
+LifecycleHandler = Callable[
+    [LifecycleEvent],
+    None,
+]
+
 
 class RemoteClientTransport(Protocol):
-    """
-    Transport contract required by the remote-store client.
-
-    Implementations may use Socket.IO, Unix-domain sockets, TCP, or another
-    request/response transport.
-    """
+    """Transport contract required by the remote-store client."""
 
     def set_event_handler(
         self,
@@ -33,6 +37,12 @@ class RemoteClientTransport(Protocol):
     def set_signal_handler(
         self,
         handler: TransportHandler,
+    ) -> None:
+        ...
+
+    def set_lifecycle_handler(
+        self,
+        handler: LifecycleHandler,
     ) -> None:
         ...
 

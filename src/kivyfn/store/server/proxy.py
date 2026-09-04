@@ -5,6 +5,11 @@ from typing import TYPE_CHECKING, Any
 
 from kivyfn.store.address import Address
 from kivyfn.store.operations import OpCode
+from kivyfn.store.query import Query, QueryResult
+from kivyfn.store.server.query import (
+    QuerySubscribeResult,
+    QueryUnsubscribeResult,
+)
 from kivyfn.store.server.signal import (
     SignalBindResult,
     SignalDispatchMessage,
@@ -75,6 +80,27 @@ class StoreServerProxy:
             resolve_foreignkeys=resolve_foreignkeys,
         )
 
+    def sync_snapshot(
+        self,
+        address: Address[Any],
+        *,
+        resolve_foreignkeys: bool = False,
+    ) -> dict[str, Any]:
+        """Return an authoritative snapshot with revision metadata."""
+        return self._server.sync_snapshot(
+            address=address,
+            resolve_foreignkeys=resolve_foreignkeys,
+        )
+
+    def revision_audit(
+        self,
+        addresses: list[Address[Any]],
+    ) -> dict[str, Any]:
+        """Return revision metadata for selected store addresses."""
+        return self._server.revision_audit(
+            addresses,
+        )
+
     def lookup(
         self,
         address: Address[Any],
@@ -102,6 +128,53 @@ class StoreServerProxy:
         """
         return self._server.to_dict(
             address,
+        )
+
+    def fetch(
+        self,
+        query: Query,
+    ) -> QueryResult:
+        return self._server.fetch(query)
+
+    # -------------------------------------------------
+    # Query subscriptions
+    # -------------------------------------------------
+
+    def subscribe_query(
+        self,
+        client_id: str,
+        query: Query,
+    ) -> QuerySubscribeResult:
+        return self._server.subscribe_query(client_id, query)
+
+    def unsubscribe_query(
+        self,
+        client_id: str,
+        subscription_token: str,
+    ) -> QueryUnsubscribeResult:
+        return self._server.unsubscribe_query(
+            client_id,
+            subscription_token,
+        )
+
+    def sync_query(
+        self,
+        client_id: str,
+        subscription_token: str,
+    ) -> dict[str, Any]:
+        return self._server.sync_query(
+            client_id,
+            subscription_token,
+        )
+
+    def audit_queries(
+        self,
+        client_id: str,
+        subscription_tokens: list[str],
+    ) -> dict[str, Any]:
+        return self._server.audit_queries(
+            client_id,
+            subscription_tokens,
         )
 
     # -------------------------------------------------

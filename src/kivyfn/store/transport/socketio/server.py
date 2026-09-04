@@ -1,9 +1,11 @@
 # kivyfn/store/transport/socketio/server.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
-from dataclasses import asdict, is_dataclass
+import asyncio
+
 from collections import defaultdict
+from dataclasses import asdict, is_dataclass
+from typing import TYPE_CHECKING, Any, cast
 
 import socketio
 
@@ -21,6 +23,7 @@ from kivyfn.store.error import (
     StoreOperationError,
 )
 from kivyfn.store.operations import OpCode
+from kivyfn.store.query import query_from_payload
 from kivyfn.store.response import (
     failure,
     success,
@@ -99,6 +102,7 @@ class SocketIOServerTransport:
 
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
+        self._mutation_lock = asyncio.Lock()
         self._running = False
 
         self._register_handlers()
@@ -236,6 +240,16 @@ class SocketIOServerTransport:
         )
 
         self._server.on(
+            "sync_snapshot",
+            self._on_sync_snapshot,
+        )
+
+        self._server.on(
+            "revision_audit",
+            self._on_revision_audit,
+        )
+
+        self._server.on(
             "lookup",
             self._on_lookup,
         )
@@ -243,6 +257,31 @@ class SocketIOServerTransport:
         self._server.on(
             "to_dict",
             self._on_to_dict,
+        )
+
+        self._server.on(
+            "query_fetch",
+            self._on_query_fetch,
+        )
+
+        self._server.on(
+            "query_subscribe",
+            self._on_query_subscribe,
+        )
+
+        self._server.on(
+            "query_unsubscribe",
+            self._on_query_unsubscribe,
+        )
+
+        self._server.on(
+            "query_sync",
+            self._on_query_sync,
+        )
+
+        self._server.on(
+            "query_audit",
+            self._on_query_audit,
         )
 
         self._server.on(
@@ -354,6 +393,61 @@ class SocketIOServerTransport:
                 operation="snapshot",
             )
 
+    async def _on_sync_snapshot(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(
+                message,
+            )
+            result = self._require_proxy().sync_snapshot(
+                address=self._parse_address(
+                    payload,
+                ),
+                resolve_foreignkeys=self._parse_bool(
+                    payload,
+                    "resolve_foreignkeys",
+                    default=False,
+                ),
+            )
+
+            return self._success(
+                result,
+            )
+
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="sync_snapshot",
+            )
+
+    async def _on_revision_audit(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(
+                message,
+            )
+            result = self._require_proxy().revision_audit(
+                self._parse_addresses(
+                    payload,
+                )
+            )
+
+            return self._success(
+                result,
+            )
+
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="revision_audit",
+            )
+
     async def _on_lookup(
         self,
         sid: str,
@@ -415,6 +509,140 @@ class SocketIOServerTransport:
             return self._failure_from_exception(
                 exc,
                 operation="to_dict",
+            )
+
+    # -------------------------------------------------
+    # Queries
+    # -------------------------------------------------
+
+    async def _on_query_fetch(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(message)
+            query = query_from_payload(payload.get("query"))
+            result = self._require_proxy().fetch(query)
+            return self._success(result)
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="query_fetch",
+            )
+
+    async def _on_query_subscribe(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            async with self._mutation_lock:
+                payload = self._require_message(message)
+                query = query_from_payload(payload.get("query"))
+                result = self._require_proxy().subscribe_query(
+                    sid,
+                    query,
+                )
+
+                if result.should_join_channel:
+                    await self._server.enter_room(
+                        sid,
+                        result.channel,
+                    )
+
+                return self._success(
+                    {
+                        "subscription_token": (
+                            result.subscription_token
+                        ),
+                        "event_token": result.event_token,
+                    }
+                )
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="query_subscribe",
+            )
+
+    async def _on_query_unsubscribe(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(message)
+            token = self._require_string(
+                payload,
+                "subscription_token",
+            )
+            result = self._require_proxy().unsubscribe_query(
+                sid,
+                token,
+            )
+
+            if result.should_leave_channel:
+                await self._server.leave_room(
+                    sid,
+                    result.channel,
+                )
+
+            return self._success(True)
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="query_unsubscribe",
+            )
+
+    async def _on_query_sync(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            async with self._mutation_lock:
+                payload = self._require_message(message)
+                token = self._require_string(
+                    payload,
+                    "subscription_token",
+                )
+                result = self._require_proxy().sync_query(
+                    sid,
+                    token,
+                )
+                return self._success(result)
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="query_sync",
+            )
+
+    async def _on_query_audit(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(message)
+            values = payload.get("subscription_tokens")
+
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and value
+                for value in values
+            ):
+                raise TypeError(
+                    "Query subscription tokens must be strings"
+                )
+
+            result = self._require_proxy().audit_queries(
+                sid,
+                values,
+            )
+            return self._success(result)
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="query_audit",
             )
 
     # -------------------------------------------------
@@ -650,24 +878,25 @@ class SocketIOServerTransport:
         message: Any,
     ) -> dict[str, Any]:
         try:
-            payload = self._require_message(
-                message,
-            )
-
-            execution = self._require_proxy().transaction(
-                instructions=self._parse_instructions(
-                    payload,
-                ),
-            )
-
-            if execution.result.success:
-                await self._emit_subscription_messages(
-                    execution.dispatches,
+            async with self._mutation_lock:
+                payload = self._require_message(
+                    message,
                 )
 
-            return self._execution_response(
-                execution.result,
-            )
+                execution = self._require_proxy().transaction(
+                    instructions=self._parse_instructions(
+                        payload,
+                    ),
+                )
+
+                if execution.result.success:
+                    await self._emit_subscription_messages(
+                        execution.dispatches,
+                    )
+
+                return self._execution_response(
+                    execution.result,
+                )
 
         except Exception as exc:
             return self._failure_from_exception(
@@ -681,15 +910,16 @@ class SocketIOServerTransport:
         message: Any = None,
     ) -> dict[str, Any]:
         try:
-            result = self._require_proxy().undo()
+            async with self._mutation_lock:
+                result = self._require_proxy().undo()
 
-            await self._emit_subscription_messages(
-                result.dispatches,
-            )
+                await self._emit_subscription_messages(
+                    result.dispatches,
+                )
 
-            return self._success(
-                result.result,
-            )
+                return self._success(
+                    result.result,
+                )
 
         except Exception as exc:
             return self._failure_from_exception(
@@ -703,15 +933,16 @@ class SocketIOServerTransport:
         message: Any = None,
     ) -> dict[str, Any]:
         try:
-            result = self._require_proxy().redo()
+            async with self._mutation_lock:
+                result = self._require_proxy().redo()
 
-            await self._emit_subscription_messages(
-                result.dispatches,
-            )
+                await self._emit_subscription_messages(
+                    result.dispatches,
+                )
 
-            return self._success(
-                result.result,
-            )
+                return self._success(
+                    result.result,
+                )
 
         except Exception as exc:
             return self._failure_from_exception(
@@ -747,13 +978,20 @@ class SocketIOServerTransport:
                 )
 
         for sid, payloads in messages_by_client.items():
-            await self._server.emit(
-                "events",
-                {
-                    "events": payloads,
-                },
-                to=sid,
-            )
+            try:
+                await self._server.emit(
+                    "events",
+                    {
+                        "events": payloads,
+                    },
+                    to=sid,
+                )
+            except Exception:
+                logger.exception(
+                    "Could not emit store events to client %s; revision "
+                    "auditing will reconcile the client.",
+                    sid,
+                )
 
     async def _emit_signal_messages(
         self,
@@ -805,6 +1043,36 @@ class SocketIOServerTransport:
         return Address(
             *value,
         )
+
+    @staticmethod
+    def _parse_addresses(
+        message: dict[str, Any],
+    ) -> list[Address[Any]]:
+        value = message.get(
+            "addresses",
+        )
+
+        if not isinstance(value, list):
+            raise TypeError(
+                "Store addresses must be a list"
+            )
+
+        addresses: list[Address[Any]] = []
+
+        for parts in value:
+            if not isinstance(parts, list) or not all(
+                isinstance(part, str)
+                for part in parts
+            ):
+                raise TypeError(
+                    "Every store address must be a list of strings"
+                )
+
+            addresses.append(
+                Address(*parts),
+            )
+
+        return addresses
 
     @staticmethod
     def _parse_opcode(

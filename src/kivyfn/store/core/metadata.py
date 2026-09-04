@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 
 from kivyfn.store.address import Address
 from kivyfn.store.schema.registry import ForeignKey, ForeignKeyRegistry
+from kivyfn.store.storage import parse_persist_interval
+
 
 if TYPE_CHECKING:
     from kivyfn.store.node import Node
@@ -17,15 +19,17 @@ class EngineMetadata:
         self.schemas_by_name: dict[str, Schema] = {}
 
         self.persistent_nodes: set[Node] = set()
+        self.persistence_intervals: dict[Node, float] = {}
 
         self.foreign_keys = ForeignKeyRegistry()
 
     @classmethod
-    def build(cls, root: Node) -> "EngineMetadata":
+    def build(cls, root: Node) -> EngineMetadata:
         metadata = cls()
         metadata._register_nodes(root)
         metadata._build_foreign_keys()
         metadata._validate_foreign_keys()
+        metadata._validate_delayed_persistence()
         return metadata
 
     # -------------------------------------------------
@@ -49,8 +53,19 @@ class EngineMetadata:
         self.nodes_by_schema[schema_name] = node
         self.schemas_by_name[schema_name] = schema
 
+        interval = parse_persist_interval(schema.persist_interval)
+
+        if interval is not None and not schema.persistent:
+            raise ValueError(
+                f"Schema '{schema_name}' defines persist_interval but "
+                "persistent is False"
+            )
+
         if schema.persistent:
             self.persistent_nodes.add(node)
+
+        if interval is not None:
+            self.persistence_intervals[node] = interval
 
         for child in node.children.values():
             self._register_nodes(child)
@@ -66,17 +81,38 @@ class EngineMetadata:
                 )
 
     def _validate_foreign_keys(self) -> None:
-
-        for fk in self.foreign_keys.all():
-            if fk.schema not in self.schemas_by_name:
+        for foreign_key in self.foreign_keys.all():
+            if foreign_key.schema not in self.schemas_by_name:
                 raise RuntimeError(
-                    f"Foreign key source schema '{fk.schema}' is not registered in metadata"
+                    "Foreign key source schema "
+                    f"'{foreign_key.schema}' is not registered in metadata"
                 )
 
-            if fk.reference not in self.schemas_by_name:
+            if foreign_key.reference not in self.schemas_by_name:
                 raise RuntimeError(
-                    f"Foreign key reference schema '{fk.reference}' is not registered in metadata"
+                    "Foreign key reference schema "
+                    f"'{foreign_key.reference}' is not registered in metadata"
                 )
+
+    def _validate_delayed_persistence(self) -> None:
+        delayed = {
+            node.schema.name
+            for node in self.persistence_intervals
+        }
+
+        for foreign_key in self.foreign_keys.all():
+            if (
+                foreign_key.schema not in delayed
+                and foreign_key.reference not in delayed
+            ):
+                continue
+
+            raise ValueError(
+                "Delayed-persistence schemas cannot participate in "
+                "foreign-key relationships: "
+                f"{foreign_key.schema}.{foreign_key.field} -> "
+                f"{foreign_key.reference}"
+            )
 
     # -------------------------------------------------
     # Lookups
@@ -86,19 +122,25 @@ class EngineMetadata:
         try:
             return self.nodes_by_address[address]
         except KeyError:
-            raise RuntimeError(f"Node address not found: {address}")
+            raise RuntimeError(
+                f"Node address not found: {address}"
+            ) from None
 
     def get_node_by_schema(self, schema_name: str) -> Node:
         try:
             return self.nodes_by_schema[schema_name]
         except KeyError:
-            raise RuntimeError(f"No node found for schema '{schema_name}'")
+            raise RuntimeError(
+                f"No node found for schema '{schema_name}'"
+            ) from None
 
     def get_schema(self, schema_name: str) -> Schema:
         try:
             return self.schemas_by_name[schema_name]
         except KeyError:
-            raise RuntimeError(f"Schema '{schema_name}' is not registered")
+            raise RuntimeError(
+                f"Schema '{schema_name}' is not registered"
+            ) from None
 
     def foreign_keys_of(self, schema_name: str) -> list[ForeignKey]:
         return self.foreign_keys.foreign_keys_of(schema_name)
@@ -108,3 +150,6 @@ class EngineMetadata:
 
     def is_persistent(self, node: Node) -> bool:
         return node in self.persistent_nodes
+
+    def persistence_interval(self, node: Node) -> float | None:
+        return self.persistence_intervals.get(node)

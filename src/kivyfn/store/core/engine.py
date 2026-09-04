@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 from threading import RLock
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 from kivyfn.store.address import Address
 from kivyfn.store.core.boot import StoreBoot
 from kivyfn.store.core.execution import Execution, ExecutionResult
 from kivyfn.store.core.metadata import EngineMetadata
-from kivyfn.store.storage import FileStorage
+from kivyfn.store.query.plan import QueryPlan
+from kivyfn.store.storage import (
+    FileStorage,
+    PersistenceSnapshot,
+    PersistenceTracker,
+)
 
 
 if TYPE_CHECKING:
@@ -16,6 +21,7 @@ if TYPE_CHECKING:
     from kivyfn.store.core.operations import Operation
     from kivyfn.store.events.event import StoreEvent
     from kivyfn.store.node import Node
+    from kivyfn.store.query import Query, QueryResult
 
 
 T = TypeVar("T")
@@ -55,6 +61,7 @@ class Engine:
         self._storage = FileStorage(
             self.config.storage_path,
         )
+        self._persistence = PersistenceTracker()
 
         self._history: list[list[Operation]] = []
         self._redo: list[list[Operation]] = []
@@ -241,6 +248,34 @@ class Engine:
             return node.snapshot()
 
     # -------------------------------------------------
+    # Queries
+    # -------------------------------------------------
+
+    def compile_query(
+        self,
+        query: Query,
+    ) -> QueryPlan:
+        with self._lock:
+            self._require_booted()
+            return QueryPlan.compile(self, query)
+
+    def execute_query(
+        self,
+        plan: QueryPlan,
+    ) -> QueryResult:
+        with self._lock:
+            self._require_booted()
+            return plan.execute()
+
+    def fetch(
+        self,
+        query: Query,
+    ) -> QueryResult:
+        with self._lock:
+            self._require_booted()
+            return QueryPlan.compile(self, query).execute()
+
+    # -------------------------------------------------
     # Foreign-key resolution
     # -------------------------------------------------
 
@@ -341,7 +376,7 @@ class Engine:
             if not result.success:
                 return result
 
-            self.to_disk(
+            self.schedule_persistence(
                 result.touched_nodes,
             )
 
@@ -386,7 +421,7 @@ class Engine:
                         event,
                     )
 
-            self.to_disk(
+            self.schedule_persistence(
                 {
                     operation.node
                     for operation in operations
@@ -422,7 +457,7 @@ class Engine:
                         event,
                     )
 
-            self.to_disk(
+            self.schedule_persistence(
                 {
                     operation.node
                     for operation in operations
@@ -453,25 +488,85 @@ class Engine:
     # Persistence
     # -------------------------------------------------
 
+    def schedule_persistence(
+        self,
+        nodes: set[Node],
+    ) -> None:
+        """Persist immediate nodes and schedule delayed nodes."""
+        with self._lock:
+            for node in nodes:
+                if not self.metadata.is_persistent(node):
+                    continue
+
+                interval = self.metadata.persistence_interval(node)
+
+                if interval is None:
+                    self._write_node(node, node.value)
+                    continue
+
+                self._persistence.mark_dirty(node, interval)
+
     def to_disk(
         self,
         nodes: set[Node],
     ) -> None:
-        """
-        Persist the supplied nodes.
-
-        Callers must already hold the engine lock when this participates in a
-        larger operation. RLock also permits safe direct use.
-        """
+        """Force the supplied persistent nodes to disk immediately."""
         with self._lock:
             for node in nodes:
-                if not self.metadata.is_persistent(
-                    node,
-                ):
-                    continue
+                if self.metadata.is_persistent(node):
+                    self._write_node(node, node.value)
 
-                self._storage.write(
-                    node.schema.name,
-                    node.value,
-                    store_version=self.config.store_version,
-                )
+    def set_persistence_waker(
+        self,
+        callback: Callable[[], None] | None,
+    ) -> None:
+        self._persistence.set_waker(callback)
+
+    def capture_due_persistence(
+        self,
+        *,
+        force: bool = False,
+    ) -> tuple[PersistenceSnapshot, ...]:
+        with self._lock:
+            self._require_booted()
+            return self._persistence.capture_due(force=force)
+
+    def write_persistence_snapshot(
+        self,
+        snapshot: PersistenceSnapshot,
+    ) -> None:
+        self._write_node(snapshot.node, snapshot.data)
+
+    def complete_persistence_snapshot(
+        self,
+        snapshot: PersistenceSnapshot,
+        *,
+        success: bool,
+    ) -> None:
+        self._persistence.complete(snapshot, success=success)
+
+    def next_persistence_deadline(self) -> float | None:
+        return self._persistence.next_deadline()
+
+    @property
+    def has_delayed_persistence(self) -> bool:
+        return bool(self.metadata.persistence_intervals)
+
+    @property
+    def has_pending_persistence(self) -> bool:
+        return self._persistence.has_pending
+
+    @property
+    def pending_persistence_count(self) -> int:
+        return self._persistence.pending_count
+
+    def _write_node(
+        self,
+        node: Node,
+        data: dict,
+    ) -> None:
+        self._storage.write(
+            node.schema.name,
+            data,
+            store_version=self.config.store_version,
+        )

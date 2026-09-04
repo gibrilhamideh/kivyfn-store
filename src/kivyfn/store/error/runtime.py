@@ -78,3 +78,7 @@ class StoreInternalError(StoreRuntimeError):
     server. This exception may contain a safe diagnostic message or request
     identifier, but should not expose an internal traceback.
     """
+
+
+class StorageCorruptionError(StoreRuntimeError):
+    """No complete valid storage file is available for a schema."""

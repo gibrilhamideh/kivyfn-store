@@ -1,12 +1,12 @@
-# kivyfn/store/remote/subscription.py
 from __future__ import annotations
 
 import inspect
 import weakref
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from typing import (
-    TYPE_CHECKING,
     Any,
     Generic,
     Literal,
@@ -29,10 +29,6 @@ from kivyfn.store.operations import OpCode
 from kivyfn.store.response import Response
 
 
-if TYPE_CHECKING:
-    from kivyfn.store.remote.client import RemoteStoreClient
-
-
 logger = get_logger(__name__)
 
 
@@ -40,7 +36,6 @@ EventT = TypeVar(
     "EventT",
     bound=StoreEvent,
 )
-
 RowT = TypeVar("RowT")
 
 
@@ -50,13 +45,40 @@ EventCallback = Callable[
 ]
 
 
-class RemoteSubscriptionClient(Protocol):
-    """
-    Client operations required by the remote subscription API.
+@dataclass(frozen=True, slots=True)
+class SubscriptionSpec:
+    """Connection-independent description of a subscription."""
 
-    This protocol keeps the subscription module independent from Socket.IO
-    and from the concrete RemoteStoreClient implementation.
-    """
+    opcode: OpCode
+    address: Address[Any]
+    id: str | None = None
+    key: str | None = None
+    depth: int | None = 0
+    resolve_foreignkeys: bool = False
+    propagate_foreignkeys: bool = False
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "address": self.address.to_list(),
+            "opcode": self.opcode.value,
+            "id": self.id,
+            "key": self.key,
+            "depth": self.depth,
+            "resolve_foreignkeys": self.resolve_foreignkeys,
+            "propagate_foreignkeys": self.propagate_foreignkeys,
+        }
+
+
+class DispatchResult(str, Enum):
+    """Outcome of dispatching one event to a local callback."""
+
+    APPLIED = "applied"
+    CALLBACK_GONE = "callback_gone"
+    FAILED = "failed"
+
+
+class RemoteSubscriptionClient(Protocol):
+    """Client operations required by the subscription API."""
 
     @overload
     async def subscribe(
@@ -132,22 +154,15 @@ class RemoteSubscriptionClient(Protocol):
     ) -> Response[RemoteSubscription[Any]]:
         ...
 
-    async def unsubscribe(
+    async def dispose_subscription(
         self,
-        token: str,
-    ) -> Response[bool]:
+        subscription: RemoteSubscription[Any],
+    ) -> Response[bool] | None:
         ...
 
 
 class _CallbackReference(Generic[EventT]):
-    """
-    Holds bound methods weakly and other callables strongly.
-
-    Bound methods are weakly referenced so a subscription does not keep its
-    owning controller, adapter, screen, or widget alive indefinitely.
-
-    Functions, lambdas, and callable objects are retained strongly.
-    """
+    """Hold bound methods weakly and other callables strongly."""
 
     __slots__ = (
         "_strong",
@@ -161,10 +176,7 @@ class _CallbackReference(Generic[EventT]):
         self._strong: EventCallback[EventT] | None = None
         self._weak: weakref.WeakMethod[Any] | None = None
 
-        if (
-            inspect.ismethod(callback)
-            and callback.__self__ is not None
-        ):
+        if inspect.ismethod(callback) and callback.__self__ is not None:
             self._weak = weakref.WeakMethod(
                 callback,
             )
@@ -172,9 +184,7 @@ class _CallbackReference(Generic[EventT]):
 
         self._strong = callback
 
-    def get(
-        self,
-    ) -> EventCallback[EventT] | None:
+    def get(self) -> EventCallback[EventT] | None:
         if self._weak is not None:
             return cast(
                 EventCallback[EventT] | None,
@@ -185,23 +195,13 @@ class _CallbackReference(Generic[EventT]):
 
 
 class RemoteSubscription(Generic[EventT]):
-    """
-    Subscription handle for a remotely hosted store.
-
-    The remote server owns the actual subscription. This local object owns:
-
-    - the remote subscription token;
-    - the incoming event-stream token;
-    - the local callback reference;
-    - asynchronous disposal of the remote subscription.
-
-    dispose() is idempotent after a successful remote unsubscribe.
-    """
+    """Durable local handle for a reconnectable subscription."""
 
     __slots__ = (
         "_client_ref",
         "_token",
         "_event_token",
+        "_spec",
         "_callback",
         "_disposed",
         "__weakref__",
@@ -212,30 +212,21 @@ class RemoteSubscription(Generic[EventT]):
         client: RemoteSubscriptionClient,
         token: str,
         event_token: str,
+        spec: SubscriptionSpec,
         callback: EventCallback[EventT],
     ) -> None:
         self._client_ref = weakref.ref(
             client,
         )
-
         self._token = token
         self._event_token = event_token
-
+        self._spec = spec
         self._callback = _CallbackReference(
             callback,
         )
-
         self._disposed = False
 
-    async def dispose(
-        self,
-    ) -> Response[bool] | None:
-        """
-        Remove the subscription from the remote server.
-
-        Returns None when the subscription was already disposed or its owning
-        client no longer exists.
-        """
+    async def dispose(self) -> Response[bool] | None:
         if self._disposed:
             return None
 
@@ -245,112 +236,110 @@ class RemoteSubscription(Generic[EventT]):
             self._mark_disposed()
             return None
 
-        result = await client.unsubscribe(
-            self._token,
+        return await client.dispose_subscription(
+            self,
         )
-
-        if result.ok:
-            self._mark_disposed()
-
-        return result
 
     def dispatch(
         self,
         event: EventT,
-    ) -> bool:
-        """
-        Dispatch an incoming remote event to the local callback.
-
-        Returns False when the callback owner no longer exists and this
-        subscription should be removed by RemoteStoreClient.
-        """
+    ) -> DispatchResult:
         if self._disposed:
-            return False
+            return DispatchResult.CALLBACK_GONE
 
         callback = self._callback.get()
 
         if callback is None:
-            return False
+            return DispatchResult.CALLBACK_GONE
 
         try:
             result = callback(
                 event,
             )
 
-            if inspect.isawaitable(
-                result,
-            ):
+            if inspect.isawaitable(result):
                 close = getattr(
                     result,
                     "close",
                     None,
                 )
 
-                if callable(
-                    close,
-                ):
+                if callable(close):
                     close()
 
                 raise TypeError(
-                    "Remote store subscription callbacks must be synchronous"
+                    "Remote store subscription callbacks must be "
+                    "synchronous"
                 )
 
         except Exception:
             logger.exception(
                 "Remote store subscription callback failed: "
-                "token=%s event_token=%s",
+                "token=%s event_token=%s address=%s",
                 self._token,
                 self._event_token,
+                self.address,
+            )
+            return DispatchResult.FAILED
+
+        return DispatchResult.APPLIED
+
+    def _replace_remote(
+        self,
+        token: str,
+        event_token: str,
+    ) -> None:
+        if self._disposed:
+            raise RuntimeError(
+                "Cannot restore a disposed subscription"
             )
 
-        return True
+        self._token = token
+        self._event_token = event_token
 
-    def _mark_disposed(
-        self,
-    ) -> None:
+    def _mark_disposed(self) -> None:
         self._disposed = True
 
     @property
-    def token(
-        self,
-    ) -> str:
+    def token(self) -> str:
         return self._token
 
     @property
-    def event_token(
-        self,
-    ) -> str:
+    def event_token(self) -> str:
         return self._event_token
 
     @property
-    def disposed(
-        self,
-    ) -> bool:
+    def spec(self) -> SubscriptionSpec:
+        return self._spec
+
+    @property
+    def address(self) -> Address[Any]:
+        return self._spec.address
+
+    @property
+    def callback_alive(self) -> bool:
+        return self._callback.get() is not None
+
+    @property
+    def disposed(self) -> bool:
         return self._disposed
 
-    def __repr__(
-        self,
-    ) -> str:
+    def __repr__(self) -> str:
         return (
             f"<{type(self).__name__} "
             f"token={self._token!r} "
             f"event_token={self._event_token!r} "
+            f"address={self.address!r} "
             f"disposed={self._disposed}>"
         )
 
 
 class RemoteSubscriptionManager:
-    """
-    Public asynchronous subscription API for RemoteStore.
-
-    This manager validates API-level argument combinations and delegates remote
-    registration to RemoteStoreClient. Server-side schema and row validation
-    remains authoritative.
-    """
+    """Public asynchronous subscription API for RemoteStore."""
 
     def __init__(
         self,
-        client: RemoteStoreClient,
+        client: RemoteSubscriptionClient,
     ) -> None:
         self._client = client
 
@@ -418,11 +407,7 @@ class RemoteSubscriptionManager:
     def _validate_depth(
         depth: int | None,
     ) -> None:
-        if (
-            depth is not None
-            and depth < 0
-        ):
+        if depth is not None and depth < 0:
             raise ValueError(
                 "Subscription depth must be zero, positive, or None"
             )
-

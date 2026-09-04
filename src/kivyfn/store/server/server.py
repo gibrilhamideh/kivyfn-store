@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import RLock
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -9,10 +10,18 @@ from typing import (
     TypeVar,
 )
 
+from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
 from kivyfn.store.core.engine import Engine
 from kivyfn.store.core.execution import ExecutionResult
 from kivyfn.store.operations import OpCode
+from kivyfn.store.query import Query, QueryResult
+from kivyfn.store.server.query import (
+    QuerySubscribeResult,
+    QueryUnsubscribeResult,
+    RemoteQuerySubscriptionManager,
+)
+from kivyfn.store.server.revision import StoreRevisionTracker
 from kivyfn.store.server.transport import StoreServerTransport
 from kivyfn.store.server.signal import (
     RemoteSignalManager,
@@ -26,6 +35,7 @@ from kivyfn.store.server.subscription import (
     SubscribeResult,
     UnsubscribeResult,
 )
+from kivyfn.store.storage import AsyncPersistenceCoordinator
 
 
 if TYPE_CHECKING:
@@ -36,6 +46,9 @@ if TYPE_CHECKING:
 
 
 ResultT = TypeVar("ResultT")
+
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +107,16 @@ class StoreServer:
             self._engine,
         )
 
+        self._revisions = StoreRevisionTracker()
+        self._queries = RemoteQuerySubscriptionManager(
+            self._engine,
+            self._revisions,
+        )
+        self._persistence = AsyncPersistenceCoordinator(
+            self._engine,
+        )
+        self._synchronization_lock = RLock()
+
         self._transport = transport
 
         # Local import prevents:
@@ -126,11 +149,14 @@ class StoreServer:
         if not self._engine.booted:
             self._engine.boot()
 
+        self._persistence.start()
+
         try:
             await self._transport.start(
                 self._proxy,
             )
         except BaseException:
+            await self._persistence.stop(flush=True)
             raise
 
         self._running = True
@@ -144,12 +170,17 @@ class StoreServer:
         instance.
         """
         if not self._running:
+            if self._engine.has_pending_persistence:
+                await self._persistence.stop(flush=True)
+
             return
+
+        self._running = False
 
         try:
             await self._transport.stop()
         finally:
-            self._running = False
+            await self._persistence.stop(flush=True)
 
     # -------------------------------------------------
     # Reads
@@ -175,6 +206,34 @@ class StoreServer:
             key=key,
             resolve_foreignkeys=resolve_foreignkeys,
         )
+
+    def sync_snapshot(
+        self,
+        address: Address[Any],
+        *,
+        resolve_foreignkeys: bool = False,
+    ) -> dict[str, Any]:
+        """Return an authoritative snapshot with revision metadata."""
+        with self._synchronization_lock:
+            data = self._engine.snapshot(
+                address=address,
+                resolve_foreignkeys=resolve_foreignkeys,
+            )
+
+            return self._revisions.snapshot(
+                address,
+                data,
+            )
+
+    def revision_audit(
+        self,
+        addresses: list[Address[Any]],
+    ) -> dict[str, Any]:
+        """Return lightweight revision metadata for store addresses."""
+        with self._synchronization_lock:
+            return self._revisions.report(
+                addresses,
+            )
 
     def lookup(
         self,
@@ -204,6 +263,58 @@ class StoreServer:
         return self._engine.to_dict(
             address,
         )
+
+    def fetch(
+        self,
+        query: Query,
+    ) -> QueryResult:
+        with self._synchronization_lock:
+            return self._queries.fetch(query)
+
+    # -------------------------------------------------
+    # Query subscriptions
+    # -------------------------------------------------
+
+    def subscribe_query(
+        self,
+        client_id: str,
+        query: Query,
+    ) -> QuerySubscribeResult:
+        with self._synchronization_lock:
+            return self._queries.subscribe(client_id, query)
+
+    def unsubscribe_query(
+        self,
+        client_id: str,
+        subscription_token: str,
+    ) -> QueryUnsubscribeResult:
+        with self._synchronization_lock:
+            return self._queries.unsubscribe(
+                client_id,
+                subscription_token,
+            )
+
+    def sync_query(
+        self,
+        client_id: str,
+        subscription_token: str,
+    ) -> dict[str, Any]:
+        with self._synchronization_lock:
+            return self._queries.sync_snapshot(
+                client_id,
+                subscription_token,
+            ).payload()
+
+    def audit_queries(
+        self,
+        client_id: str,
+        subscription_tokens: list[str],
+    ) -> dict[str, Any]:
+        with self._synchronization_lock:
+            return self._queries.audit(
+                client_id,
+                subscription_tokens,
+            )
 
     # -------------------------------------------------
     # Subscriptions
@@ -325,16 +436,17 @@ class StoreServer:
         serializes that result, and the remote client may later convert the
         serialized payload into TransactionResult.
         """
-        result = self._engine.execute(
-            instructions,
-        )
+        with self._synchronization_lock:
+            result = self._engine.execute(
+                instructions,
+            )
 
-        return StoreExecutionResult(
-            result=result,
-            dispatches=self._dispatch_events(
-                result.events,
-            ),
-        )
+            return StoreExecutionResult(
+                result=result,
+                dispatches=self._dispatch_events(
+                    result.events,
+                ),
+            )
 
     # -------------------------------------------------
     # Undo / redo
@@ -349,14 +461,15 @@ class StoreServer:
         Engine.undo() directly returns the list of events produced by the
         inverse operations.
         """
-        events = self._engine.undo()
+        with self._synchronization_lock:
+            events = self._engine.undo()
 
-        return StoreExecutionResult(
-            result=events,
-            dispatches=self._dispatch_events(
-                events,
-            ),
-        )
+            return StoreExecutionResult(
+                result=events,
+                dispatches=self._dispatch_events(
+                    events,
+                ),
+            )
 
     def redo(
         self,
@@ -367,14 +480,15 @@ class StoreServer:
         Engine.redo() directly returns the list of events produced by the
         reapplied operations.
         """
-        events = self._engine.redo()
+        with self._synchronization_lock:
+            events = self._engine.redo()
 
-        return StoreExecutionResult(
-            result=events,
-            dispatches=self._dispatch_events(
-                events,
-            ),
-        )
+            return StoreExecutionResult(
+                result=events,
+                dispatches=self._dispatch_events(
+                    events,
+                ),
+            )
 
     # -------------------------------------------------
     # Client lifecycle
@@ -394,6 +508,8 @@ class StoreServer:
             client_id,
         )
 
+        self._queries.remove_client(client_id)
+
         self._signals.remove_client(
             client_id,
         )
@@ -406,24 +522,45 @@ class StoreServer:
         self,
         events: list[StoreEvent],
     ) -> tuple[DispatchMessage, ...]:
-        """
-        Convert store events into transport-independent subscription messages.
-        """
+        """Create revisioned messages for successful store events."""
         if not events:
             return ()
 
         dispatches: list[DispatchMessage] = []
+        revisioned_events: list[StoreEvent] = []
 
         for event in events:
-            dispatches.extend(
-                self._subscriptions.dispatch(
-                    event,
+            revision = self._revisions.advance(event.address)
+            revisioned = event.copy_with(
+                server_instance_id=self._revisions.instance_id,
+                revision=revision,
+            )
+            revisioned_events.append(revisioned)
+
+            try:
+                dispatches.extend(
+                    self._subscriptions.dispatch(revisioned)
                 )
+            except Exception:
+                logger.exception(
+                    "Store subscription dispatch failed for %s at "
+                    "revision %d; revision auditing will reconcile "
+                    "remote adapters.",
+                    event.address,
+                    revision,
+                )
+
+        try:
+            dispatches.extend(
+                self._queries.dispatch(revisioned_events)
+            )
+        except Exception:
+            logger.exception(
+                "Query subscription dispatch failed; query auditing "
+                "will reconcile remote query subscriptions."
             )
 
-        return tuple(
-            dispatches,
-        )
+        return tuple(dispatches)
 
     # -------------------------------------------------
     # State
@@ -474,6 +611,11 @@ class StoreServer:
         Return the server-side subscription manager.
         """
         return self._subscriptions
+
+    @property
+    def query(self) -> RemoteQuerySubscriptionManager:
+        """Return the server-side query subscription manager."""
+        return self._queries
 
     @property
     def signal(self) -> RemoteSignalManager:

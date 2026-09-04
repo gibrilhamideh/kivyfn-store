@@ -1,4 +1,7 @@
-# kivyfn/store/local/__init__.py
+from kivyfn.store.local.query import (
+    LocalQuerySubscription,
+    LocalQuerySubscriptionManager,
+)
 from kivyfn.store.local.signal import (
     LocalSignalBinding,
     LocalSignalManager,
@@ -9,7 +12,10 @@ from kivyfn.store.local.subscription import (
     LocalSubscriptionManager,
 )
 
+
 __all__ = [
+    "LocalQuerySubscription",
+    "LocalQuerySubscriptionManager",
     "LocalSignalBinding",
     "LocalSignalManager",
     "LocalStore",
