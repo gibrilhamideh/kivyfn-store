@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.store.operations import OpCode
-from kivyfn.store.schema.fields import ForeignKeyField
 from kivyfn.store.core.operations import (
     InsertOperation,
     Operation,
@@ -13,6 +11,13 @@ from kivyfn.store.core.operations import (
     SetOperation,
     SetRowOperation,
 )
+from kivyfn.store.operations import OpCode
+from kivyfn.store.schema.fields import ForeignKeyField
+from kivyfn.store.schema.schema import (
+    ManySchema,
+    SingleSchema,
+)
+
 
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
@@ -64,7 +69,6 @@ class TriggerContext:
         self.engine = engine
         self.operation = operation
 
-        # Keep a stable, read-only snapshot of the visible operations.
         self.operations = tuple(operations)
 
         if operation not in self.operations:
@@ -78,7 +82,9 @@ class TriggerContext:
 
     @property
     def node(self) -> Node:
-        return self.operation.node  # pyright: ignore[reportAttributeAccessIssue]
+        operation = self.operation
+        return operation.node  # pyright: ignore
+        # reportAttributeAccessIssue
 
     @property
     def instruction(self) -> Instruction:
@@ -161,8 +167,10 @@ class TriggerContext:
 
         if row is None:
             raise RuntimeError(
-                f"Could not resolve inserted row "
-                f"{self.node.schema.name}[{row_id!r}]"
+                (
+                    "Could not resolve inserted row "
+                    f"{self.node.schema.name}[{row_id!r}]"
+                )
             )
 
         return row
@@ -180,8 +188,10 @@ class TriggerContext:
 
         if row is None:
             raise RuntimeError(
-                f"Could not resolve updated row "
-                f"{self.node.schema.name}[{row_id!r}]"
+                (
+                    "Could not resolve updated row "
+                    f"{self.node.schema.name}[{row_id!r}]"
+                )
             )
 
         return row
@@ -199,8 +209,10 @@ class TriggerContext:
 
         if row is None:
             raise RuntimeError(
-                f"Could not resolve removed row "
-                f"{self.node.schema.name}[{row_id!r}]"
+                (
+                    "Could not resolve removed row "
+                    f"{self.node.schema.name}[{row_id!r}]"
+                )
             )
 
         return row
@@ -233,9 +245,14 @@ class TriggerContext:
         """
 
         self._require_many(node)
-        self._validate_boundary(before, through)
+        self._validate_boundary(
+            before,
+            through,
+        )
 
-        committed = node.snapshot(id=row_id)
+        committed = node.snapshot(
+            id=row_id,
+        )
 
         if isinstance(committed, dict):
             resolved: dict[str, Any] | None = dict(committed)
@@ -260,7 +277,10 @@ class TriggerContext:
 
         if boundary is not None and boundary not in self.operations:
             raise ValueError(
-                "Resolution boundary is not visible in this trigger context"
+                (
+                    "Resolution boundary is not visible "
+                    "in this trigger context"
+                )
             )
 
         if resolved is None:
@@ -276,7 +296,8 @@ class TriggerContext:
         target_id: str,
         resolved: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
-        operation_node = operation.node  # pyright: ignore[reportAttributeAccessIssue]
+        operation_node = operation.node  # pyright: ignore
+        # reportAttributeAccessIssue
 
         if operation_node is not target_node:
             return resolved
@@ -296,6 +317,7 @@ class TriggerContext:
 
             updated = dict(resolved)
             updated[operation.key] = operation.new_value
+
             return updated
 
         if isinstance(operation, RemoveOperation):
@@ -324,7 +346,10 @@ class TriggerContext:
         """
 
         self._require_single(node)
-        self._validate_boundary(before, through)
+        self._validate_boundary(
+            before,
+            through,
+        )
 
         committed = node.snapshot()
 
@@ -340,10 +365,14 @@ class TriggerContext:
                 break
 
             operation_node = (
-                operation.node  # pyright: ignore[reportAttributeAccessIssue]
+                operation.node
+                # pyright: ignore[reportAttributeAccessIssue]
             )
 
-            if operation_node is node and isinstance(operation, SetOperation):
+            if (
+                operation_node is node
+                and isinstance(operation, SetOperation)
+            ):
                 resolved[operation.key] = operation.new_value
 
             if through is not None and operation is boundary:
@@ -351,7 +380,10 @@ class TriggerContext:
 
         if boundary is not None and boundary not in self.operations:
             raise ValueError(
-                "Resolution boundary is not visible in this trigger context"
+                (
+                    "Resolution boundary is not visible "
+                    "in this trigger context"
+                )
             )
 
         return resolved
@@ -359,35 +391,29 @@ class TriggerContext:
     # ============================================================
     # Foreign-key resolution
     # ============================================================
+
     def resolve_foreignkey(
         self,
         field_name: str,
     ) -> ForeignKeyReference | None:
         """
         Resolve a foreign key from the current logical value.
-
-        Only the field name is required because the context already knows:
-
-        - the source node;
-        - the source schema;
-        - the current operation;
-        - the logical source row/value;
-        - the store engine.
-
-        The referenced row is resolved from committed state plus all
-        operations visible to this trigger.
         """
+
         field = self.node.schema.get_field(
             field_name,
         )
 
         if not isinstance(field, ForeignKeyField):
             raise TypeError(
-                f"{self.node.schema.name}.{field_name} "
-                "is not a ForeignKeyField"
+                (
+                    f"{self.node.schema.name}.{field_name} "
+                    "is not a ForeignKeyField"
+                )
             )
 
         source = self.current()
+
         foreign_id = source.get(
             field_name,
         )
@@ -397,8 +423,11 @@ class TriggerContext:
 
         if not isinstance(foreign_id, str):
             raise TypeError(
-                f"{self.node.schema.name}.{field_name} must contain "
-                f"a string row id, got {type(foreign_id).__name__}"
+                (
+                    f"{self.node.schema.name}.{field_name} must "
+                    "contain a string row id, got "
+                    f"{type(foreign_id).__name__}"
+                )
             )
 
         target_node = self.engine.get_node_by_schema(
@@ -412,10 +441,12 @@ class TriggerContext:
 
         if target_row is None:
             raise RuntimeError(
-                "Could not resolve foreign-key target "
-                f"{self.node.schema.name}.{field_name}="
-                f"{foreign_id!r} referencing "
-                f"{target_node.schema.name}"
+                (
+                    "Could not resolve foreign-key target "
+                    f"{self.node.schema.name}.{field_name}="
+                    f"{foreign_id!r} referencing "
+                    f"{target_node.schema.name}"
+                )
             )
 
         return ForeignKeyReference(
@@ -434,12 +465,13 @@ class TriggerContext:
 
         if reference is None:
             raise RuntimeError(
-                f"{self.node.schema.name}.{field_name} "
-                "does not contain a foreign-key value"
+                (
+                    f"{self.node.schema.name}.{field_name} "
+                    "does not contain a foreign-key value"
+                )
             )
 
         return reference
-
 
     # ============================================================
     # Helpers
@@ -455,18 +487,35 @@ class TriggerContext:
 
         return row_id
 
-    def _require_many(self, node: Node) -> None:
-        if not node.schema.is_many():
+    def _require_many(
+        self,
+        node: Node,
+    ) -> None:
+        if not isinstance(
+            node.schema,
+            ManySchema,
+        ):
             raise TypeError(
-                f"{node.schema.name} is a single schema; "
-                "row operations require a many schema"
+                (
+                    f"{node.schema.name} is a single schema; "
+                    "row operations require a many schema"
+                )
             )
 
-    def _require_single(self, node: Node) -> None:
-        if node.schema.is_many():
+    def _require_single(
+        self,
+        node: Node,
+    ) -> None:
+        if not isinstance(
+            node.schema,
+            SingleSchema,
+        ):
             raise TypeError(
-                f"{node.schema.name} is a many schema; "
-                "single-value operations require a single schema"
+                (
+                    f"{node.schema.name} is a many schema; "
+                    "single-value operations require a "
+                    "single schema"
+                )
             )
 
     def _validate_boundary(

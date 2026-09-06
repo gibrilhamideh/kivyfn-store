@@ -28,7 +28,10 @@ from kivyfn.store.response import (
     failure,
     success,
 )
-from kivyfn.store.server.signal import SignalDispatchMessage
+from kivyfn.store.server.signal import (
+    SignalDispatchMessage,
+    SignalRequest,
+)
 from kivyfn.store.server.subscription import DispatchMessage
 
 
@@ -235,6 +238,11 @@ class SocketIOServerTransport:
         )
 
         self._server.on(
+            "schema_info",
+            self._on_schema_info,
+        )
+
+        self._server.on(
             "snapshot",
             self._on_snapshot,
         )
@@ -353,6 +361,25 @@ class SocketIOServerTransport:
     # -------------------------------------------------
     # Reads
     # -------------------------------------------------
+
+    async def _on_schema_info(
+        self,
+        sid: str,
+        message: Any,
+    ) -> dict[str, Any]:
+        try:
+            payload = self._require_message(message)
+            schema_name = self._require_string(
+                payload,
+                "schema",
+            )
+            result = self._require_proxy().schema_info(schema_name)
+            return self._success(result)
+        except Exception as exc:
+            return self._failure_from_exception(
+                exc,
+                operation="schema_info",
+            )
 
     async def _on_snapshot(
         self,
@@ -884,14 +911,16 @@ class SocketIOServerTransport:
                 )
 
                 execution = self._require_proxy().transaction(
-                    instructions=self._parse_instructions(
-                        payload,
-                    ),
+                    instructions=self._parse_instructions(payload),
+                    signals=self._parse_signal_requests(payload),
                 )
 
                 if execution.result.success:
                     await self._emit_subscription_messages(
                         execution.dispatches,
+                    )
+                    await self._emit_signal_messages(
+                        execution.signal_dispatches,
                     )
 
                 return self._execution_response(
@@ -1207,6 +1236,31 @@ class SocketIOServerTransport:
             )
 
         return value
+
+    @classmethod
+    def _parse_signal_requests(
+        cls,
+        message: dict[str, Any],
+    ) -> tuple[SignalRequest, ...]:
+        value = message.get("signals", [])
+
+        if not isinstance(value, list):
+            raise TypeError("Transaction signals must be a list")
+
+        requests: list[SignalRequest] = []
+
+        for item in value:
+            payload = cls._require_message(item)
+            requests.append(
+                SignalRequest(
+                    address=cls._parse_address(payload),
+                    signal=cls._require_string(payload, "signal"),
+                    id=cls._parse_optional_string(payload, "id"),
+                    data=payload.get("data"),
+                )
+            )
+
+        return tuple(requests)
 
     @staticmethod
     def _parse_instructions(

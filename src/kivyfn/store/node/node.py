@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import copy
 
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import Any, Literal, overload
 
 from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
@@ -17,17 +17,33 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.error.detail import StoreAddress
 from kivyfn.store.node.index import IndexManager
-
-
-if TYPE_CHECKING:
-    from kivyfn.store.schema import Schema
+from kivyfn.store.schema import (
+    ManySchema,
+    Schema,
+    SingleSchema,
+)
 
 
 logger = get_logger(__name__)
 
 
 class Node:
-    def __init__(self, schema: Schema, address: Address) -> None:
+    def __init__(
+        self,
+        schema: Schema,
+        address: Address,
+    ) -> None:
+        if not isinstance(
+            schema,
+            (SingleSchema, ManySchema),
+        ):
+            raise TypeError(
+                (
+                    f"Schema {type(schema).__name__!r} must inherit "
+                    "SingleSchema or ManySchema"
+                )
+            )
+
         self.schema = schema
         self.address = address
 
@@ -50,15 +66,37 @@ class Node:
     # Build / boot
     # ---------------------------
 
-    def build(self, data: Any, *, recover: bool = False) -> None:
-        if self.schema.many:
-            self._build_many(data, recover=recover)
-        else:
-            self._build_single(data, recover=recover)
+    def build(
+        self,
+        data: Any,
+        *,
+        recover: bool = False,
+    ) -> None:
+        if isinstance(
+            self.schema,
+            ManySchema,
+        ):
+            self._build_many(
+                data,
+                recover=recover,
+            )
+            return
 
-    def _build_many(self, data: Any, *, recover: bool) -> None:
+        self._build_single(
+            data,
+            recover=recover,
+        )
+
+    def _build_many(
+        self,
+        data: Any,
+        *,
+        recover: bool,
+    ) -> None:
         self.value = {}
-        self._indexes = IndexManager(self.schema)
+        self._indexes = IndexManager(
+            self.schema,
+        )
 
         if data is None:
             return
@@ -66,30 +104,42 @@ class Node:
         if not isinstance(data, dict):
             if not recover:
                 raise TypeError(
-                    f"Persisted schema {self.schema.name!r} "
-                    "must contain a dictionary"
+                    (
+                        f"Persisted schema {self.schema.name!r} "
+                        "must contain a dictionary"
+                    )
                 )
 
             logger.error(
-                "Resetting persisted schema %s: expected dictionary, got %s",
+                (
+                    "Resetting persisted schema %s: "
+                    "expected dictionary, got %s"
+                ),
                 self.schema.name,
                 type(data).__name__,
             )
             return
 
         for raw_row_id, row in data.items():
-            row_id = str(raw_row_id)
+            row_id = str(
+                raw_row_id,
+            )
 
             if not isinstance(row, dict):
                 if not recover:
                     raise TypeError(
-                        f"Persisted row {self.schema.name}[{row_id}] "
-                        "must contain a dictionary"
+                        (
+                            f"Persisted row "
+                            f"{self.schema.name}[{row_id}] "
+                            "must contain a dictionary"
+                        )
                     )
 
                 logger.error(
-                    "Removing persisted row %s[%s]: "
-                    "expected dictionary, got %s",
+                    (
+                        "Removing persisted row %s[%s]: "
+                        "expected dictionary, got %s"
+                    ),
                     self.schema.name,
                     row_id,
                     type(row).__name__,
@@ -107,8 +157,10 @@ class Node:
                     raise
 
                 logger.error(
-                    "Removing persisted row %s[%s]: "
-                    "field could not be recovered: %s",
+                    (
+                        "Removing persisted row %s[%s]: "
+                        "field could not be recovered: %s"
+                    ),
                     self.schema.name,
                     row_id,
                     error,
@@ -116,8 +168,14 @@ class Node:
                 continue
 
             try:
-                self._insert_built(row_id, built)
-            except (ConstraintError, RowAlreadyExistsError) as error:
+                self._insert_built(
+                    row_id,
+                    built,
+                )
+            except (
+                ConstraintError,
+                RowAlreadyExistsError,
+            ) as error:
                 if not recover:
                     raise
 
@@ -128,19 +186,29 @@ class Node:
                     error,
                 )
 
-    def _build_single(self, data: Any, *, recover: bool) -> None:
+    def _build_single(
+        self,
+        data: Any,
+        *,
+        recover: bool,
+    ) -> None:
         if data is None:
             data = {}
+
         elif not isinstance(data, dict):
             if not recover:
                 raise TypeError(
-                    f"Persisted schema {self.schema.name!r} "
-                    "must contain a dictionary"
+                    (
+                        f"Persisted schema {self.schema.name!r} "
+                        "must contain a dictionary"
+                    )
                 )
 
             logger.error(
-                "Resetting persisted schema %s: "
-                "expected dictionary, got %s",
+                (
+                    "Resetting persisted schema %s: "
+                    "expected dictionary, got %s"
+                ),
                 self.schema.name,
                 type(data).__name__,
             )
@@ -163,16 +231,29 @@ class Node:
         built: dict[str, Any] = {}
 
         for name, field in self.schema.fields().items():
-            default = getattr(field, "default", None)
-            value = row.get(name, default)
+            default = getattr(
+                field,
+                "default",
+                None,
+            )
+            value = row.get(
+                name,
+                default,
+            )
 
             try:
-                self.schema.challenge_field(name, value)
+                self.schema.challenge_field(
+                    name,
+                    value,
+                )
             except FieldValidationError as error:
                 if not recover:
                     raise
 
-                self.schema.challenge_field(name, default)
+                self.schema.challenge_field(
+                    name,
+                    default,
+                )
 
                 location = self.schema.name
 
@@ -180,8 +261,11 @@ class Node:
                     location += f"[{row_id}]"
 
                 logger.error(
-                    "Recovering persisted field %s.%s: "
-                    "invalid value %r replaced with default %r: %s",
+                    (
+                        "Recovering persisted field %s.%s: "
+                        "invalid value %r replaced with "
+                        "default %r: %s"
+                    ),
                     location,
                     name,
                     value,
@@ -195,7 +279,11 @@ class Node:
 
         return built
 
-    def _insert_built(self, row_id: str, row: dict) -> None:
+    def _insert_built(
+        self,
+        row_id: str,
+        row: dict,
+    ) -> None:
         if row_id in self.value:
             raise RowAlreadyExistsError(
                 f"Row {row_id!r} already exists",
@@ -207,22 +295,35 @@ class Node:
                 ),
             )
 
-        self._indexes.add(row_id, row)
+        self._indexes.add(
+            row_id,
+            row,
+        )
         self.value[row_id] = row
 
     # ---------------------------
     # Tree
     # ---------------------------
 
-    def add_child(self, name: str, node: Node) -> None:
+    def add_child(
+        self,
+        name: str,
+        node: Node,
+    ) -> None:
         if not isinstance(name, str) or not name:
-            raise ValueError("Child name must be a non-empty string")
+            raise ValueError(
+                "Child name must be a non-empty string"
+            )
 
         if not isinstance(node, Node):
-            raise TypeError("add_child() requires a Node instance")
+            raise TypeError(
+                "add_child() requires a Node instance"
+            )
 
         if name in self.children:
-            raise ValueError(f"Child {name!r} already exists")
+            raise ValueError(
+                f"Child {name!r} already exists"
+            )
 
         node.parent = self
         node.name = name
@@ -232,8 +333,15 @@ class Node:
     # Data API used by operations
     # ---------------------------
 
-    def insert(self, row_id: str, row: dict) -> None:
-        if not self.schema.many:
+    def insert(
+        self,
+        row_id: str,
+        row: dict,
+    ) -> None:
+        if not isinstance(
+            self.schema,
+            ManySchema,
+        ):
             raise InvalidOperationError(
                 "insert() is only valid for many schemas",
                 detail=RowErrorDetail(
@@ -244,11 +352,24 @@ class Node:
                 ),
             )
 
-        built = self._build_default(row)
-        self._insert_built(row_id, built)
+        built = self._build_default(
+            row,
+        )
+        self._insert_built(
+            row_id,
+            built,
+        )
 
-    def setrow(self, row_id: str, key: str, value: Any) -> Any:
-        if not self.schema.many:
+    def setrow(
+        self,
+        row_id: str,
+        key: str,
+        value: Any,
+    ) -> Any:
+        if not isinstance(
+            self.schema,
+            ManySchema,
+        ):
             raise InvalidOperationError(
                 "setrow() is only valid for many schemas",
                 detail=RowErrorDetail(
@@ -270,21 +391,40 @@ class Node:
                 ),
             )
 
-        old_row = dict(self.value[row_id])
-        old_value = old_row.get(key)
+        old_row = dict(
+            self.value[row_id],
+        )
+        old_value = old_row.get(
+            key,
+        )
 
-        self.schema.challenge_field(key, value)
+        self.schema.challenge_field(
+            key,
+            value,
+        )
 
-        new_row = dict(old_row)
+        new_row = dict(
+            old_row,
+        )
         new_row[key] = value
 
-        self._indexes.update(row_id, old_row, new_row)
+        self._indexes.update(
+            row_id,
+            old_row,
+            new_row,
+        )
         self.value[row_id] = new_row
 
         return old_value
 
-    def remove(self, row_id: str) -> dict:
-        if not self.schema.many:
+    def remove(
+        self,
+        row_id: str,
+    ) -> dict:
+        if not isinstance(
+            self.schema,
+            ManySchema,
+        ):
             raise InvalidOperationError(
                 "remove() is only valid for many schemas",
                 detail=RowErrorDetail(
@@ -306,15 +446,27 @@ class Node:
                 ),
             )
 
-        old_row = dict(self.value[row_id])
+        old_row = dict(
+            self.value[row_id],
+        )
 
-        self._indexes.remove(row_id, old_row)
+        self._indexes.remove(
+            row_id,
+            old_row,
+        )
         del self.value[row_id]
 
         return old_row
 
-    def set(self, key: str, value: Any) -> Any:
-        if self.schema.many:
+    def set(
+        self,
+        key: str,
+        value: Any,
+    ) -> Any:
+        if not isinstance(
+            self.schema,
+            SingleSchema,
+        ):
             raise InvalidOperationError(
                 "set() is only valid for single schemas",
                 detail=RowErrorDetail(
@@ -324,9 +476,14 @@ class Node:
                 ),
             )
 
-        self.schema.challenge_field(key, value)
+        self.schema.challenge_field(
+            key,
+            value,
+        )
 
-        old_value = self.value.get(key)
+        old_value = self.value.get(
+            key,
+        )
         self.value[key] = value
 
         return old_value
@@ -362,10 +519,20 @@ class Node:
         *,
         first: bool = False,
     ) -> set[str] | str | None:
-        return self._indexes.lookup(fields, value, first=first)
+        return self._indexes.lookup(
+            fields,
+            value,
+            first=first,
+        )
 
-    def exists(self, row_id: str) -> bool:
-        if not self.schema.many:
+    def exists(
+        self,
+        row_id: str,
+    ) -> bool:
+        if not isinstance(
+            self.schema,
+            ManySchema,
+        ):
             raise InvalidOperationError(
                 "exists() is only valid for many schemas",
                 detail=RowErrorDetail(
@@ -383,9 +550,14 @@ class Node:
         id: str | None = None,
         key: str | None = None,
     ) -> Any:
-        if self.schema.many:
+        if isinstance(
+            self.schema,
+            ManySchema,
+        ):
             if id is None:
-                return copy.deepcopy(self.value)
+                return copy.deepcopy(
+                    self.value,
+                )
 
             if id not in self.value:
                 return None
@@ -393,14 +565,22 @@ class Node:
             row = self.value[id]
 
             if key is None:
-                return copy.deepcopy(row)
+                return copy.deepcopy(
+                    row,
+                )
 
-            return row.get(key)
+            return row.get(
+                key,
+            )
 
         if key is None:
-            return copy.deepcopy(self.value)
+            return copy.deepcopy(
+                self.value,
+            )
 
-        return self.value.get(key)
+        return self.value.get(
+            key,
+        )
 
     # ---------------------------
     # Internal helpers

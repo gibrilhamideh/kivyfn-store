@@ -16,7 +16,6 @@ from typing import (
 
 from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
-from kivyfn.store.operations import OpCode
 from kivyfn.store.events.event import (
     InsertEvent,
     RemoveEvent,
@@ -29,6 +28,8 @@ from kivyfn.store.events.listener import (
     Listener,
     ListenerIndex,
 )
+from kivyfn.store.operations import OpCode
+from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
 
@@ -225,37 +226,31 @@ class LocalSubscriptionManager:
         self._engine = engine
         self._lock = RLock()
 
-        # Address -> listener matching index.
         self._indexes: dict[
             Address[Any],
             ListenerIndex,
         ] = {}
 
-        # Address -> number of distinct listeners indexed for that address.
         self._address_listener_counts: dict[
             Address[Any],
             int,
         ] = defaultdict(int)
 
-        # Subscription token -> subscription.
         self._subscriptions: dict[
             str,
             LocalSubscription[Any],
         ] = {}
 
-        # Listener -> subscription tokens sharing that listener.
         self._listener_subscriptions: dict[
             Listener,
             set[str],
         ] = defaultdict(set)
 
-        # Referenced address -> foreign listeners translating its events.
         self._foreign_indexes: dict[
             Address[Any],
             list[ForeignListener],
         ] = defaultdict(list)
 
-        # Subscription token -> foreign listeners created for it.
         self._foreign_by_subscription: dict[
             str,
             list[ForeignListener],
@@ -514,9 +509,12 @@ class LocalSubscriptionManager:
         opcode = listener.opcode
 
         if opcode is OpCode.SET:
-            if node.schema.many:
+            if not isinstance(
+                node.schema,
+                SingleSchema,
+            ):
                 raise ValueError(
-                    f"SET subscriptions require a many=False schema: "
+                    "SET subscriptions require a SingleSchema: "
                     f"{node.schema.name}"
                 )
 
@@ -532,9 +530,12 @@ class LocalSubscriptionManager:
             return
 
         if opcode is OpCode.SETROW:
-            if not node.schema.many:
+            if not isinstance(
+                node.schema,
+                ManySchema,
+            ):
                 raise ValueError(
-                    f"SETROW subscriptions require a many=True schema: "
+                    "SETROW subscriptions require a ManySchema: "
                     f"{node.schema.name}"
                 )
 
@@ -557,10 +558,13 @@ class LocalSubscriptionManager:
             OpCode.INSERT,
             OpCode.REMOVE,
         ):
-            if not node.schema.many:
+            if not isinstance(
+                node.schema,
+                ManySchema,
+            ):
                 raise ValueError(
                     f"{opcode.value.upper()} subscriptions "
-                    f"require a many=True schema: "
+                    "require a ManySchema: "
                     f"{node.schema.name}"
                 )
 
@@ -576,7 +580,6 @@ class LocalSubscriptionManager:
             f"Unsupported subscription opcode: {opcode!r}"
         )
 
-
     @staticmethod
     def _validate_field(
         node: Node,
@@ -586,7 +589,6 @@ class LocalSubscriptionManager:
             node.schema.get_field(
                 field,
             )
-
 
     @staticmethod
     def _validate_depth(

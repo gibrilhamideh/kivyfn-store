@@ -251,7 +251,8 @@ class ConstraintGuard:
                         continue
 
                     for referencing_row_id in referencing_ids:
-                        # A referencing row deleted in this transaction is safe.
+                        # A referencing row deleted in this
+                        # transaction is safe.
                         if not delta.exists(
                             referencing_node,
                             referencing_row_id,

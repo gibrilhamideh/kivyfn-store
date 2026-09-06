@@ -1,4 +1,4 @@
-# kivyfn/store/schema/fields/data/boolean.py
+# src/kivyfn/store/schema/fields/data/booleanfield.py
 from __future__ import annotations
 
 from typing import Any
@@ -10,7 +10,7 @@ from kivyfn.store.error import (
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
-class BooleanField(DataField):
+class BooleanField(DataField[bool]):
     """
     Strict boolean field.
 

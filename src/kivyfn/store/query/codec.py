@@ -25,7 +25,7 @@ from kivyfn.store.query.query import (
 def query_to_payload(query: Query) -> dict[str, Any]:
     return {
         "version": query.protocol_version,
-        "source": query.source.to_list(),
+        "source": _source_to_payload(query),
         "joins": [
             {
                 "path": join.path.payload(),
@@ -50,14 +50,14 @@ def query_from_payload(payload: Any) -> Query:
 
     version = payload.get("version")
 
-    if version != QUERY_PROTOCOL_VERSION:
+    if version not in {1, QUERY_PROTOCOL_VERSION}:
         raise ValueError(
             f"Unsupported query protocol version: {version!r}"
         )
 
-    source = _string_list(
+    source = _source_from_payload(
         payload.get("source"),
-        name="query source",
+        version=version,
     )
     joins_payload = payload.get("joins")
 
@@ -66,11 +66,10 @@ def query_from_payload(payload: Any) -> Query:
             "Serialized query joins must be a list"
         )
 
-    joins: list[JoinSpec] = []
-
-    for raw_join in joins_payload:
-        joins.append(_join_from_payload(raw_join))
-
+    joins = tuple(
+        _join_from_payload(raw_join)
+        for raw_join in joins_payload
+    )
     raw_predicate = payload.get("predicate")
     predicate = (
         expression_from_payload(raw_predicate)
@@ -79,10 +78,9 @@ def query_from_payload(payload: Any) -> Query:
     )
 
     return Query(
-        source=Address(*source),
-        joins=tuple(joins),
+        source=source,
+        joins=joins,
         predicate=predicate,
-        protocol_version=version,
     )
 
 
@@ -207,6 +205,52 @@ def expression_from_payload(payload: Any) -> Expression:
     )
 
 
+def _source_to_payload(query: Query) -> dict[str, Any]:
+    source = query.source
+
+    if isinstance(source, Address):
+        return {
+            "address": source.to_list(),
+        }
+
+    schema_name = query.schema_name
+
+    if schema_name is None:
+        raise TypeError("Query source cannot be serialized")
+
+    return {
+        "schema": schema_name,
+    }
+
+
+def _source_from_payload(value: Any, *, version: int) -> Any:
+    if version == 1:
+        return Address(
+            *_string_list(value, name="query source")
+        )
+
+    if not isinstance(value, dict):
+        raise TypeError(
+            "Serialized query source must be an object"
+        )
+
+    address = value.get("address")
+
+    if address is not None:
+        return Address(
+            *_string_list(address, name="query source address")
+        )
+
+    schema = value.get("schema")
+
+    if not isinstance(schema, str) or not schema:
+        raise ValueError(
+            "Serialized query source schema is invalid"
+        )
+
+    return schema
+
+
 def _join_from_payload(payload: Any) -> JoinSpec:
     if not isinstance(payload, dict):
         raise TypeError(
@@ -215,10 +259,11 @@ def _join_from_payload(payload: Any) -> JoinSpec:
 
     alias = payload.get("alias")
 
-    if not isinstance(alias, str) or not alias:
-        raise ValueError(
-            "Serialized query join alias is invalid"
-        )
+    if alias is not None:
+        if not isinstance(alias, str) or not alias:
+            raise ValueError(
+                "Serialized query join alias is invalid"
+            )
 
     return JoinSpec(
         path=FieldPath(

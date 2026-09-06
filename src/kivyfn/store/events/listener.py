@@ -26,7 +26,10 @@ class ListenerIndex:
         self.setrow_all: set[Listener] = set()
         self.setrow_by_id: dict[str, set[Listener]] = defaultdict(set)
         self.setrow_by_key: dict[str, set[Listener]] = defaultdict(set)
-        self.setrow_by_id_key: dict[tuple[str, str], set[Listener]] = defaultdict(set)
+        self.setrow_by_id_key: dict[
+            tuple[str, str],
+            set[Listener],
+        ] = defaultdict(set)
 
         self._reverse_lookup: dict[
             Listener,
@@ -75,7 +78,10 @@ class ListenerIndex:
                 target_bucket = self.setrow_all
 
         if target_bucket is None:
-            raise ValueError(f"Unsupported listener opcode: {listener.opcode!r}")
+            raise ValueError(
+                "Unsupported listener opcode: "
+                f"{listener.opcode!r}"
+            )
 
         target_bucket.add(listener)
 

@@ -23,23 +23,36 @@ class MembershipOperator(str, Enum):
 class FieldPath:
     parts: tuple[str, ...]
 
-    def __init__(self, value: str | Iterable[str]) -> None:
+    def __init__(
+        self,
+        value: str | Iterable[str],
+    ) -> None:
         if isinstance(value, str):
             parts = tuple(value.split("."))
         else:
             parts = tuple(value)
 
-        if not parts or any(not part for part in parts):
+        if not parts or any(
+            not part
+            for part in parts
+        ):
             raise ValueError(
                 "Query field paths must contain non-empty parts"
             )
 
-        if any(not isinstance(part, str) for part in parts):
+        if any(
+            not isinstance(part, str)
+            for part in parts
+        ):
             raise TypeError(
                 "Query field path parts must be strings"
             )
 
-        object.__setattr__(self, "parts", parts)
+        object.__setattr__(
+            self,
+            "parts",
+            parts,
+        )
 
     def __str__(self) -> str:
         return ".".join(self.parts)
@@ -49,19 +62,33 @@ class FieldPath:
 
 
 class Expression:
-    def __and__(self, other: Expression) -> Expression:
-        return AndExpression.build(self, _require_expression(other))
+    def __and__(
+        self,
+        other: Expression,
+    ) -> Expression:
+        return AndExpression.build(
+            self,
+            _require_expression(other),
+        )
 
-    def __or__(self, other: Expression) -> Expression:
-        return OrExpression.build(self, _require_expression(other))
+    def __or__(
+        self,
+        other: Expression,
+    ) -> Expression:
+        return OrExpression.build(
+            self,
+            _require_expression(other),
+        )
 
     def __invert__(self) -> Expression:
         return NotExpression(self)
 
     def __bool__(self) -> bool:
         raise TypeError(
-            "Query expressions cannot be converted to bool; use '&', "
-            "'|', and '~' to combine them"
+            (
+                "Query expressions cannot be converted to bool; "
+                "use '&', '|', and '~' to combine them"
+            )
         )
 
 
@@ -84,19 +111,26 @@ class AndExpression(Expression):
     expressions: tuple[Expression, ...]
 
     @classmethod
-    def build(cls, *values: Expression) -> Expression:
+    def build(
+        cls,
+        *values: Expression,
+    ) -> Expression:
         expressions: list[Expression] = []
 
         for value in values:
             if isinstance(value, cls):
-                expressions.extend(value.expressions)
+                expressions.extend(
+                    value.expressions
+                )
             else:
                 expressions.append(value)
 
         if len(expressions) == 1:
             return expressions[0]
 
-        return cls(tuple(expressions))
+        return cls(
+            tuple(expressions)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,19 +138,26 @@ class OrExpression(Expression):
     expressions: tuple[Expression, ...]
 
     @classmethod
-    def build(cls, *values: Expression) -> Expression:
+    def build(
+        cls,
+        *values: Expression,
+    ) -> Expression:
         expressions: list[Expression] = []
 
         for value in values:
             if isinstance(value, cls):
-                expressions.extend(value.expressions)
+                expressions.extend(
+                    value.expressions
+                )
             else:
                 expressions.append(value)
 
         if len(expressions) == 1:
             return expressions[0]
 
-        return cls(tuple(expressions))
+        return cls(
+            tuple(expressions)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,35 +169,84 @@ class NotExpression(Expression):
 class Field:
     path: FieldPath
 
-    def __init__(self, value: str | Iterable[str]) -> None:
-        object.__setattr__(self, "path", FieldPath(value))
+    def __init__(
+        self,
+        value: str | Iterable[str],
+    ) -> None:
+        object.__setattr__(
+            self,
+            "path",
+            FieldPath(value),
+        )
 
-    def __eq__(self, value: object) -> ComparisonExpression: # pyright: ignore[reportIncompatibleMethodOverride]
-        return self._compare(ComparisonOperator.EQ, value)
+    def __eq__(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.EQ,
+            value,
+        )
 
-    def __ne__(self, value: object) -> ComparisonExpression: # pyright: ignore[reportIncompatibleMethodOverride]
-        return self._compare(ComparisonOperator.NE, value)
+    def __ne__(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.NE,
+            value,
+        )
 
-    def __gt__(self, value: object) -> ComparisonExpression:
-        return self._compare(ComparisonOperator.GT, value)
+    def __gt__(
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.GT,
+            value,
+        )
 
-    def __ge__(self, value: object) -> ComparisonExpression:
-        return self._compare(ComparisonOperator.GTE, value)
+    def __ge__(
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.GTE,
+            value,
+        )
 
-    def __lt__(self, value: object) -> ComparisonExpression:
-        return self._compare(ComparisonOperator.LT, value)
+    def __lt__(
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.LT,
+            value,
+        )
 
-    def __le__(self, value: object) -> ComparisonExpression:
-        return self._compare(ComparisonOperator.LTE, value)
+    def __le__(
+        self,
+        value: object,
+    ) -> ComparisonExpression:
+        return self._compare(
+            ComparisonOperator.LTE,
+            value,
+        )
 
-    def in_(self, values: Iterable[Any]) -> MembershipExpression:
+    def in_(
+        self,
+        values: Iterable[Any],
+    ) -> MembershipExpression:
         return MembershipExpression(
             field=self.path,
             operator=MembershipOperator.IN,
             values=_membership_values(values),
         )
 
-    def not_in(self, values: Iterable[Any]) -> MembershipExpression:
+    def not_in(
+        self,
+        values: Iterable[Any],
+    ) -> MembershipExpression:
         return MembershipExpression(
             field=self.path,
             operator=MembershipOperator.NOT_IN,
@@ -175,46 +265,87 @@ class Field:
         )
 
 
-def field(value: str | Iterable[str]) -> Field:
+def field(
+    value: str | Iterable[str],
+) -> Field:
     return Field(value)
 
 
-def iter_field_paths(expression: Expression) -> Iterator[FieldPath]:
-    if isinstance(expression, ComparisonExpression):
+def iter_field_paths(
+    expression: Expression,
+) -> Iterator[FieldPath]:
+    if isinstance(
+        expression,
+        ComparisonExpression,
+    ):
         yield expression.field
         return
 
-    if isinstance(expression, MembershipExpression):
+    if isinstance(
+        expression,
+        MembershipExpression,
+    ):
         yield expression.field
         return
 
-    if isinstance(expression, (AndExpression, OrExpression)):
+    if isinstance(
+        expression,
+        (AndExpression, OrExpression),
+    ):
         for child in expression.expressions:
-            yield from iter_field_paths(child)
+            yield from iter_field_paths(
+                child
+            )
+
         return
 
-    if isinstance(expression, NotExpression):
-        yield from iter_field_paths(expression.expression)
+    if isinstance(
+        expression,
+        NotExpression,
+    ):
+        yield from iter_field_paths(
+            expression.expression
+        )
+
         return
 
     raise TypeError(
-        f"Unsupported query expression: {type(expression).__name__}"
+        (
+            "Unsupported query expression: "
+            f"{type(expression).__name__}"
+        )
     )
 
 
-def _membership_values(values: Iterable[Any]) -> tuple[Any, ...]:
-    if isinstance(values, (str, bytes, bytearray)):
+def _membership_values(
+    values: Iterable[Any],
+) -> tuple[Any, ...]:
+    if isinstance(
+        values,
+        (str, bytes, bytearray),
+    ):
         raise TypeError(
-            "Query membership values must be a non-string iterable"
+            (
+                "Query membership values must be "
+                "a non-string iterable"
+            )
         )
 
     return tuple(values)
 
 
-def _require_expression(value: object) -> Expression:
-    if not isinstance(value, Expression):
+def _require_expression(
+    value: object,
+) -> Expression:
+    if not isinstance(
+        value,
+        Expression,
+    ):
         raise TypeError(
-            "Query logical operands must be query expressions"
+            (
+                "Query logical operands must be "
+                "query expressions"
+            )
         )
 
     return value

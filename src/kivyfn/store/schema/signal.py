@@ -1,23 +1,43 @@
-# kivyfn/store/signals/signal.py
+# src/kivyfn/store/schema/signal.py
 from __future__ import annotations
 
-from typing import Generic, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    Protocol,
+    Self,
+    TypeVar,
+    overload,
+)
 
 
-T = TypeVar("T")
+if TYPE_CHECKING:
+    from kivyfn.store.state.operation import StateOperation
 
 
-class Signal(Generic[T]):
+PayloadT = TypeVar(
+    "PayloadT",
+    contravariant=True,
+)
+
+
+class SignalCall(Protocol[PayloadT]):
+    def __call__(
+        self,
+        data: PayloadT | None = None,
+    ) -> StateOperation:
+        ...
+
+
+class Signal(Generic[PayloadT]):
     """
     Declarative schema signal.
 
-    Signals are declared on Schema classes and discovered when a Schema
-    instance is built.
+    On a schema class, the signal is metadata.
 
-    Example:
-
-        class AlarmSchema(Schema):
-            triggered = Signal[dict[str, object]]()
+    On a live state entity, the signal behaves like a callable action
+    returning a StateOperation.
     """
 
     def __init__(self) -> None:
@@ -25,14 +45,35 @@ class Signal(Generic[T]):
 
     def __set_name__(
         self,
-        owner: type[object],
+        owner: type[Any],
         name: str,
     ) -> None:
         self.name = name
 
-    def __repr__(
+    @overload
+    def __get__(
         self,
-    ) -> str:
+        instance: None,
+        owner: type[Any],
+    ) -> Self:
+        ...
+
+    @overload
+    def __get__(
+        self,
+        instance: object,
+        owner: type[Any],
+    ) -> SignalCall[PayloadT]:
+        ...
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[Any],
+    ) -> Any:
+        return self
+
+    def __repr__(self) -> str:
         return (
             f"<{type(self).__name__} "
             f"name={self.name!r}>"

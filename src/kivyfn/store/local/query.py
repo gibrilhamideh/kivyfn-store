@@ -17,7 +17,6 @@ from kivyfn.store.query.event import (
 )
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
-
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
     from kivyfn.store.events.event import StoreEvent
@@ -25,7 +24,6 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-
 QueryCallback = Callable[[QueryChangeSet], None]
 
 
@@ -112,11 +110,11 @@ class LocalQuerySubscription:
         current = manager.engine.execute_query(self._plan)
         query_events = diff_query_results(self._data, current)
         self._data = copy_query_result(current)
-        self._sequence += 1
 
         if not query_events:
             return True
 
+        self._sequence += 1
         change = QueryChangeSet(
             sequence=self._sequence,
             events=query_events,

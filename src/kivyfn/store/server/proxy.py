@@ -13,6 +13,7 @@ from kivyfn.store.server.query import (
 from kivyfn.store.server.signal import (
     SignalBindResult,
     SignalDispatchMessage,
+    SignalRequest,
     SignalUnbindResult,
 )
 from kivyfn.store.server.subscription import (
@@ -61,6 +62,9 @@ class StoreServerProxy:
     # -------------------------------------------------
     # Reads
     # -------------------------------------------------
+
+    def schema_info(self, schema_name: str) -> dict[str, Any]:
+        return self._server.schema_info(schema_name)
 
     def snapshot(
         self,
@@ -280,12 +284,12 @@ class StoreServerProxy:
     def transaction(
         self,
         instructions: list[dict[str, Any]],
+        signals: tuple[SignalRequest, ...] = (),
     ) -> StoreExecutionResult[ExecutionResult]:
-        """
-        Execute a transaction and return its result and event dispatches.
-        """
+        """Execute one transaction and return all dispatch messages."""
         return self._server.transaction(
             instructions,
+            signals,
         )
 
     # -------------------------------------------------

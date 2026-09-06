@@ -10,6 +10,7 @@ from kivyfn.store.query import Query, QueryResult
 from kivyfn.store.remote.client import RemoteStoreClient
 from kivyfn.store.remote.query import (
     QueryCallback,
+    QuerySyncCallback,
     RemoteQuerySubscription,
 )
 from kivyfn.store.remote.signal import RemoteSignalManager
@@ -112,6 +113,13 @@ class RemoteStore:
     # Reads
     # -------------------------------------------------
 
+    async def schema_info(
+        self,
+        schema_name: str,
+    ) -> Response[dict[str, Any]]:
+        self._require_ready()
+        return await self._client.schema_info(schema_name)
+
     async def snapshot(
         self,
         address: Address[T],
@@ -183,11 +191,14 @@ class RemoteStore:
         self,
         query: Query,
         callback: QueryCallback,
+        *,
+        sync_callback: QuerySyncCallback | None = None,
     ) -> Response[RemoteQuerySubscription]:
         self._require_ready()
         return await self._client.subscribe_query(
             query,
             callback,
+            sync_callback=sync_callback,
         )
 
     # -------------------------------------------------
@@ -197,13 +208,14 @@ class RemoteStore:
     async def commit(
         self,
         transaction: TransactionInput,
+        *,
+        signals: list[dict[str, Any]] | None = None,
     ) -> Response[TransactionResult]:
         self._require_ready()
-        commands = resolve_commands(
-            transaction,
-        )
+        commands = resolve_commands(transaction)
         return await self._client.transaction(
             commands,
+            signals=signals,
         )
 
     # -------------------------------------------------

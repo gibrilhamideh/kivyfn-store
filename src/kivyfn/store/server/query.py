@@ -225,8 +225,12 @@ class RemoteQuerySubscriptionManager:
                     continue
 
                 subscription.data = copy_query_result(current)
-                subscription.sequence += 1
                 subscription.dirty = False
+
+                if not query_events:
+                    continue
+
+                subscription.sequence += 1
                 change = QueryChangeSet(
                     server_instance_id=self._revisions.instance_id,
                     sequence=subscription.sequence,

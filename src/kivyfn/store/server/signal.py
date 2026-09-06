@@ -97,6 +97,16 @@ class SignalUnbindResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SignalRequest:
+    """One signal occurrence attached to a state transaction."""
+
+    address: Address[Any]
+    signal: str
+    id: str | None = None
+    data: Any = None
+
+
+@dataclass(frozen=True, slots=True)
 class SignalDispatchMessage:
     """
     Transport-independent outgoing signal event.
@@ -162,6 +172,22 @@ class RemoteSignalManager:
     # -------------------------------------------------
     # Bind / unbind
     # -------------------------------------------------
+
+    def validate(
+        self,
+        address: Address[Any],
+        signal: str,
+        *,
+        id: str | None = None,
+    ) -> None:
+        """Validate one signal target without dispatching it."""
+        self._validate_signal_name(signal)
+        self._validate_row_id(id)
+        self._validate_target(
+            address=address,
+            signal=signal,
+            id=id,
+        )
 
     def bind(
         self,

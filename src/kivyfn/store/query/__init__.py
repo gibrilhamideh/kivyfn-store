@@ -15,12 +15,19 @@ from kivyfn.store.query.expression import (
     Field,
     field,
 )
-from kivyfn.store.query.query import Query
+from kivyfn.store.query.query import (
+    SINGLE_QUERY_ROW_ID,
+    JoinKind,
+    JoinSpec,
+    Query,
+)
 
 
 __all__ = [
     "Expression",
     "Field",
+    "JoinKind",
+    "JoinSpec",
     "Query",
     "QueryChangeSet",
     "QueryEvent",
@@ -28,6 +35,7 @@ __all__ = [
     "QueryRemoveEvent",
     "QueryResult",
     "QueryUpdateEvent",
+    "SINGLE_QUERY_ROW_ID",
     "field",
     "query_from_payload",
     "query_to_payload",

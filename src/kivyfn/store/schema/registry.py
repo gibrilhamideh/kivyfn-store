@@ -71,6 +71,9 @@ class ForeignKeyRegistry:
         for schema, fks in self._by_source.items():
             lines.append(f"  {schema}:")
             for fk in fks:
-                lines.append(f"    - {fk.field} -> {fk.reference} ({fk.on_delete.name})")
+                lines.append(
+                    f"    - {fk.field} -> {fk.reference} "
+                    f"({fk.on_delete.name})"
+                )
 
         return "\n".join(lines)

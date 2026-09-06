@@ -11,7 +11,7 @@ from kivyfn.store.error import (
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
-class DateField(DataField):
+class DateField(DataField[str]):
     """
     ISO-8601 date field with optional inclusive lower and upper bounds.
     """

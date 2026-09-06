@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import inspect
 import weakref
+
 from collections import defaultdict
 from collections.abc import Callable
 from threading import RLock
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast, overload
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Generic,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
+from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.signals.event import SignalEvent
 from kivyfn.store.utils.tools.uuid import generate_uuid
 
@@ -33,7 +42,7 @@ class _CallbackReference(Generic[T]):
     Holds bound methods weakly and other callables strongly.
 
     Bound methods are weakly referenced so signal bindings do not keep their
-    owning controller, adapter, or widget alive. Functions, lambdas, and
+    owning controller, state, or widget alive. Functions, lambdas, and
     callable objects are retained strongly.
     """
 
@@ -127,8 +136,8 @@ class LocalSignalBinding(Generic[T]):
         """
         Invoke the callback.
 
-        Returns False when the callback no longer exists and the binding should
-        be removed.
+        Returns False when the callback no longer exists and the binding
+        should be removed.
         """
         if self._disposed:
             return False
@@ -159,7 +168,10 @@ class LocalSignalBinding(Generic[T]):
 
         except Exception:
             logger.exception(
-                "Local store signal callback failed: token=%s signal=%s",
+                (
+                    "Local store signal callback failed: "
+                    "token=%s signal=%s"
+                ),
                 self._token,
                 self._signal,
             )
@@ -230,13 +242,11 @@ class LocalSignalManager:
         self._engine = engine
         self._lock = RLock()
 
-        # Binding token -> binding.
         self._bindings: dict[
             str,
             LocalSignalBinding[Any],
         ] = {}
 
-        # Exact signal scope -> binding tokens.
         self._bindings_by_key: dict[
             SignalKey,
             set[str],
@@ -245,6 +255,24 @@ class LocalSignalManager:
     # -------------------------------------------------
     # Public API
     # -------------------------------------------------
+
+    def validate(
+        self,
+        address: Address[Any],
+        signal: str,
+        *,
+        id: str | None = None,
+    ) -> None:
+        """Validate one signal target without dispatching it."""
+        node = self._engine.get_node_by_address(
+            address,
+        )
+
+        self._validate_scope(
+            node=node,
+            signal=signal,
+            id=id,
+        )
 
     def bind(
         self,
@@ -332,7 +360,6 @@ class LocalSignalManager:
     ) -> SignalEvent[None]:
         ...
 
-
     @overload
     def emit(
         self,
@@ -343,7 +370,6 @@ class LocalSignalManager:
         id: str | None = None,
     ) -> SignalEvent[T]:
         ...
-
 
     def emit(
         self,
@@ -394,9 +420,7 @@ class LocalSignalManager:
         return event
 
     def clear(self) -> None:
-        """
-        Dispose all signal bindings.
-        """
+        """Dispose all signal bindings."""
         with self._lock:
             bindings = tuple(
                 self._bindings.values(),
@@ -422,7 +446,6 @@ class LocalSignalManager:
         with self._lock:
             tokens: set[str] = set()
 
-            # Signal-wide bindings always receive matching emissions.
             tokens.update(
                 self._bindings_by_key.get(
                     (
@@ -434,7 +457,6 @@ class LocalSignalManager:
                 )
             )
 
-            # Row-scoped bindings receive emissions for their exact row.
             if id is not None:
                 tokens.update(
                     self._bindings_by_key.get(
@@ -472,7 +494,10 @@ class LocalSignalManager:
             signal,
         )
 
-        if not node.schema.many:
+        if isinstance(
+            node.schema,
+            SingleSchema,
+        ):
             if id is not None:
                 raise ValueError(
                     f"Signal {signal!r} on {node.schema.name} "
@@ -480,6 +505,17 @@ class LocalSignalManager:
                 )
 
             return
+
+        if not isinstance(
+            node.schema,
+            ManySchema,
+        ):
+            raise TypeError(
+                (
+                    f"Schema {node.schema.name!r} must inherit "
+                    "SingleSchema or ManySchema"
+                )
+            )
 
         if id is None:
             return

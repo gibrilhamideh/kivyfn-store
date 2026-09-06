@@ -11,7 +11,7 @@ from kivyfn.store.error import (
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
-class TimeField(DataField):
+class TimeField(DataField[str]):
     """
     ISO-8601 time field with optional inclusive lower and upper bounds.
     """

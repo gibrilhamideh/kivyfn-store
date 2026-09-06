@@ -2,16 +2,23 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Iterable
+from typing import Generic, Iterable, TypeVar, cast
 
 from kivyfn.store.error import (
     FieldErrorDetail,
     FieldValidationError,
+    ProtocolValue,
 )
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
-class EnumField(DataField):
+ValueT = TypeVar(
+    "ValueT",
+    bound=ProtocolValue,
+)
+
+
+class EnumField(DataField[ValueT], Generic[ValueT]):
     """
     Strict enum field.
 
@@ -22,19 +29,25 @@ class EnumField(DataField):
         self,
         *,
         enum: type[Enum] | None = None,
-        values: Iterable[Any] | None = None,
-        **kwargs: Any,
+        values: Iterable[ValueT] | None = None,
+        default: ValueT | None = None,
+        allow_none: bool = False,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(
+            default=default,
+            allow_none=allow_none,
+        )
 
         if enum is not None and values is not None:
             raise ValueError(
                 "EnumField accepts either enum or values, not both"
             )
 
+        self.values: tuple[ValueT, ...]
+
         if enum is not None:
             self.values = tuple(
-                item.value
+                cast(ValueT, item.value)
                 for item in enum
             )
         elif values is not None:
@@ -50,20 +63,15 @@ class EnumField(DataField):
             )
 
     @property
-    def metadata(self) -> dict[str, Any]:
-        data = dict(super().metadata)
-
-        data.update(
-            {
-                "values": self.values,
-            }
-        )
-
-        return data
+    def metadata(self) -> dict[str, ProtocolValue]:
+        return {
+            **super().metadata,
+            "values": list(self.values),
+        }
 
     def challenge(
         self,
-        value: Any,
+        value: ProtocolValue,
     ) -> None:
         super().challenge(value)
 
@@ -71,12 +79,17 @@ class EnumField(DataField):
             return
 
         if value not in self.values:
+            expected: list[ProtocolValue] = [
+                item
+                for item in self.values
+            ]
+
             raise FieldValidationError(
                 "Value is not one of the allowed enum values",
                 detail=FieldErrorDetail(
                     field=self.name,
                     value=value,
                     rule="enum",
-                    expected=list(self.values),
+                    expected=expected,
                 ),
             )

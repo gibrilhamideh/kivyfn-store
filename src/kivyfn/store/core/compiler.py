@@ -1,4 +1,4 @@
-# kivyfn/store/core/compiler.py
+# src/kivyfn/store/core/compiler.py
 from __future__ import annotations
 
 from collections import deque
@@ -26,6 +26,10 @@ from kivyfn.store.error import (
 from kivyfn.store.operations import (
     OpCode,
     OperationSource,
+)
+from kivyfn.store.schema import (
+    ManySchema,
+    SingleSchema,
 )
 from kivyfn.store.schema.context import TriggerContext
 from kivyfn.store.schema.policy import ForeignKeyPolicy
@@ -61,6 +65,9 @@ class Compiler:
                     node,
                     instruction,
                 )
+
+                if self._is_noop(operation):
+                    continue
 
                 self.operations.append(
                     operation,
@@ -148,7 +155,7 @@ class Compiler:
     ) -> tuple[Operation, Instruction]:
         schema = node.schema
 
-        if schema.is_many():
+        if not isinstance(schema, SingleSchema):
             raise InvalidOperationError(
                 "SET is only valid on a single schema",
                 detail=self._instruction_detail(
@@ -184,7 +191,7 @@ class Compiler:
     ) -> tuple[Operation, Instruction]:
         schema = node.schema
 
-        if not schema.is_many():
+        if not isinstance(schema, ManySchema):
             raise InvalidOperationError(
                 "SETROW is only valid on a many schema",
                 detail=self._instruction_detail(
@@ -228,7 +235,7 @@ class Compiler:
     ) -> tuple[Operation, Instruction]:
         schema = node.schema
 
-        if not schema.is_many():
+        if not isinstance(schema, ManySchema):
             raise InvalidOperationError(
                 "INSERT is only valid on a many schema",
                 detail=self._instruction_detail(
@@ -275,7 +282,7 @@ class Compiler:
     ) -> tuple[Operation, Instruction]:
         schema = node.schema
 
-        if not schema.is_many():
+        if not isinstance(schema, ManySchema):
             raise InvalidOperationError(
                 "REMOVE is only valid on a many schema",
                 detail=self._instruction_detail(
@@ -297,6 +304,94 @@ class Compiler:
                 instruction,
             ),
             instruction,
+        )
+
+    # ============================= #
+    # Actual-change filtering
+    # ============================= #
+
+    def _is_noop(self, operation: Operation) -> bool:
+        if isinstance(operation, SetOperation):
+            current = operation.node.value.get(
+                operation.key,
+            )
+
+            for previous in reversed(
+                self.operations,
+            ):
+                if (
+                    isinstance(previous, SetOperation)
+                    and previous.node is operation.node
+                    and previous.key == operation.key
+                ):
+                    current = previous.new_value
+                    break
+
+            return current == operation.new_value
+
+        if not isinstance(
+            operation,
+            SetRowOperation,
+        ):
+            return False
+
+        missing = object()
+        current: object = missing
+
+        for previous in reversed(
+            self.operations,
+        ):
+            if previous.node is not operation.node:
+                continue
+
+            if isinstance(
+                previous,
+                RemoveOperation,
+            ):
+                if previous.id == operation.id:
+                    return False
+
+            if isinstance(
+                previous,
+                InsertOperation,
+            ):
+                if previous.id == operation.id:
+                    current = previous.value.get(
+                        operation.key,
+                        missing,
+                    )
+                    break
+
+            if isinstance(
+                previous,
+                SetRowOperation,
+            ):
+                if (
+                    previous.id == operation.id
+                    and previous.key == operation.key
+                ):
+                    current = previous.new_value
+                    break
+
+        if current is missing:
+            row = operation.node.value.get(
+                operation.id,
+            )
+
+            if not isinstance(
+                row,
+                dict,
+            ):
+                return False
+
+            current = row.get(
+                operation.key,
+                missing,
+            )
+
+        return (
+            current is not missing
+            and current == operation.new_value
         )
 
     # ============================= #
@@ -368,8 +463,10 @@ class Compiler:
             return []
 
         for foreign_key in foreign_keys:
-            referencing_node = self.engine.get_node_by_schema(
-                foreign_key.schema,
+            referencing_node = (
+                self.engine.get_node_by_schema(
+                    foreign_key.schema,
+                )
             )
 
             ids = referencing_node.lookup(
@@ -380,29 +477,44 @@ class Compiler:
             if not ids:
                 continue
 
-            if foreign_key.on_delete is ForeignKeyPolicy.RESTRICT:
+            if (
+                foreign_key.on_delete
+                is ForeignKeyPolicy.RESTRICT
+            ):
                 raise ForeignKeyRestrictedError(
                     (
                         f"Cannot delete {target_schema} "
-                        f"{removed_id!r} because it is referenced by "
-                        f"{foreign_key.schema}.{foreign_key.field}"
+                        f"{removed_id!r} because it is referenced "
+                        f"by {foreign_key.schema}."
+                        f"{foreign_key.field}"
                     ),
                     detail=ConstraintErrorDetail(
                         schema=target_schema,
                         row_id=removed_id,
-                        referencing_schema=foreign_key.schema,
-                        referencing_field=foreign_key.field,
-                        referencing_row_ids=tuple(ids),
+                        referencing_schema=(
+                            foreign_key.schema
+                        ),
+                        referencing_field=(
+                            foreign_key.field
+                        ),
+                        referencing_row_ids=tuple(
+                            ids,
+                        ),
                     ),
                 )
 
-            if foreign_key.on_delete is ForeignKeyPolicy.CASCADE:
+            if (
+                foreign_key.on_delete
+                is ForeignKeyPolicy.CASCADE
+            ):
                 for row_id in ids:
                     derived.append(
                         Instruction.remove(
                             referencing_node.address,
                             row_id,
-                            source=OperationSource.POLICY,
+                            source=(
+                                OperationSource.POLICY
+                            ),
                         )
                     )
 

@@ -189,17 +189,25 @@ class RemoteQuerySubscription:
                 snapshot.data,
             )
 
+            self._data = copy_query_result(snapshot.data)
+            self._server_instance_id = snapshot.server_instance_id
+            self._sequence = snapshot.sequence
+
             if notify and events:
                 change = QueryChangeSet(
                     server_instance_id=snapshot.server_instance_id,
                     sequence=snapshot.sequence,
                     events=events,
                 )
-                self._invoke_callback(change)
 
-            self._data = copy_query_result(snapshot.data)
-            self._server_instance_id = snapshot.server_instance_id
-            self._sequence = snapshot.sequence
+                try:
+                    self._invoke_callback(change)
+                except Exception:
+                    logger.exception(
+                        "Remote query callback failed during sync: "
+                        "token=%s",
+                        self._token,
+                    )
 
             buffered = sorted(
                 self._buffer,
@@ -296,20 +304,20 @@ class RemoteQuerySubscription:
         if change.sequence != self._sequence + 1:
             return DispatchResult.FAILED
 
-        try:
-            if notify and change.events:
-                self._invoke_callback(change)
-        except Exception:
-            logger.exception(
-                "Remote query callback failed: token=%s",
-                self._token,
-            )
-            return DispatchResult.FAILED
-
         self._data = apply_query_change(self._data, change)
         self._server_instance_id = change.server_instance_id
         self._sequence = change.sequence
         self._synchronized = True
+
+        if notify and change.events:
+            try:
+                self._invoke_callback(change)
+            except Exception:
+                logger.exception(
+                    "Remote query callback failed: token=%s",
+                    self._token,
+                )
+
         return DispatchResult.APPLIED
 
     def _invoke_callback(self, change: QueryChangeSet) -> None:

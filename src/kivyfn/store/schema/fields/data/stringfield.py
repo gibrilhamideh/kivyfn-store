@@ -10,7 +10,7 @@ from kivyfn.store.error import (
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
-class StringField(DataField):
+class StringField(DataField[str]):
     """
     Strict string field.
 

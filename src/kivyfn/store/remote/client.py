@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import weakref
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import (
-    TYPE_CHECKING,
     Any,
     Literal,
     TypeVar,
@@ -71,10 +69,6 @@ from kivyfn.store.response import (
     success,
 )
 from kivyfn.store.transaction import TransactionResult
-
-
-if TYPE_CHECKING:
-    from kivyfn.store.adapter.protocol import SynchronizingAdapter
 
 
 logger = get_logger(__name__)
@@ -154,17 +148,12 @@ class RemoteStoreClient:
             RemoteSignalBinding[Any],
         ] = {}
 
-        self._adapters: weakref.WeakSet[
-            SynchronizingAdapter
-        ] = weakref.WeakSet()
-        self._adapter_tasks: dict[
-            SynchronizingAdapter,
-            asyncio.Task[None],
-        ] = {}
-
         self._audit_interval = float(audit_interval)
         self._recovery_delay = float(recovery_delay)
         self._state = ConnectionState.DISCONNECTED
+        self._state_listeners: set[
+            Callable[[ConnectionState], None]
+        ] = set()
         self._ready_event = asyncio.Event()
         self._lifecycle_lock = asyncio.Lock()
         self._manual_connecting = False
@@ -182,7 +171,7 @@ class RemoteStoreClient:
                 return
 
             if not self.transport_connected:
-                self._state = ConnectionState.CONNECTING
+                self._set_state(ConnectionState.CONNECTING)
                 self._manual_connecting = True
 
                 try:
@@ -191,7 +180,7 @@ class RemoteStoreClient:
                     self._manual_connecting = False
 
             if not self.transport_connected:
-                self._state = ConnectionState.DISCONNECTED
+                self._set_state(ConnectionState.DISCONNECTED)
                 raise StoreStateError(
                     "Remote store transport did not connect"
                 )
@@ -207,7 +196,6 @@ class RemoteStoreClient:
     async def disconnect(self) -> None:
         await self._cancel_recovery_task()
         await self._cancel_audit_task()
-        await self._cancel_adapter_tasks()
         await self._cancel_query_tasks()
 
         async with self._lifecycle_lock:
@@ -218,11 +206,8 @@ class RemoteStoreClient:
                 return
 
             self._expected_disconnect = True
-            self._state = ConnectionState.DISCONNECTING
+            self._set_state(ConnectionState.DISCONNECTING)
             self._ready_event.clear()
-            self._mark_adapters_sync_lost(
-                "explicit-disconnect",
-            )
             self._mark_queries_sync_lost(
                 "explicit-disconnect",
             )
@@ -233,10 +218,38 @@ class RemoteStoreClient:
             finally:
                 self._expected_disconnect = False
                 self._clear_remote_routes()
-                self._state = ConnectionState.DISCONNECTED
+                self._set_state(ConnectionState.DISCONNECTED)
 
     async def wait_until_ready(self) -> None:
         await self._ready_event.wait()
+
+    def add_state_listener(
+        self,
+        callback: Callable[[ConnectionState], None],
+    ) -> None:
+        self._state_listeners.add(callback)
+        callback(self._state)
+
+    def remove_state_listener(
+        self,
+        callback: Callable[[ConnectionState], None],
+    ) -> None:
+        self._state_listeners.discard(callback)
+
+    def _set_state(self, state: ConnectionState) -> None:
+        if self._state is state:
+            return
+
+        self._state = state
+
+        for callback in tuple(self._state_listeners):
+            try:
+                callback(state)
+            except Exception:
+                logger.exception(
+                    "Remote store state listener failed: state=%s",
+                    state.value,
+                )
 
     def _on_transport_lifecycle(
         self,
@@ -246,20 +259,18 @@ class RemoteStoreClient:
             self._ready_event.clear()
             self._cancel_audit_now()
             self._clear_remote_routes()
-            self._mark_adapters_sync_lost(
-                "transport-disconnected",
-            )
             self._mark_queries_sync_lost(
                 "transport-disconnected",
             )
 
             if self._state is not ConnectionState.DISCONNECTING:
-                self._state = ConnectionState.DISCONNECTED
+                self._set_state(ConnectionState.DISCONNECTED)
 
             if not self._expected_disconnect:
                 logger.warning(
-                    "Remote store transport disconnected; cached adapter "
-                    "data remains available while recovery is pending."
+                    "Remote store transport disconnected; cached "
+                    "subscription data remains available while recovery "
+                    "is pending."
                 )
 
             return
@@ -310,7 +321,7 @@ class RemoteStoreClient:
                 delay = min(delay * 2.0, 5.0)
 
     async def _synchronize(self) -> None:
-        self._state = ConnectionState.SYNCHRONIZING
+        self._set_state(ConnectionState.SYNCHRONIZING)
         self._ready_event.clear()
         await self._cancel_audit_task()
         await self._drop_current_remote_registrations()
@@ -345,19 +356,17 @@ class RemoteStoreClient:
             raise
 
         await self._recover_query_subscriptions()
-        await self._recover_adapters()
 
-        self._state = ConnectionState.READY
+        self._set_state(ConnectionState.READY)
         self._ready_event.set()
         self._start_audit_task()
 
         logger.info(
             "Remote store synchronization recovered: "
-            "subscriptions=%d queries=%d signals=%d adapters=%d",
+            "subscriptions=%d queries=%d signals=%d",
             len(self._subscription_handles),
             len(self._query_handles),
             len(self._signal_handles),
-            len(tuple(self._loaded_adapters())),
         )
 
     async def _cancel_recovery_task(self) -> None:
@@ -439,6 +448,29 @@ class RemoteStoreClient:
     # -------------------------------------------------
     # Reads and synchronization
     # -------------------------------------------------
+
+    async def schema_info(
+        self,
+        schema_name: str,
+    ) -> Response[dict[str, Any]]:
+        result = await self._request(
+            "schema_info",
+            {
+                "schema": schema_name,
+            },
+        )
+
+        if result.ok is False:
+            return cast(Response[dict[str, Any]], result)
+
+        data = result.data
+
+        if not isinstance(data, dict):
+            raise StoreProtocolError(
+                "Remote schema metadata is invalid"
+            )
+
+        return success(data)
 
     async def snapshot(
         self,
@@ -843,162 +875,6 @@ class RemoteStoreClient:
             )
 
     # -------------------------------------------------
-    # Adapter synchronization
-    # -------------------------------------------------
-
-    def register_adapter(
-        self,
-        adapter: SynchronizingAdapter,
-    ) -> None:
-        self._adapters.add(
-            adapter,
-        )
-
-    def unregister_adapter(
-        self,
-        adapter: SynchronizingAdapter,
-    ) -> None:
-        self._adapters.discard(
-            adapter,
-        )
-        task = self._adapter_tasks.pop(
-            adapter,
-            None,
-        )
-
-        if task is not None:
-            task.cancel()
-
-    def request_adapter_resync(
-        self,
-        adapter: SynchronizingAdapter,
-        reason: str,
-    ) -> None:
-        adapter.mark_sync_lost(
-            reason,
-        )
-
-        if not self.ready:
-            return
-
-        task = self._adapter_tasks.get(
-            adapter,
-        )
-
-        if task is not None and not task.done():
-            return
-
-        task = asyncio.create_task(
-            self._resync_adapter(
-                adapter,
-                reason,
-            ),
-            name=f"store-resync-{adapter.address}",
-        )
-        self._adapter_tasks[adapter] = task
-        task.add_done_callback(
-            lambda completed, current=adapter: (
-                self._adapter_resync_done(
-                    current,
-                    completed,
-                )
-            )
-        )
-
-    async def _resync_adapter(
-        self,
-        adapter: SynchronizingAdapter,
-        reason: str,
-    ) -> None:
-        await adapter.resync(
-            reason,
-        )
-
-    def _adapter_resync_done(
-        self,
-        adapter: SynchronizingAdapter,
-        task: asyncio.Task[None],
-    ) -> None:
-        current = self._adapter_tasks.get(
-            adapter,
-        )
-
-        if current is task:
-            self._adapter_tasks.pop(
-                adapter,
-                None,
-            )
-
-        if task.cancelled():
-            return
-
-        error = task.exception()
-
-        if error is not None:
-            logger.error(
-                "Adapter resynchronization failed for %s: %s",
-                adapter.address,
-                error,
-                exc_info=(
-                    type(error),
-                    error,
-                    error.__traceback__,
-                ),
-            )
-
-    def _loaded_adapters(self) -> tuple[SynchronizingAdapter, ...]:
-        return tuple(
-            adapter
-            for adapter in self._adapters
-            if adapter.loaded
-        )
-
-    def _mark_adapters_sync_lost(
-        self,
-        reason: str,
-    ) -> None:
-        for adapter in self._loaded_adapters():
-            adapter.mark_sync_lost(
-                reason,
-            )
-
-    async def _recover_adapters(self) -> None:
-        await self._cancel_adapter_tasks()
-        adapters = self._loaded_adapters()
-
-        if not adapters:
-            return
-
-        for adapter in adapters:
-            adapter.mark_sync_lost(
-                "connection-recovery",
-            )
-
-        await asyncio.gather(
-            *(
-                adapter.resync(
-                    "connection-recovery",
-                )
-                for adapter in adapters
-            )
-        )
-
-    async def _cancel_adapter_tasks(self) -> None:
-        tasks = tuple(
-            self._adapter_tasks.values(),
-        )
-        self._adapter_tasks.clear()
-
-        for task in tasks:
-            task.cancel()
-
-        if tasks:
-            await asyncio.gather(
-                *tasks,
-                return_exceptions=True,
-            )
-
-    # -------------------------------------------------
     # Revision audit
     # -------------------------------------------------
 
@@ -1043,7 +919,6 @@ class RemoteStoreClient:
             if not self.ready:
                 continue
 
-            adapters = self._loaded_adapters()
             queries = tuple(
                 subscription
                 for subscription in self._query_handles
@@ -1051,15 +926,11 @@ class RemoteStoreClient:
                 and subscription.callback_alive
             )
 
-            if not adapters and not queries:
+            if not queries:
                 continue
 
             try:
-                if adapters:
-                    await self._audit_adapters(adapters)
-
-                if queries:
-                    await self._audit_queries(queries)
+                await self._audit_queries(queries)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1076,44 +947,6 @@ class RemoteStoreClient:
                     )
 
                 failure_logged = False
-
-    async def _audit_adapters(
-        self,
-        adapters: tuple[SynchronizingAdapter, ...],
-    ) -> None:
-        response = await self.revision_audit(
-            adapter.address
-            for adapter in adapters
-        )
-
-        if response.ok is False:
-            raise StoreStateError(
-                "Revision audit was rejected: "
-                f"{response.error}"
-            )
-
-        audit = response.data
-
-        for adapter in adapters:
-            expected = audit.revisions.get(adapter.address)
-
-            if expected is None:
-                self.request_adapter_resync(
-                    adapter,
-                    "audit-address-missing",
-                )
-                continue
-
-            if (
-                not adapter.synchronized
-                or adapter.server_instance_id
-                != audit.server_instance_id
-                or adapter.revision != expected
-            ):
-                self.request_adapter_resync(
-                    adapter,
-                    "revision-audit-mismatch",
-                )
 
     async def _audit_queries(
         self,
@@ -1990,12 +1823,19 @@ class RemoteStoreClient:
     async def transaction(
         self,
         instructions: list[dict[str, Any]],
+        *,
+        signals: list[dict[str, Any]] | None = None,
     ) -> Response[TransactionResult]:
+        message: dict[str, Any] = {
+            "instructions": instructions,
+        }
+
+        if signals:
+            message["signals"] = signals
+
         result = await self._request(
             "transaction",
-            {
-                "instructions": instructions,
-            },
+            message,
         )
 
         if result.ok is False:
@@ -2120,11 +1960,6 @@ class RemoteStoreClient:
                 )
                 continue
 
-            if result is DispatchResult.FAILED:
-                self._request_address_resync(
-                    subscription.address,
-                    "subscription-callback-failed",
-                )
 
         return dead
 
@@ -2170,18 +2005,6 @@ class RemoteStoreClient:
                 )
 
         return dead
-
-    def _request_address_resync(
-        self,
-        address: Address[Any],
-        reason: str,
-    ) -> None:
-        for adapter in self._loaded_adapters():
-            if adapter.address == address:
-                self.request_adapter_resync(
-                    adapter,
-                    reason,
-                )
 
     async def on_signal(
         self,

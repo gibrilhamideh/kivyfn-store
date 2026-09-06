@@ -16,17 +16,18 @@ from kivyfn.store.core.engine import Engine
 from kivyfn.store.core.execution import ExecutionResult
 from kivyfn.store.operations import OpCode
 from kivyfn.store.query import Query, QueryResult
+from kivyfn.store.schema import ManySchema
 from kivyfn.store.server.query import (
     QuerySubscribeResult,
     QueryUnsubscribeResult,
     RemoteQuerySubscriptionManager,
 )
 from kivyfn.store.server.revision import StoreRevisionTracker
-from kivyfn.store.server.transport import StoreServerTransport
 from kivyfn.store.server.signal import (
     RemoteSignalManager,
     SignalBindResult,
     SignalDispatchMessage,
+    SignalRequest,
     SignalUnbindResult,
 )
 from kivyfn.store.server.subscription import (
@@ -35,6 +36,7 @@ from kivyfn.store.server.subscription import (
     SubscribeResult,
     UnsubscribeResult,
 )
+from kivyfn.store.server.transport import StoreServerTransport
 from kivyfn.store.storage import AsyncPersistenceCoordinator
 
 
@@ -58,13 +60,15 @@ class StoreExecutionResult(Generic[ResultT]):
 
     `result` contains the direct store-domain result of the operation.
 
-    `dispatches` contains transport-independent subscription messages produced
-    from the operation's events. The active server transport is responsible for
-    delivering those messages through its own channel mechanism.
+    `dispatches` contains transport-independent subscription messages
+    produced from the operation's events. The active server transport is
+    responsible for delivering those messages through its own channel
+    mechanism.
     """
 
     result: ResultT
     dispatches: tuple[DispatchMessage, ...]
+    signal_dispatches: tuple[SignalDispatchMessage, ...] = ()
 
 
 class StoreServer:
@@ -81,8 +85,8 @@ class StoreServer:
     - the complete server lifecycle
 
     Public operation methods accept concrete Python arguments. The selected
-    transport is responsible for parsing its wire protocol before calling the
-    proxy and for serializing returned values afterward.
+    transport is responsible for parsing its wire protocol before calling
+    the proxy and for serializing returned values afterward.
 
     StoreServer contains no Socket.IO, aiohttp, Unix-socket, TCP, framing,
     payload-parsing, room, or connection implementation details.
@@ -108,20 +112,19 @@ class StoreServer:
         )
 
         self._revisions = StoreRevisionTracker()
+
         self._queries = RemoteQuerySubscriptionManager(
             self._engine,
             self._revisions,
         )
+
         self._persistence = AsyncPersistenceCoordinator(
             self._engine,
         )
-        self._synchronization_lock = RLock()
 
+        self._synchronization_lock = RLock()
         self._transport = transport
 
-        # Local import prevents:
-        #
-        # server.py -> proxy.py -> server.py
         from kivyfn.store.server.proxy import StoreServerProxy
 
         self._proxy = StoreServerProxy(
@@ -140,8 +143,8 @@ class StoreServer:
 
         Calling start() while already running is safe.
 
-        An Engine may only be booted once, so its own `booted` state is checked
-        before calling boot().
+        An Engine may only be booted once, so its own `booted` state is
+        checked before calling boot().
         """
         if self._running:
             return
@@ -156,7 +159,9 @@ class StoreServer:
                 self._proxy,
             )
         except BaseException:
-            await self._persistence.stop(flush=True)
+            await self._persistence.stop(
+                flush=True,
+            )
             raise
 
         self._running = True
@@ -166,12 +171,14 @@ class StoreServer:
         Stop the selected transport.
 
         Calling stop() while already stopped is safe. The Engine remains
-        booted, allowing the transport to be started again on the same server
-        instance.
+        booted, allowing the transport to be started again on the same
+        server instance.
         """
         if not self._running:
             if self._engine.has_pending_persistence:
-                await self._persistence.stop(flush=True)
+                await self._persistence.stop(
+                    flush=True,
+                )
 
             return
 
@@ -180,11 +187,40 @@ class StoreServer:
         try:
             await self._transport.stop()
         finally:
-            await self._persistence.stop(flush=True)
+            await self._persistence.stop(
+                flush=True,
+            )
 
     # -------------------------------------------------
     # Reads
     # -------------------------------------------------
+
+    def schema_info(
+        self,
+        schema_name: str,
+    ) -> dict[str, Any]:
+        """Return transport-safe metadata for one registered schema."""
+        with self._synchronization_lock:
+            node = self._engine.metadata.get_node_by_schema(
+                schema_name,
+            )
+
+            schema = node.schema
+
+            return {
+                "name": schema.name,
+                "address": node.address.to_list(),
+                "many": isinstance(
+                    schema,
+                    ManySchema,
+                ),
+                "fields": list(
+                    schema.fields()
+                ),
+                "signals": list(
+                    schema.signals()
+                ),
+            }
 
     def snapshot(
         self,
@@ -197,8 +233,8 @@ class StoreServer:
         """
         Return a snapshot from a store node.
 
-        The address and optional selectors must already have been parsed by the
-        active transport.
+        The address and optional selectors must already have been parsed by
+        the active transport.
         """
         return self._engine.snapshot(
             address=address,
@@ -243,9 +279,7 @@ class StoreServer:
         *,
         first: bool = False,
     ) -> Any:
-        """
-        Look up rows whose selected fields match the supplied value.
-        """
+        """Look up rows whose selected fields match the supplied value."""
         return self._engine.lookup(
             address=address,
             fields=fields,
@@ -257,19 +291,19 @@ class StoreServer:
         self,
         address: Address[Any],
     ) -> Any:
-        """
-        Return the complete value of the requested store node.
-        """
+        """Return the complete value of the requested store node."""
         return self._engine.to_dict(
             address,
         )
 
     def fetch(
         self,
-        query: Query,
+        query: Query[Any],
     ) -> QueryResult:
         with self._synchronization_lock:
-            return self._queries.fetch(query)
+            return self._queries.fetch(
+                query,
+            )
 
     # -------------------------------------------------
     # Query subscriptions
@@ -278,10 +312,13 @@ class StoreServer:
     def subscribe_query(
         self,
         client_id: str,
-        query: Query,
+        query: Query[Any],
     ) -> QuerySubscribeResult:
         with self._synchronization_lock:
-            return self._queries.subscribe(client_id, query)
+            return self._queries.subscribe(
+                client_id,
+                query,
+            )
 
     def unsubscribe_query(
         self,
@@ -377,9 +414,7 @@ class StoreServer:
         *,
         id: str | None = None,
     ) -> SignalBindResult:
-        """
-        Bind a remote client to a store signal stream.
-        """
+        """Bind a remote client to a store signal stream."""
         return self._signals.bind(
             client_id=client_id,
             address=address,
@@ -392,9 +427,7 @@ class StoreServer:
         client_id: str,
         binding_token: str,
     ) -> SignalUnbindResult:
-        """
-        Remove one signal binding owned by a remote client.
-        """
+        """Remove one signal binding owned by a remote client."""
         return self._signals.unbind(
             client_id=client_id,
             token=binding_token,
@@ -428,23 +461,48 @@ class StoreServer:
     def transaction(
         self,
         instructions: list[dict[str, Any]],
+        signals: tuple[SignalRequest, ...] = (),
     ) -> StoreExecutionResult[ExecutionResult]:
         """
-        Execute a transaction and collect subscription dispatches.
+        Execute one atomic state transaction.
 
-        Engine.execute() returns an ExecutionResult. The remote transport
-        serializes that result, and the remote client may later convert the
-        serialized payload into TransactionResult.
+        Signal targets are validated before canonical mutations execute.
+        Signal occurrences are generated only after a successful commit.
         """
         with self._synchronization_lock:
+            for request in signals:
+                self._signals.validate(
+                    request.address,
+                    request.signal,
+                    id=request.id,
+                )
+
             result = self._engine.execute(
                 instructions,
             )
+
+            signal_dispatches: list[
+                SignalDispatchMessage
+            ] = []
+
+            if result.success:
+                for request in signals:
+                    signal_dispatches.extend(
+                        self._signals.emit(
+                            request.address,
+                            request.signal,
+                            request.data,
+                            id=request.id,
+                        )
+                    )
 
             return StoreExecutionResult(
                 result=result,
                 dispatches=self._dispatch_events(
                     result.events,
+                ),
+                signal_dispatches=tuple(
+                    signal_dispatches,
                 ),
             )
 
@@ -501,14 +559,16 @@ class StoreServer:
         """
         Remove all subscriptions and signal bindings owned by a client.
 
-        Detecting a disconnection belongs to the transport. Cleaning associated
-        store state belongs to StoreServer.
+        Detecting a disconnection belongs to the transport. Cleaning
+        associated store state belongs to StoreServer.
         """
         self._subscriptions.remove_client(
             client_id,
         )
 
-        self._queries.remove_client(client_id)
+        self._queries.remove_client(
+            client_id,
+        )
 
         self._signals.remove_client(
             client_id,
@@ -530,37 +590,54 @@ class StoreServer:
         revisioned_events: list[StoreEvent] = []
 
         for event in events:
-            revision = self._revisions.advance(event.address)
+            revision = self._revisions.advance(
+                event.address,
+            )
+
             revisioned = event.copy_with(
                 server_instance_id=self._revisions.instance_id,
                 revision=revision,
             )
-            revisioned_events.append(revisioned)
+
+            revisioned_events.append(
+                revisioned,
+            )
 
             try:
                 dispatches.extend(
-                    self._subscriptions.dispatch(revisioned)
+                    self._subscriptions.dispatch(
+                        revisioned,
+                    )
                 )
             except Exception:
                 logger.exception(
-                    "Store subscription dispatch failed for %s at "
-                    "revision %d; revision auditing will reconcile "
-                    "remote adapters.",
+                    (
+                        "Store subscription dispatch failed for %s "
+                        "at revision %d; revision auditing will "
+                        "reconcile remote live-state clients."
+                    ),
                     event.address,
                     revision,
                 )
 
         try:
             dispatches.extend(
-                self._queries.dispatch(revisioned_events)
+                self._queries.dispatch(
+                    revisioned_events,
+                )
             )
         except Exception:
             logger.exception(
-                "Query subscription dispatch failed; query auditing "
-                "will reconcile remote query subscriptions."
+                (
+                    "Query subscription dispatch failed; query "
+                    "auditing will reconcile remote query "
+                    "subscriptions."
+                )
             )
 
-        return tuple(dispatches)
+        return tuple(
+            dispatches,
+        )
 
     # -------------------------------------------------
     # State
@@ -568,30 +645,22 @@ class StoreServer:
 
     @property
     def booted(self) -> bool:
-        """
-        Whether the owned Engine has completed booting.
-        """
+        """Whether the owned Engine has completed booting."""
         return self._engine.booted
 
     @property
     def running(self) -> bool:
-        """
-        Whether this server's selected transport is running.
-        """
+        """Whether this server's selected transport is running."""
         return self._running
 
     @property
     def can_undo(self) -> bool:
-        """
-        Whether the Engine currently has a transaction available to undo.
-        """
+        """Whether the Engine has a transaction available to undo."""
         return self._engine.can_undo
 
     @property
     def can_redo(self) -> bool:
-        """
-        Whether the Engine currently has a transaction available to redo.
-        """
+        """Whether the Engine has a transaction available to redo."""
         return self._engine.can_redo
 
     # -------------------------------------------------
@@ -600,41 +669,34 @@ class StoreServer:
 
     @property
     def engine(self) -> Engine:
-        """
-        Return the Engine owned by this server.
-        """
+        """Return the Engine owned by this server."""
         return self._engine
 
     @property
-    def subscription(self) -> RemoteSubscriptionManager:
-        """
-        Return the server-side subscription manager.
-        """
+    def subscription(
+        self,
+    ) -> RemoteSubscriptionManager:
+        """Return the server-side subscription manager."""
         return self._subscriptions
 
     @property
-    def query(self) -> RemoteQuerySubscriptionManager:
+    def query(
+        self,
+    ) -> RemoteQuerySubscriptionManager:
         """Return the server-side query subscription manager."""
         return self._queries
 
     @property
     def signal(self) -> RemoteSignalManager:
-        """
-        Return the server-side signal manager.
-        """
+        """Return the server-side signal manager."""
         return self._signals
 
     @property
     def transport(self) -> StoreServerTransport:
-        """
-        Return the selected server transport.
-        """
+        """Return the selected server transport."""
         return self._transport
 
     @property
     def proxy(self) -> StoreServerProxy:
-        """
-        Return the restricted transport-facing server proxy.
-        """
+        """Return the restricted transport-facing server proxy."""
         return self._proxy
-

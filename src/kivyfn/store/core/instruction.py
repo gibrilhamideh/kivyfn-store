@@ -130,7 +130,11 @@ class Instruction:
         )
 
     @staticmethod
-    def remove(address: Address, id: str, source: OperationSource) -> Instruction:
+    def remove(
+        address: Address,
+        id: str,
+        source: OperationSource,
+    ) -> Instruction:
         """
         Primitive row removal from collection.
         """
@@ -166,7 +170,10 @@ class Instruction:
 
         if opcode is OpCode.INSERT:
             return cls.insert(
-                address=address, id=payload["id"], value=payload["value"], source=source
+                address=address,
+                id=payload["id"],
+                value=payload["value"],
+                source=source,
             )
 
         if opcode is OpCode.REMOVE:

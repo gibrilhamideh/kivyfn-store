@@ -9,6 +9,7 @@ from kivyfn.store.core.boot import StoreBoot
 from kivyfn.store.core.execution import Execution, ExecutionResult
 from kivyfn.store.core.metadata import EngineMetadata
 from kivyfn.store.query.plan import QueryPlan
+from kivyfn.store.schema import ManySchema
 from kivyfn.store.storage import (
     FileStorage,
     PersistenceSnapshot,
@@ -81,7 +82,9 @@ class Engine:
         """
         with self._lock:
             if self._booted:
-                raise RuntimeError("Store engine is already booted")
+                raise RuntimeError(
+                    "Store engine is already booted"
+                )
 
             StoreBoot(
                 self,
@@ -158,7 +161,13 @@ class Engine:
             if data is None or key is not None:
                 return data
 
-            if node.schema.many and id is None:
+            if (
+                isinstance(
+                    node.schema,
+                    ManySchema,
+                )
+                and id is None
+            ):
                 return {
                     row_id: self._resolve_foreignkeys(
                         node=node,
@@ -173,7 +182,14 @@ class Engine:
                     for row_id, row in data.items()
                 }
 
-            row_id = id if node.schema.many else None
+            row_id = (
+                id
+                if isinstance(
+                    node.schema,
+                    ManySchema,
+                )
+                else None
+            )
 
             return self._resolve_foreignkeys(
                 node=node,
@@ -253,11 +269,15 @@ class Engine:
 
     def compile_query(
         self,
-        query: Query,
+        query: Query[Any],
     ) -> QueryPlan:
         with self._lock:
             self._require_booted()
-            return QueryPlan.compile(self, query)
+
+            return QueryPlan.compile(
+                self,
+                query,
+            )
 
     def execute_query(
         self,
@@ -265,15 +285,20 @@ class Engine:
     ) -> QueryResult:
         with self._lock:
             self._require_booted()
+
             return plan.execute()
 
     def fetch(
         self,
-        query: Query,
+        query: Query[Any],
     ) -> QueryResult:
         with self._lock:
             self._require_booted()
-            return QueryPlan.compile(self, query).execute()
+
+            return QueryPlan.compile(
+                self,
+                query,
+            ).execute()
 
     # -------------------------------------------------
     # Foreign-key resolution
@@ -498,13 +523,21 @@ class Engine:
                 if not self.metadata.is_persistent(node):
                     continue
 
-                interval = self.metadata.persistence_interval(node)
+                interval = self.metadata.persistence_interval(
+                    node,
+                )
 
                 if interval is None:
-                    self._write_node(node, node.value)
+                    self._write_node(
+                        node,
+                        node.value,
+                    )
                     continue
 
-                self._persistence.mark_dirty(node, interval)
+                self._persistence.mark_dirty(
+                    node,
+                    interval,
+                )
 
     def to_disk(
         self,
@@ -514,13 +547,18 @@ class Engine:
         with self._lock:
             for node in nodes:
                 if self.metadata.is_persistent(node):
-                    self._write_node(node, node.value)
+                    self._write_node(
+                        node,
+                        node.value,
+                    )
 
     def set_persistence_waker(
         self,
         callback: Callable[[], None] | None,
     ) -> None:
-        self._persistence.set_waker(callback)
+        self._persistence.set_waker(
+            callback,
+        )
 
     def capture_due_persistence(
         self,
@@ -529,13 +567,19 @@ class Engine:
     ) -> tuple[PersistenceSnapshot, ...]:
         with self._lock:
             self._require_booted()
-            return self._persistence.capture_due(force=force)
+
+            return self._persistence.capture_due(
+                force=force,
+            )
 
     def write_persistence_snapshot(
         self,
         snapshot: PersistenceSnapshot,
     ) -> None:
-        self._write_node(snapshot.node, snapshot.data)
+        self._write_node(
+            snapshot.node,
+            snapshot.data,
+        )
 
     def complete_persistence_snapshot(
         self,
@@ -543,14 +587,19 @@ class Engine:
         *,
         success: bool,
     ) -> None:
-        self._persistence.complete(snapshot, success=success)
+        self._persistence.complete(
+            snapshot,
+            success=success,
+        )
 
     def next_persistence_deadline(self) -> float | None:
         return self._persistence.next_deadline()
 
     @property
     def has_delayed_persistence(self) -> bool:
-        return bool(self.metadata.persistence_intervals)
+        return bool(
+            self.metadata.persistence_intervals
+        )
 
     @property
     def has_pending_persistence(self) -> bool:

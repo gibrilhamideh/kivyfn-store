@@ -1,8 +1,7 @@
-# kivyfn/store/schema/schema.py
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from kivyfn.store.error import (
     FieldError,
@@ -17,21 +16,91 @@ from kivyfn.store.schema.signal import Signal
 from kivyfn.store.schema.trigger import Trigger
 
 
+if TYPE_CHECKING:
+    from kivyfn.store.address import Address
+    from kivyfn.store.state.operation import StateOperation
+
+
 IndexKey = tuple[str, ...]
 
 
 class Schema:
-    many: ClassVar[bool] = False
     persistent: ClassVar[bool] = False
     persist_interval: ClassVar[str | None] = None
 
     indexes: ClassVar[list[IndexKey]] = []
     uniques: ClassVar[list[IndexKey]] = []
 
+    # -------------------------------------------------
+    # Live-state typing interface
+    # -------------------------------------------------
+
+    if TYPE_CHECKING:
+        pending: bool
+        synced: bool
+        row_id: str | None
+        address: Address[Any] | None
+
+        def set(
+            self,
+            **values: Any,
+        ) -> StateOperation:
+            ...
+
+        def bind(
+            self,
+            **kwargs: Any,
+        ) -> Any:
+            ...
+
+        def unbind(
+            self,
+            **kwargs: Any,
+        ) -> Any:
+            ...
+
+        def fbind(
+            self,
+            name: str,
+            callback: Any,
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            ...
+
+        def funbind(
+            self,
+            name: str,
+            callback: Any,
+            *args: Any,
+            **kwargs: Any,
+        ) -> Any:
+            ...
+
+        def dispatch(
+            self,
+            event_type: str,
+            *args: Any,
+        ) -> bool:
+            ...
+
+        def property(
+            self,
+            name: str,
+            quiet: bool = False,
+        ) -> Any:
+            ...
+
+        def setter(
+            self,
+            name: str,
+        ) -> Any:
+            ...
+
     def __init__(self) -> None:
         self.name = self.__class__.__name__
 
-        self._fields: dict[str, BaseField] = {}
+        self._fields: dict[str, BaseField[Any]] = {}
         self._signals: dict[str, Signal[Any]] = {}
         self._triggers: list[Trigger] = []
 
@@ -122,7 +191,7 @@ class Schema:
     def get_field(
         self,
         name: str,
-    ) -> BaseField:
+    ) -> BaseField[Any]:
         try:
             return self._fields[name]
         except KeyError:
@@ -137,7 +206,7 @@ class Schema:
                 ),
             ) from None
 
-    def fields(self) -> dict[str, BaseField]:
+    def fields(self) -> dict[str, BaseField[Any]]:
         return self._fields.copy()
 
     def field_names(self) -> set[str]:
@@ -210,9 +279,6 @@ class Schema:
     # Schema information
     # -------------------------------------------------
 
-    def is_many(self) -> bool:
-        return self.many
-
     def defaults(self) -> dict[str, Any]:
         return {
             name: getattr(
@@ -257,3 +323,11 @@ class Schema:
                 name,
                 value,
             )
+
+
+class SingleSchema(Schema):
+    """Schema containing one canonical record."""
+
+
+class ManySchema(Schema):
+    """Schema containing canonical records keyed by row ID."""

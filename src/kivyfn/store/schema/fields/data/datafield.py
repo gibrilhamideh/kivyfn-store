@@ -1,7 +1,7 @@
-# kivyfn/store/schema/fields/data/datafield.py
+# src/kivyfn/store/schema/fields/data/datafield.py
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 from kivyfn.store.error import (
     FieldErrorDetail,
@@ -10,7 +10,10 @@ from kivyfn.store.error import (
 from kivyfn.store.schema.fields.base import BaseField
 
 
-class DataField(BaseField):
+ValueT = TypeVar("ValueT")
+
+
+class DataField(BaseField[ValueT], Generic[ValueT]):
     """
     Base class for schema data fields.
 
@@ -21,7 +24,7 @@ class DataField(BaseField):
     def __init__(
         self,
         *,
-        default: Any = None,
+        default: ValueT | None = None,
         allow_none: bool = False,
     ) -> None:
         super().__init__()

@@ -40,7 +40,9 @@ class Branch:
 
         if name in self._children:
             raise ValueError(
-                f"Duplicate child name '{name}' under schema '{self.schema.__name__}'"
+                "Duplicate child name "
+                f"{name!r} under schema "
+                f"{self.schema.__name__!r}"
             )
 
         self._children[name] = branch
@@ -68,4 +70,7 @@ class Branch:
     # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
-        return f"Branch(schema={self.schema.__name__}, children={list(self._children.keys())})"
+        return (
+            f"Branch(schema={self.schema.__name__}, "
+            f"children={list(self._children)})"
+        )
