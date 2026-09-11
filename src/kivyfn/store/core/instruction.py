@@ -1,188 +1,229 @@
+# src/kivyfn/store/core/instruction.py
 from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, ClassVar, TypeAlias
 
 from kivyfn.store.address import Address
+from kivyfn.store.error import InvalidInstructionError
 from kivyfn.store.operations import OpCode, OperationSource
 
 
-@dataclass(frozen=True, kw_only=True)
-class Instruction:
-    """
-    Primitive immutable mutation descriptor.
+CommandPayload: TypeAlias = Mapping[str, Any]
 
-    Action represents a single atomic structural mutation.
-    Higher-level concepts like 'merge' must expand into
-    multiple primitive Actions before compilation.
-    """
 
-    opcode: OpCode
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SetInstruction:
+    """Primitive single-schema field mutation."""
+
+    opcode: ClassVar[OpCode] = OpCode.SET
+
     address: Address
-    value: Optional[Any] = None
-    id: Optional[str] = None
-    key: Optional[str] = None
+    key: str
+    value: Any
     source: OperationSource
 
-    # --------------------
-    # Representation
-    # --------------------
-    def __repr__(self) -> str:
-        return (
-            f"Instruction(opcode={self.opcode.value!r}, "
-            f"address={self.address!r}, "
-            f"value={self.value!r}, "
-            f"id={self.id!r}, "
-            f"key={self.key!r}, "
-            f"source={self.source!r})"
-        )
 
-    # --------------------
-    # Copy
-    # --------------------
-    def copy(self, **overrides) -> Instruction:
-        return Instruction(
-            opcode=overrides.get("opcode", self.opcode),
-            address=overrides.get("address", self.address),
-            value=overrides.get("value", self.value),
-            id=overrides.get("id", self.id),
-            key=overrides.get("key", self.key),
-            source=overrides.get("source", self.source),
-        )
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SetRowInstruction:
+    """Primitive many-schema row field mutation."""
 
-    # --------------------
-    # Serialization
-    # --------------------
-    def dump(self) -> dict:
-        return {
-            "opcode": self.opcode.value,
-            "address": self.address.to_list(),
-            "value": self.value,
-            "id": self.id,
-            "key": self.key,
-            "source": self.source.value,
-        }
+    opcode: ClassVar[OpCode] = OpCode.SETROW
 
-    # ============================================================
-    # Factories (primitive only)
-    # ============================================================
+    address: Address
+    id: str
+    key: str
+    value: Any
+    source: OperationSource
 
-    @staticmethod
-    def set(
-        address: Address, key: str, value: Any, source: OperationSource
-    ) -> Instruction:
-        """
-        Primitive single-schema field mutation.
-        """
-        return Instruction(
-            opcode=OpCode.SET,
-            address=address,
-            key=key,
-            value=value,
-            source=source,
-        )
 
-    @staticmethod
-    def setrow(
-        address: Address,
-        id: str,
-        key: str,
-        value: Any,
-        source: OperationSource,
-    ) -> Instruction:
-        """
-        Primitive collection row field mutation.
-        """
-        return Instruction(
-            opcode=OpCode.SETROW,
-            address=address,
-            id=id,
-            key=key,
-            value=value,
-            source=source,
-        )
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InsertInstruction:
+    """Primitive many-schema row insertion."""
 
-    @staticmethod
-    def insert(
-        address: Address,
-        id: str,
-        value: dict,
-        source: OperationSource,
-    ) -> Instruction:
-        """
-        Primitive row insertion into a collection node.
+    opcode: ClassVar[OpCode] = OpCode.INSERT
 
-        Parameters:
-            address : Address resolving to a many-schema node
-            id      : Unique row identifier (must be provided)
-            value   : Dictionary representing row fields
-            source  : Origin of the action
+    address: Address
+    id: str
+    value: dict[str, Any]
+    source: OperationSource
 
-        Notes:
-            ID generation must occur before Action creation.
-            This method does not generate identifiers.
-        """
-        return Instruction(
-            opcode=OpCode.INSERT,
-            address=address,
-            id=id,
-            value=value,
-            source=source,
-        )
 
-    @staticmethod
-    def remove(
-        address: Address,
-        id: str,
-        source: OperationSource,
-    ) -> Instruction:
-        """
-        Primitive row removal from collection.
-        """
-        return Instruction(
-            opcode=OpCode.REMOVE,
-            address=address,
-            id=id,
-            source=source,
-        )
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RemoveInstruction:
+    """Primitive many-schema row removal."""
 
-    @classmethod
-    def compile(cls, payload: dict, source: OperationSource) -> Instruction:
-        opcode: str = OpCode(payload["opcode"])
-        address = payload["address"]
-        address = Address(*address)
+    opcode: ClassVar[OpCode] = OpCode.REMOVE
 
-        if opcode is OpCode.SET:
-            return cls.set(
+    address: Address
+    id: str
+    source: OperationSource
+
+
+Instruction: TypeAlias = (
+    SetInstruction
+    | SetRowInstruction
+    | InsertInstruction
+    | RemoveInstruction
+)
+
+
+def instruction_from_payload(
+    payload: CommandPayload,
+    source: OperationSource,
+) -> Instruction:
+    opcode = _opcode(
+        payload,
+    )
+    address = _address(
+        payload,
+    )
+
+    match opcode:
+        case OpCode.SET:
+            return SetInstruction(
                 address=address,
-                key=payload["key"],
-                value=payload.get("value"),
+                key=_string(
+                    payload,
+                    "key",
+                ),
+                value=payload.get(
+                    "value",
+                ),
                 source=source,
             )
 
-        if opcode is OpCode.SETROW:
-            return cls.setrow(
+        case OpCode.SETROW:
+            return SetRowInstruction(
                 address=address,
-                id=payload["id"],
-                key=payload["key"],
-                value=payload.get("value"),
+                id=_string(
+                    payload,
+                    "id",
+                ),
+                key=_string(
+                    payload,
+                    "key",
+                ),
+                value=payload.get(
+                    "value",
+                ),
                 source=source,
             )
 
-        if opcode is OpCode.INSERT:
-            return cls.insert(
+        case OpCode.INSERT:
+            value = payload.get(
+                "value",
+            )
+
+            if not isinstance(
+                value,
+                dict,
+            ):
+                raise InvalidInstructionError(
+                    "INSERT requires a dictionary value"
+                )
+
+            return InsertInstruction(
                 address=address,
-                id=payload["id"],
-                value=payload["value"],
+                id=_string(
+                    payload,
+                    "id",
+                ),
+                value=dict(
+                    value
+                ),
                 source=source,
             )
 
-        if opcode is OpCode.REMOVE:
-            return cls.remove(address=address, id=payload["id"], source=source)
+        case OpCode.REMOVE:
+            return RemoveInstruction(
+                address=address,
+                id=_string(
+                    payload,
+                    "id",
+                ),
+                source=source,
+            )
 
-        raise ValueError(f"Unsupported opcode: {opcode}")
 
-    @classmethod
-    def construct(
-        cls, commands: list[dict], source: OperationSource
-    ) -> list[Instruction]:
-        return [cls.compile(item, source) for item in commands]
+def instructions_from_payload(
+    commands: Iterable[CommandPayload],
+    source: OperationSource,
+) -> list[Instruction]:
+    return [
+        instruction_from_payload(
+            command,
+            source,
+        )
+        for command in commands
+    ]
+
+
+def _opcode(
+    payload: CommandPayload,
+) -> OpCode:
+    value = payload.get(
+        "opcode",
+    )
+
+    try:
+        return OpCode(
+            value
+        )
+    except (TypeError, ValueError) as exc:
+        raise InvalidInstructionError(
+            f"Unsupported opcode: {value!r}"
+        ) from exc
+
+
+def _address(
+    payload: CommandPayload,
+) -> Address:
+    value = payload.get(
+        "address",
+    )
+
+    if not isinstance(
+        value,
+        (list, tuple),
+    ):
+        raise InvalidInstructionError(
+            "Instruction address must be a list or tuple"
+        )
+
+    if not value:
+        raise InvalidInstructionError(
+            "Instruction address cannot be empty"
+        )
+
+    if not all(
+        isinstance(part, str) and part
+        for part in value
+    ):
+        raise InvalidInstructionError(
+            "Instruction address parts must be non-empty strings"
+        )
+
+    return Address(
+        *value,
+    )
+
+
+def _string(
+    payload: CommandPayload,
+    key: str,
+) -> str:
+    value = payload.get(
+        key,
+    )
+
+    if not isinstance(
+        value,
+        str,
+    ) or not value:
+        raise InvalidInstructionError(
+            f"Instruction {key} must be a non-empty string"
+        )
+
+    return value

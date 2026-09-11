@@ -1,75 +1,72 @@
-# kivyfn/store/response.py
+
+# src/kivyfn/store/response.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Generic, Literal, TypeAlias, TypeVar
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Generic, Literal, TypeAlias, TypeVar, cast
 
-from kivyfn.store.error.codec import (
-    decode_failure,
-    encode_failure,
-)
-from kivyfn.store.error.detail import ProtocolValue
-from kivyfn.store.error.failure import StoreFailure
-from kivyfn.store.error.runtime import StoreProtocolError
+from kivyfn.store.error import StoreFailure, StoreProtocolError
+from kivyfn.store.error.codec import decode_failure, encode_failure
 
 
-T_co = TypeVar(
-    "T_co",
-    covariant=True,
+T = TypeVar(
+    "T"
 )
 
-T = TypeVar("T")
 
+@dataclass(frozen=True, slots=True)
+class SuccessResponse(
+    Generic[T]
+):
+    """Successful Store wire response."""
 
-@dataclass(
-    frozen=True,
-    slots=True,
-)
-class SuccessResponse(Generic[T_co]):
-    """
-    Successful store operation response.
-    """
+    data: T
 
-    ok: Literal[True]
-    data: T_co
-    error: None = None
+    ok: Literal[True] = field(
+        default=True,
+        init=False,
+    )
+
+    error: None = field(
+        default=None,
+        init=False,
+    )
 
     def payload(self) -> dict[str, Any]:
         return {
             "ok": True,
             "data": self.data,
-            "error": None,
         }
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-)
+@dataclass(frozen=True, slots=True)
 class FailureResponse:
-    """
-    Expected store operation rejection.
+    """Expected Store-domain rejection transported over the wire."""
 
-    The failure contains the same normalized StoreFailure object for both
-    LocalStore and RemoteStore.
-    """
-
-    ok: Literal[False]
     error: StoreFailure
-    data: None = None
 
-    def payload(self) -> dict[str, ProtocolValue]:
+    ok: Literal[False] = field(
+        default=False,
+        init=False,
+    )
+
+    data: None = field(
+        default=None,
+        init=False,
+    )
+
+    def payload(self) -> dict[str, Any]:
         return {
             "ok": False,
-            "data": None,
             "error": encode_failure(
-                self.error,
+                self.error
             ),
         }
 
 
 Response: TypeAlias = (
-    SuccessResponse[T_co]
+    SuccessResponse[T]
     | FailureResponse
 )
 
@@ -77,77 +74,178 @@ Response: TypeAlias = (
 def success(
     data: T,
 ) -> SuccessResponse[T]:
-    """
-    Create a successful store response.
-    """
     return SuccessResponse(
-        ok=True,
-        data=data,
+        data=data
     )
 
 
 def failure(
     error: StoreFailure,
 ) -> FailureResponse:
-    """
-    Create a failed store response from a normalized StoreFailure.
-    """
     return FailureResponse(
-        ok=False,
-        error=error,
+        error=error
     )
 
 
 def from_payload(
-    payload: dict[str, Any],
+    value: Any,
 ) -> Response[Any]:
     """
-    Decode a serialized store response.
+    Decode one Store response envelope.
 
-    Raises StoreProtocolError when the payload violates the response protocol.
+    Envelope shape is intentionally strict:
+
+        success:
+            {
+                "ok": True,
+                "data": ...
+            }
+
+        failure:
+            {
+                "ok": False,
+                "error": {...}
+            }
+
+    StoreFailure decoding remains delegated to the error codec.
     """
-    if not isinstance(payload, dict):
+    if not isinstance(
+        value,
+        Mapping,
+    ):
         raise StoreProtocolError(
-            "Store response payload must be a dictionary"
+            "Store response must be an object"
         )
 
-    ok = payload.get("ok")
-
-    if ok is True:
-        if "data" not in payload:
-            raise StoreProtocolError(
-                "Successful store response is missing data"
-            )
-
-        return SuccessResponse(
-            ok=True,
-            data=payload["data"],
-        )
-
-    if ok is False:
-        error_payload = payload.get("error")
-
-        if not isinstance(error_payload, dict):
-            raise StoreProtocolError(
-                "Failed store response is missing a valid error payload"
-            )
-
-        try:
-            error = decode_failure(
-                error_payload,
-            )
-        except (TypeError, ValueError) as exc:
-            raise StoreProtocolError(
-                "Failed store response contains an invalid error payload"
-            ) from exc
-
-        return FailureResponse(
-            ok=False,
-            error=error,
-        )
-
-    raise StoreProtocolError(
-        "Store response contains an invalid ok value"
+    payload = dict(
+        value
     )
 
+    ok = payload.get(
+        "ok"
+    )
+
+    if not isinstance(
+        ok,
+        bool,
+    ):
+        raise StoreProtocolError(
+            "Store response is missing a boolean 'ok' field"
+        )
+
+    if ok:
+        _validate_keys(
+            payload,
+            required={
+                "ok",
+                "data",
+            },
+        )
+
+        return SuccessResponse(
+            data=payload[
+                "data"
+            ]
+        )
+
+    _validate_keys(
+        payload,
+        required={
+            "ok",
+            "error",
+        },
+    )
+
+    error_payload = payload[
+        "error"
+    ]
+
+    if not isinstance(
+        error_payload,
+        Mapping,
+    ):
+        raise StoreProtocolError(
+            "Failed Store response error must be an object"
+        )
+
+    try:
+        decoded = decode_failure(
+            dict(
+                error_payload
+            )
+        )
+
+    except Exception as exc:
+        raise StoreProtocolError(
+            (
+                "Failed Store response contains "
+                "an invalid error payload"
+            )
+        ) from exc
+
+    if not isinstance(
+        decoded,
+        StoreFailure,
+    ):
+        raise StoreProtocolError(
+            (
+                "Failed Store response error codec "
+                "did not return StoreFailure"
+            )
+        )
+
+    return FailureResponse(
+        error=cast(
+            StoreFailure,
+            decoded,
+        )
+    )
+
+
+def _validate_keys(
+    payload: Mapping[str, Any],
+    *,
+    required: set[str],
+) -> None:
+    keys = set(
+        payload
+    )
+
+    missing = (
+        required
+        - keys
+    )
+
+    if missing:
+        names = ", ".join(
+            sorted(
+                missing
+            )
+        )
+
+        raise StoreProtocolError(
+            (
+                "Store response is missing required "
+                f"fields: {names}"
+            )
+        )
+
+    unexpected = (
+        keys
+        - required
+    )
+
+    if unexpected:
+        names = ", ".join(
+            sorted(
+                unexpected
+            )
+        )
+
+        raise StoreProtocolError(
+            (
+                "Store response contains unexpected "
+                f"fields: {names}"
+            )
+        )
 

@@ -39,7 +39,7 @@ class Schema:
         pending: bool
         synced: bool
         row_id: str | None
-        address: Address[Any] | None
+        address: Address | None
 
         def set(
             self,

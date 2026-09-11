@@ -1,4 +1,4 @@
-# kivyfn/store/error/codec.py
+# src/kivyfn/store/error/codec.py
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
@@ -27,10 +27,7 @@ from kivyfn.store.error.status import StoreErrorStatus
 
 DataclassT = TypeVar("DataclassT")
 
-EnumT = TypeVar(
-    "EnumT",
-    bound=Enum,
-)
+EnumT = TypeVar("EnumT", bound=Enum)
 
 
 _DETAIL_TYPES: dict[str, type[StoreErrorDetail]] = {
@@ -46,14 +43,11 @@ _DETAIL_TYPES: dict[str, type[StoreErrorDetail]] = {
 
 
 _DETAIL_NAMES: dict[type[StoreErrorDetail], str] = {
-    detail_type: name
-    for name, detail_type in _DETAIL_TYPES.items()
+    detail_type: name for name, detail_type in _DETAIL_TYPES.items()
 }
 
 
-def encode_failure(
-    failure: StoreFailure,
-) -> dict[str, ProtocolValue]:
+def encode_failure(failure: StoreFailure) -> dict[str, ProtocolValue]:
     """
     Encode a StoreFailure into a transport-safe protocol payload.
     """
@@ -67,21 +61,15 @@ def encode_failure(
     }
 
     if failure.detail is not None:
-        payload["detail"] = _encode_detail(
-            failure.detail,
-        )
+        payload["detail"] = _encode_detail(failure.detail)
 
     if failure.context is not None:
-        payload["context"] = _encode_context(
-            failure.context,
-        )
+        payload["context"] = _encode_context(failure.context)
 
     return payload
 
 
-def decode_failure(
-    payload: dict[str, Any],
-) -> StoreFailure:
+def decode_failure(payload: object) -> StoreFailure:
     """
     Decode and validate a transport payload into a StoreFailure.
 
@@ -89,48 +77,30 @@ def decode_failure(
     protocol.
     """
     if not isinstance(payload, dict):
-        raise ValueError(
-            "Store failure payload must be a dictionary"
-        )
+        raise ValueError("Store failure payload must be a dictionary")
 
-    code = _decode_enum(
-        StoreErrorCode,
-        payload.get("code"),
-        field="code",
-    )
+    code = _decode_enum(StoreErrorCode, payload.get("code"), field="code")
 
     category = _decode_enum(
-        StoreErrorCategory,
-        payload.get("category"),
-        field="category",
+        StoreErrorCategory, payload.get("category"), field="category"
     )
 
     status = _decode_enum(
-        StoreErrorStatus,
-        payload.get("status"),
-        field="status",
+        StoreErrorStatus, payload.get("status"), field="status"
     )
 
     message = payload.get("message")
 
     if not isinstance(message, str) or not message:
-        raise ValueError(
-            "Store failure message must be a non-empty string"
-        )
+        raise ValueError("Store failure message must be a non-empty string")
 
     detail_payload = payload.get("detail")
     context_payload = payload.get("context")
 
-    detail = (
-        None
-        if detail_payload is None
-        else _decode_detail(detail_payload)
-    )
+    detail = None if detail_payload is None else _decode_detail(detail_payload)
 
     context = (
-        None
-        if context_payload is None
-        else _decode_context(context_payload)
+        None if context_payload is None else _decode_context(context_payload)
     )
 
     return StoreFailure(
@@ -143,80 +113,47 @@ def decode_failure(
     )
 
 
-def _encode_detail(
-    detail: StoreErrorDetail,
-) -> dict[str, ProtocolValue]:
-    detail_name = _DETAIL_NAMES.get(
-        type(detail),
-    )
+def _encode_detail(detail: StoreErrorDetail) -> dict[str, ProtocolValue]:
+    detail_name = _DETAIL_NAMES.get(type(detail))
 
     if detail_name is None:
         raise TypeError(
-            "Unsupported store error detail type: "
-            f"{type(detail).__name__}"
+            f"Unsupported store error detail type: {type(detail).__name__}"
         )
 
-    payload = _encode_dataclass(
-        detail,
-    )
+    payload = _encode_dataclass(detail)
 
     payload["type"] = detail_name
 
     return payload
 
 
-def _decode_detail(
-    payload: Any,
-) -> StoreErrorDetail:
+def _decode_detail(payload: Any) -> StoreErrorDetail:
     if not isinstance(payload, dict):
-        raise ValueError(
-            "Store failure detail must be a dictionary"
-        )
+        raise ValueError("Store failure detail must be a dictionary")
 
     detail_name = payload.get("type")
 
     if not isinstance(detail_name, str):
-        raise ValueError(
-            "Store failure detail requires a string type"
-        )
+        raise ValueError("Store failure detail requires a string type")
 
-    detail_type = _DETAIL_TYPES.get(
-        detail_name,
-    )
+    detail_type = _DETAIL_TYPES.get(detail_name)
 
     if detail_type is None:
-        raise ValueError(
-            "Unknown store failure detail type "
-            f"{detail_name!r}"
-        )
+        raise ValueError(f"Unknown store failure detail type {detail_name!r}")
 
-    values = {
-        key: value
-        for key, value in payload.items()
-        if key != "type"
-    }
+    values = {key: value for key, value in payload.items() if key != "type"}
 
-    return _construct_dataclass(
-        detail_type,
-        values,
-    )
+    return _construct_dataclass(detail_type, values)
 
 
-def _encode_context(
-    context: StoreErrorContext,
-) -> dict[str, ProtocolValue]:
-    return _encode_dataclass(
-        context,
-    )
+def _encode_context(context: StoreErrorContext) -> dict[str, ProtocolValue]:
+    return _encode_dataclass(context)
 
 
-def _decode_context(
-    payload: Any,
-) -> StoreErrorContext:
+def _decode_context(payload: Any) -> StoreErrorContext:
     if not isinstance(payload, dict):
-        raise ValueError(
-            "Store failure context must be a dictionary"
-        )
+        raise ValueError("Store failure context must be a dictionary")
 
     values = dict(payload)
 
@@ -224,20 +161,13 @@ def _decode_context(
 
     if stage is not None:
         values["stage"] = _decode_enum(
-            StoreErrorStage,
-            stage,
-            field="context.stage",
+            StoreErrorStage, stage, field="context.stage"
         )
 
-    return _construct_dataclass(
-        StoreErrorContext,
-        values,
-    )
+    return _construct_dataclass(StoreErrorContext, values)
 
 
-def _encode_dataclass(
-    value: object,
-) -> dict[str, ProtocolValue]:
+def _encode_dataclass(value: object) -> dict[str, ProtocolValue]:
     """
     Encode a dataclass instance into protocol-safe values.
 
@@ -245,43 +175,28 @@ def _encode_dataclass(
     does not narrow instances correctly for Pyright.
     """
     if isinstance(value, type) or not is_dataclass(value):
-        raise TypeError(
-            f"{type(value).__name__} is not a dataclass instance"
-        )
+        raise TypeError(f"{type(value).__name__} is not a dataclass instance")
 
-    raw = asdict(
-        cast(Any, value),
-    )
+    raw = asdict(cast(Any, value))
 
-    normalized = _normalize_value(
-        raw,
-    )
+    normalized = _normalize_value(raw)
 
     if not isinstance(normalized, dict):
-        raise TypeError(
-            "Encoded dataclass must produce a dictionary"
-        )
+        raise TypeError("Encoded dataclass must produce a dictionary")
 
     return normalized
 
 
 def _construct_dataclass(
-    dataclass_type: type[DataclassT],
-    values: dict[str, Any],
+    dataclass_type: type[DataclassT], values: dict[str, Any]
 ) -> DataclassT:
     """
     Validate fields and construct a dataclass instance.
     """
     if not is_dataclass(dataclass_type):
-        raise TypeError(
-            f"{dataclass_type.__name__} is not a dataclass type"
-        )
+        raise TypeError(f"{dataclass_type.__name__} is not a dataclass type")
 
-    dataclass_fields = getattr(
-        dataclass_type,
-        "__dataclass_fields__",
-        None,
-    )
+    dataclass_fields = getattr(dataclass_type, "__dataclass_fields__", None)
 
     if not isinstance(dataclass_fields, dict):
         raise TypeError(
@@ -292,13 +207,10 @@ def _construct_dataclass(
     unknown_fields = set(values) - allowed_fields
 
     if unknown_fields:
-        names = ", ".join(
-            sorted(unknown_fields)
-        )
+        names = ", ".join(sorted(unknown_fields))
 
         raise ValueError(
-            f"Unknown fields for {dataclass_type.__name__}: "
-            f"{names}"
+            f"Unknown fields for {dataclass_type.__name__}: {names}"
         )
 
     normalized = dict(values)
@@ -307,88 +219,53 @@ def _construct_dataclass(
 
     if address is not None:
         normalized["address"] = _decode_string_tuple(
-            address,
-            field=f"{dataclass_type.__name__}.address",
+            address, field=f"{dataclass_type.__name__}.address"
         )
 
     fields_value = normalized.get("fields")
 
     if fields_value is not None:
         normalized["fields"] = _decode_string_tuple(
-            fields_value,
-            field=f"{dataclass_type.__name__}.fields",
+            fields_value, field=f"{dataclass_type.__name__}.fields"
         )
 
-    referencing_row_ids = normalized.get(
-        "referencing_row_ids"
-    )
+    referencing_row_ids = normalized.get("referencing_row_ids")
 
     if referencing_row_ids is not None:
         normalized["referencing_row_ids"] = _decode_string_tuple(
             referencing_row_ids,
-            field=(
-                f"{dataclass_type.__name__}."
-                "referencing_row_ids"
-            ),
+            field=(f"{dataclass_type.__name__}.referencing_row_ids"),
         )
 
     try:
-        constructor = cast(
-            Any,
-            dataclass_type,
-        )
+        constructor = cast(Any, dataclass_type)
 
-        instance = constructor(
-            **normalized,
-        )
+        instance = constructor(**normalized)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"Invalid {dataclass_type.__name__} payload"
-        ) from exc
+        raise ValueError(f"Invalid {dataclass_type.__name__} payload") from exc
 
-    return cast(
-        DataclassT,
-        instance,
-    )
+    return cast(DataclassT, instance)
 
 
-def _decode_string_tuple(
-    value: Any,
-    *,
-    field: str,
-) -> tuple[str, ...]:
+def _decode_string_tuple(value: Any, *, field: str) -> tuple[str, ...]:
     if not isinstance(value, list):
-        raise ValueError(
-            f"{field} must be a list"
-        )
+        raise ValueError(f"{field} must be a list")
 
-    if not all(
-        isinstance(item, str)
-        for item in value
-    ):
-        raise ValueError(
-            f"{field} must contain only strings"
-        )
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field} must contain only strings")
 
     return tuple(value)
 
 
-def _normalize_value(
-    value: Any,
-) -> ProtocolValue:
+def _normalize_value(value: Any) -> ProtocolValue:
     if value is None:
         return None
 
-    if isinstance(
-        value,
-        (bool, int, float, str),
-    ):
+    if isinstance(value, (bool, int, float, str)):
         return value
 
     if isinstance(value, Enum):
-        return _normalize_value(
-            value.value,
-        )
+        return _normalize_value(value.value)
 
     if isinstance(value, dict):
         normalized: dict[str, ProtocolValue] = {}
@@ -399,20 +276,12 @@ def _normalize_value(
                     "Store protocol dictionaries require string keys"
                 )
 
-            normalized[key] = _normalize_value(
-                item,
-            )
+            normalized[key] = _normalize_value(item)
 
         return normalized
 
-    if isinstance(
-        value,
-        (list, tuple, set),
-    ):
-        return [
-            _normalize_value(item)
-            for item in value
-        ]
+    if isinstance(value, (list, tuple, set)):
+        return [_normalize_value(item) for item in value]
 
     raise TypeError(
         f"Value of type {type(value).__name__} "
@@ -420,22 +289,11 @@ def _normalize_value(
     )
 
 
-def _decode_enum(
-    enum_type: type[EnumT],
-    value: Any,
-    *,
-    field: str,
-) -> EnumT:
+def _decode_enum(enum_type: type[EnumT], value: Any, *, field: str) -> EnumT:
     if not isinstance(value, str):
-        raise ValueError(
-            f"Store failure {field} must be a string"
-        )
+        raise ValueError(f"Store failure {field} must be a string")
 
     try:
-        return enum_type(
-            value,
-        )
+        return enum_type(value)
     except ValueError as exc:
-        raise ValueError(
-            f"Unknown store failure {field} {value!r}"
-        ) from exc
+        raise ValueError(f"Unknown store failure {field} {value!r}") from exc

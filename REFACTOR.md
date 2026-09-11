@@ -1,1109 +1,1634 @@
-Yes. We are at a good point to freeze the design before changing code.
+# KivyFN Store Refactor Plan
 
-The main goal is to make state the normal application-facing API, while the raw store remains the canonical engine underneath. gabtech-pro should almost stop thinking about adapters, snapshots, setrow(), manual refreshes, and manual synchronization.
+This document records the architectural decisions for the next
+`kivyfn-store` refactor.
 
-1. Core architecture
+The goal is to keep the public API extremely small while making State powerful
+enough for local and remote reactive UI applications.
 
-The new structure should be:
+This is a design contract first. Implementation details may change as long as
+the public behavior and invariants below remain intact.
 
-                 gabtech-pro
-                      │
-                      ▼
-             StateManager / State
-                      │
-            live observable objects
-                      │
-          ┌───────────┴───────────┐
-          │                       │
- LocalStateManager        RemoteStateManager
-          │                       │
-          ▼                       ▼
-      LocalStore          RemoteStoreClient
-                                  │
-                                  ▼
-                               Server
-                                  │
-                                  ▼
-                           Canonical Store
+---
 
-The canonical store remains responsible for:
+## 1. Core Architecture
 
-schemas
-validation
-transactions
-persistence
-queries
-joins
-signals
-actual-change detection
-subscriptions
+`Store` remains the synchronous data engine.
 
-The state layer is how application/UI code interacts with those things.
+It owns:
 
-2. Two state managers
+- schemas
+- fields
+- validation
+- indexes
+- foreign keys
+- triggers
+- policies
+- transactions
+- persistence
+- revisions
+- commit history / replay data
 
-We decided not to pretend local and remote execution are the same.
+`State` is the application-facing reactive layer.
 
-They share the same general state shape, but implementation semantics differ.
+It owns:
 
-Local
-state = LocalStateManager(store)
+- reactive entities
+- Kivy properties and events
+- optimistic state
+- strict operations
+- subscriptions
+- queries
+- pending state
+- synchronization
+- batching
+- reconnect / resume
+- local and remote backend abstraction
 
-Local state is:
+Application code should primarily interact with `State`, not directly with
+`Store`.
 
-synchronous
-canonical immediately
-no optimistic overlay
-no transport batching
-no reconnect logic
-Remote
-state = RemoteStateManager(store)
-
-Remote state is:
-
-live
-optimistic by default through normal Python assignment
-transport-batched
-continuously synchronized
-reconnect/recovery aware
-
-This keeps LocalStore simple instead of forcing asyncio into something that
-doesn't need it.
-
-3. Creating state
-
-This is the central API:
-
-settings = state.create(SettingsSchema)
-fans = state.create(FanSchema)
-
-The manager already knows from the registered schema/address whether it is
-many=False or many=True.
-
-We don't want:
-
-settings.data.target
-
-We want:
-
-settings.target
-settings.enabled
-settings.mode
-
-For many=True:
-
-fan = fans[fan_id]
-
-fan.enabled
-fan.capacity
-fan.output
-
-We can additionally expose:
-
-fans.rows
-fans.ids
-fans.items
-
-but normal lookup should simply be:
-
-fans[fan_id]
-4. state.create() always means live state
-
-This is important.
+```python
+store = Store(...)
+state = State(store)
 
 fans = state.create(FanSchema)
-
-does not mean:
-
-fetch Fans once.
-
-It means:
-
-give me a live representation of Fans and keep it synchronized.
-
-Therefore screens should stop doing:
-
-snapshot
-refresh
-reload
-rebuild because the adapter changed
-
-Normal store changes update the existing state objects automatically.
-
-For local state, create() is ready immediately.
-
-For remote state, it returns immediately and establishes the remote watch.
-It can expose:
-
-fans.loaded
-fans.synced
-
-If async code ever needs initialization confirmation:
-
-await fans.wait_ready()
-
-But normal Kivy screens should not need to wait manually.
-
-5. Stable Kivy objects
-
-We retain one of the strongest ideas from the existing implementation:
-
-Do not replace row objects when their data changes.
-
-If:
-
-fan = fans[fan_id]
-
-then incoming changes modify that same EventDispatcher.
-
-fan.output = canonical_value
-
-internally, rather than replacing fan.
-
-This keeps KV bindings stable.
-
-Removed rows can retain references similarly to the current weak-reference
-behavior.
-
-6. We no longer need custom/Alias Kivy properties
-
-We briefly considered intercepting writes with AliasProperty, but the API we
-ended on removes the need.
-
-Normal Kivy properties remain normal:
-
-enabled = BooleanProperty(False)
-capacity = NumericProperty(0)
-
-The API itself tells us whether something is optimistic or confirmed.
-
-That significantly simplifies implementation.
-
-7. Remote optimistic field updates
-
-Normal property assignment means optimistic update:
-
-fan.enabled = True
-
-The property changes immediately.
-
-Internally:
-
-visible False → True
-        │
-        ▼
-queue remote update
-        │
-        ▼
-server
-
-Success:
-
-canonical → True
-visible remains True
-on_success
-
-Definitive rejection:
-
-remove optimistic change
-recalculate/revert visible state
-on_error
-
-The rollback happens before on_error is dispatched.
-
-The screen never performs rollback itself.
-
-8. Confirmed field updates
-
-When code explicitly wants to wait before exposing the value:
-
-result = await fan.set(
-    enabled=True,
-)
-
-set() is the confirmed version.
-
-Meaning:
-
-visible remains old canonical value
-        │
-send remote request
-        │
-server accepts
-        ▼
-visible changes
-
-If rejected:
-
-visible never changes
-on_error
-result reports failure
-
-This removes the need for:
-
-optimistic=False
-
-or:
-
-with state.confirmed():
-
-The API itself communicates intent:
-
-fan.enabled = True
-
-= optimistic.
-
-await fan.set(enabled=True)
-
-= confirmed.
-
-That is one of the cleanest decisions we reached.
-
-9. Normal store errors do not crash the Kivy application
-
-Both optimistic and confirmed operations go through state lifecycle events:
-
-fan.bind(
-    on_success=self._on_success,
-    on_error=self._on_error,
-)
-
-A store validation failure should not randomly propagate through a Kivy
-property callback and kill the application.
-
-For optimistic assignment:
-
-fan.enabled = True
-
-failure is event-driven.
-
-For an explicit awaited operation, we can return a result instead of forcing
-ordinary rejection through exceptions.
+```
 
 Conceptually:
 
-result = await fan.set(
-    enabled=True,
-)
+```text
+Application / UI
+       |
+       v
+     State
+       |
+       v
+     Store
+```
 
-if not result.ok:
-    ...
+### Runtime rule
 
-But regardless, the normal state event still exists.
+`Store` stays synchronous and event-loop independent.
 
-We can finalize exact result-class naming during implementation.
+The `State` layer requires an asyncio runtime.
 
-10. One universal operation/result description
+Reads remain synchronous:
 
-Success and error events should receive a structured operation rather than
-different callback signatures for single/many/transactions.
+```python
+fan = fans["fan-1"]
+speed = fan.speed
+```
 
-Conceptually it contains:
+Operations are awaitable when the caller cares about completion:
 
-operation type
-row ID, if applicable
-field/fields
-previous values
-requested values
-code/reason on rejection
+```python
+await fan.set(speed=70)
+```
 
-So:
+Local and remote State should expose the same public API.
 
-operation.type
-operation.row_id
-operation.field
-operation.fields
-operation.previous
-operation.requested
-operation.reason
+---
 
-For a single schema:
+## 2. Entity State
 
-operation.row_id is None
-
-For a many=True row:
-
-operation.row_id == fan_id
-
-Same API.
-
-11. on_success and on_error
-
-We settled on:
-
-on_success
-on_error
-
-rather than on_update.
-
-on_update would be confusing because state itself receives canonical updates
-all the time.
-
-on_success specifically means:
-
-an outgoing logical state operation was accepted.
-
-on_error means:
-
-an outgoing logical operation was definitively rejected, and state recovery
-has already been performed.
-
-These should work for:
-
-update
-insert
-remove
-transaction
-
-Signals have their own named events too.
-
-12. Many-state insert API
-
-Normal Python mapping syntax means optimistic insertion:
-
-fans[fan_id] = {
-    "name": "Tunnel Fan",
-    "capacity": 18_000,
-}
-
-The row appears immediately.
-
-If accepted:
-
-keep it
-on_success
-
-If rejected:
-
-remove optimistic row
-on_error
-
-I would make __setitem__ mean insert, not upsert.
-
-If the ID already exists, updating should be done through:
-
-fans[fan_id].enabled = True
-
-That prevents ambiguous replacement semantics.
-
-13. Confirmed insert
-
-Explicit method:
-
-result = await fans.insert(
-    fan_id,
-    name="Tunnel Fan",
-    capacity=18_000,
-)
-
-The row does not enter live visible state until accepted.
-
-Same conceptual distinction:
-
-fans[id] = {...}
-
-= optimistic.
-
-await fans.insert(...)
-
-= confirmed.
-
-14. Many-state remove API
-
-Optimistic:
-
-del fans[fan_id]
-
-The row disappears immediately.
-
-If rejected, the same stable row is restored before on_error.
-
-Confirmed:
-
-result = await fans.remove(fan_id)
-
-The row remains until the server confirms removal.
-
-Again, very symmetrical:
-
-Python mutation syntax
-    → optimistic
-
-explicit awaited method
-    → confirmed
-15. Transactions can contain everything
-
-This was another important decision.
-
-We should never require:
-
-transaction.setrow(...)
-transaction.insert(...)
-transaction.remove(...)
-
-from state-facing code.
-
-Instead:
-
-with state.transaction():
-    fan.enabled = True
-
-    fans[new_id] = {
-        "name": "Fan 2",
-    }
-
-    del fans[old_id]
-
-Everything performed inside the context gets grouped into one canonical
-transaction.
-
-The store layer translates the normal state operations into underlying
-transaction operations.
-
-16. Transaction semantics remain independent from transport batching
-
-Very important:
-
-transaction
-    = atomic correctness
-
-transport batch
-    = network efficiency
-
-Remote operations from unrelated code can travel together in one network
-request without becoming one transaction.
-
-For example:
-
-WriteBatch
-├── transaction A
-├── independent update B
-├── independent update C
-└── transaction D
-
-Each has independent success/failure semantics.
-
-17. Remote transport batching
-
-Only remote needs this.
-
-Remote state operations occurring in the same async scheduling turn can be
-micro-batched.
-
-We don't use Kivy Clock for this.
-
-We use asyncio/client transport scheduling.
-
-Conceptually:
-
-update
-update
-query/watch request
-remove
-        │
-        ▼
-Remote request coordinator
-        │
-        ▼
-few network envelopes
-
-Likely categories:
-
-ReadBatch
-WriteBatch
-WatchBatch
-
-LocalStateManager does not need this optimization.
-
-18. Kivy Clock has one job only
-
-Clock is not part of transactions or transport batching.
-
-Its only responsibility is when a remote/background callback must update Kivy
-objects on the UI thread:
-
-remote event
-    ↓
-Kivy Clock
-    ↓
-EventDispatcher properties
-
-For LocalStore operating directly on the Kivy thread, that extra hop isn't
-required.
-
-19. Signals become state events
-
-If the schema contains:
-
-tare = Signal()
-
-then:
-
-scale = state.create(ScaleSchema)
-
-gets:
-
-scale.bind(
-    on_tare=self._on_tare,
-)
-
-Incoming canonical signal:
-
-store tare
-    ↓
-state
-    ↓
-dispatch on_tare
-
-For sending:
-
-scale.tare()
-
-This replaces raw:
-
-store.signal.emit(...)
-
-and string-based signal names throughout Gabtech.
-
-20. Signals do not need optimistic/confirmed modes
-
-A signal is an occurrence, not retained state.
-
-There is no value to roll back.
-
-So:
-
-scale.tare()
-
-is enough.
-
-It can optionally return an operation handle if some code ever wants:
-
-await scale.tare()
-
-but there is no separate tare_confirmed() or optimistic setting.
-
-Signals must never be coalesced.
-
-Two:
-
-scale.tare()
-scale.tare()
-
-mean two events.
-
-21. Query creation uses the same API
-
-Filtered live state:
-
-active_fans = state.create(
-    Query(FanSchema).where(
-        field("enabled") == True,
-    )
-)
-
-This is still a collection of Fan rows:
-
-active_fans[fan_id]
-
-A query can return:
-
-0 rows
-1 row
-100 rows
-
-Filtering changes membership, not the object shape.
-
-If a fan begins matching, it appears automatically.
-
-If it stops matching, it disappears automatically.
-
-22. Query joins
-
-We simplified the proposed join API.
-
-Instead of awkward:
-
-.join(
-    HouseSchema,
-    from_="component",
-    as_="house",
-)
-
-we want relationship/path-based joins:
-
-query = (
-    Query(FanSchema)
-    .join("component")
-    .join("component.house")
-)
-
-Foreign-key metadata tells the query engine what schema each relationship
-targets.
-
-Then:
-
-fans = state.create(query)
-
-and:
-
-fan = fans[fan_id]
-
-fan.enabled
-fan.component.name
-fan.component.house.name
-
-No manual from_ or as_.
-
-23. Explicit joins only
-
-Plain:
-
-state.create(FanSchema)
-
-does not recursively load foreign keys.
-
-It might expose:
-
-fan.component_id
-
-Only:
-
-Query(FanSchema).join("component")
-
-adds:
-
-fan.component
-
-That prevents runaway object graphs and unnecessary queries.
-
-24. Join depth
-
-Joins may be nested as deeply as explicitly requested:
-
-.join("component")
-.join("component.house")
-.join("component.house.farm")
-
-giving:
-
-fan.component.house.farm.name
-
-No arbitrary fixed join-depth limit is necessary initially.
-
-But cycles must be prevented.
-
-Version one should focus on singular foreign-key joins, not nested reverse
-collections.
-
-25. Joined fields remain writable
-
-A joined field knows its canonical origin.
-
-So:
-
-fan.component.name = "Tunnel Fan"
-
-resolves back to:
-
-ComponentSchema
-component_id
-name
-
-and performs a normal state mutation.
-
-The query itself is only a projection.
-
-Computed query values, if we add them later, are read-only.
-
-26. Query membership is server/store-owned
-
-If:
-
-active_fans = state.create(
-    Query(FanSchema).where(
-        field("enabled") == True,
-    )
-)
-
-and:
-
-fans["b"].enabled = True
-
-then the query engine determines that B now belongs.
-
-The frontend receives an insert into that query state.
-
-It does not locally rerun the query or rebuild registry indexes.
-
-This is a major part of how we remove Gabtech's manual registry/rebuild code.
-
-27. Live watch synchronization
-
-We decided the simplest robust mechanism is:
-
-Per-watch sequence + authoritative snapshot recovery.
-
-Not global revision-based adapter audits.
-
-Every direct/query watch gets:
-
-watch_id
-sequence
-
-Initial creation:
-
-snapshot
-watch
-sequence = 0
-synced = True
-
-Relevant events:
-
-1
-2
-3
-4
-
-Client checks continuity.
-
-If it expects:
-
-4
-
-and receives:
-
-5
-
-then:
-
-synced = False
-fresh authoritative snapshot
-reconcile
-new watch sequence
-synced = True
-28. Reconnect behavior
-
-We aren't going to overcomplicate version one with replay logs or resume
-tokens.
-
-Disconnect:
-
-state.synced = False
-
-Reconnect:
-
-fresh snapshot + new watch
-        ↓
-reconcile stable state objects
-        ↓
-synced = True
-
-Later, if bandwidth actually matters, we can add opaque resume tokens/replay
-without changing the public state API.
-
-29. Global revision can leave the new frontend stale-recovery system
-
-The current global revision mismatch mechanism doesn't need to drive state
-synchronization anymore.
-
-Canonical revision can remain internally if useful for:
-
-transactions
-debugging
-persistence
-store snapshots
-
-but live-state correctness uses:
-
-watch sequence
-+
-authoritative reset
-
-That's cleaner, especially for queries and joins where unrelated global
-revisions are meaningless.
-
-30. Canonical store suppresses no-op state writes
-
-The store itself should own this rule:
-
-incoming normalized value == canonical value
-    ↓
-nothing
-
-Meaning:
-
-no store event
-no watch sequence increment
-no persistence
-no query reevaluation
-no remote traffic
-
-So no producer needs to keep its own previous-value cache just to avoid
-publishing unchanged state.
-
-31. Runtime/automation structure changes
-
-We discussed reconcile(), but your newer idea is better for Gabtech's
-runtime schemas.
-
-Runtime row existence should be structural.
+A single-schema State exposes typed reactive properties.
 
 Example:
 
-Fan component created
-    ↓
-FanRuntime row created
+```python
+fan.speed
+fan.enabled
+fan.mode
+```
 
-Fan component exists
-    ↓
-FanRuntime always exists
+Normal Kivy binding remains available:
 
-Fan component removed
-    ↓
-FanRuntime row removed
+```python
+fan.bind(
+    speed=self.on_speed,
+)
+```
 
-Then automation does not repeatedly rebuild/reconcile the runtime collection.
+Direct assignment is optimistic:
 
-It only updates fields on existing runtime rows.
+```python
+fan.speed = 70
+```
 
-32. Runtime metadata
+Strict mutation uses `set()`:
 
-A runtime row can represent that the component exists even before automation
-has meaningful calculated state.
+```python
+operation = fan.set(
+    speed=70,
+)
+```
 
-For example:
+and may be awaited:
 
-initialized
-available
-valid
-active
+```python
+await operation
+```
 
-depending on domain meaning.
+---
 
-I would avoid using pending for this because pending already naturally
-means an unconfirmed remote mutation.
+## 3. Optimistic vs Strict Mutation
 
-This gives the frontend a meaningful distinction between:
+### Optimistic mutation
 
-component doesn't exist
+Python assignment is optimistic:
 
-and:
-
-component exists but runtime isn't initialized/available
-33. Runtime lifecycle trigger
-
-If the invariant truly is:
-
-Every configured Fan must have exactly one FanRuntime.
-
-then I'd put creation/removal into a store lifecycle trigger rather than
-leaving it to automation.
+```python
+fan.speed = 70
+```
 
 Conceptually:
 
-FanSchema insert
-    ↓
-FanRuntimeSchema insert
+```text
+canonical = 50
+optimistic = 70
+visible = 70
+```
 
-FanSchema remove
-    ↓
-FanRuntimeSchema remove
+The optimistic value must never overwrite the canonical value internally.
 
-Same for other structurally paired runtime schemas.
+If the Store accepts the mutation:
 
-Then automation can safely assume rows already exist.
+```text
+canonical = 70
+optimistic = removed
+visible = 70
+```
 
-34. Automation no longer keeps published shadow state
+If the Store rejects the mutation:
 
-This should let us remove:
+```text
+optimistic = removed
+visible = latest canonical value
+```
 
-_published_single
-_published_many
+The rollback target is the latest canonical value, not necessarily the value
+that was canonical when the request started.
 
-and most of the current manual:
+Every optimistic mutation still receives an internal operation ID.
 
-snapshot
-diff
-insert/remove/update calculation
+### Strict mutation
 
-Automation can simply assign/update runtime fields.
+Explicit mutation methods are strict:
 
-The canonical store suppresses same-value mutations.
+```python
+fan.set(...)
+fans.insert(...)
+fans.replace(...)
+fans.remove(...)
+```
 
-This is significantly simpler.
+Strict operations do not alter visible State until the Store has successfully
+committed them.
 
-35. reconcile() can still remain a generic store feature
+They return a `StateOperation`.
 
-We don't need to delete the idea.
+```python
+operation = fan.set(
+    speed=70,
+)
+```
 
-It's still useful for:
+The caller may ignore it:
 
-imports
-snapshot restoration
-external mirroring
-tests
-bulk replacement/recovery tooling
+```python
+fan.set(
+    speed=70,
+)
+```
 
-But we don't need to structure Gabtech runtime publishing around it.
+observe it:
 
-36. Gabtech adapter layer largely disappears
+```python
+operation.bind(
+    on_success=self.on_success,
+    on_failed=self.on_failed,
+    on_done=self.on_done,
+)
+```
 
-Normal frontend code should no longer have to do:
+or await it:
 
-adapter.load()
-adapter.data
-adapter.bind(on_setrow=...)
-adapter.setrow(...)
-adapter.insert(...)
-adapter.remove(...)
-_refresh()
-_rebuild()
+```python
+await operation
+```
 
-Instead:
+---
 
-fans = state.create(FanSchema)
+## 4. StateOperation
 
-and the widget works directly against the live state.
+A `StateOperation` represents one requested Store operation.
 
-The current adapter classes can survive temporarily as compatibility wrappers
-during migration, then be removed.
+Minimum public state:
 
-Since you are comfortable doing a full development-branch refactor, we can also
-choose to remove them more aggressively instead of maintaining long
-compatibility if that makes the architecture cleaner.
+```python
+operation.id
+operation.done
+operation.success
+operation.failed
+operation.failure
+```
 
-37. Gabtech registry layer gets split
+Events:
 
-Registry code that exists mainly to:
+```python
+operation.bind(
+    on_success=self.on_success,
+    on_failed=self.on_failed,
+    on_done=self.on_done,
+)
+```
 
-join adapters
-filter records
-index IDs
-rebuild on adapter changes
+The operation object is used for both local and remote State.
 
-should migrate to Store Query + live QueryState.
+Local Store execution may complete synchronously internally, but the public
+operation contract must remain identical to the remote case.
 
-Registry methods containing actual business logic remain.
+An optimistic property assignment also creates an internal `StateOperation`,
+even though Python assignment cannot return it.
+
+---
+
+## 5. Failure
+
+Failure information should remain intentionally small.
+
+Conceptually:
+
+```python
+FailureType = Literal[
+    "network",
+    "field",
+    "foreign_key",
+    "trigger",
+    "policy",
+    "conflict",
+    "not_found",
+    "timeout",
+    "internal",
+]
+```
+
+A failure only needs:
+
+```python
+failure.type
+failure.message
+```
+
+Example:
+
+```python
+if operation.failed:
+    print(operation.failure.type)
+    print(operation.failure.message)
+```
+
+Raw backend exceptions should not leak through State.
+
+Local and remote failures should be normalized into the same failure model.
+
+---
+
+## 6. State Lifecycle Events
+
+State lifecycle events always receive the operation for consistency.
+
+### Pending
+
+```python
+def on_pending(
+    self,
+    state,
+    operation,
+    key,
+    old,
+    new,
+):
+    ...
+```
+
+### Success
+
+```python
+def on_success(
+    self,
+    state,
+    operation,
+    key,
+    old,
+    new,
+):
+    ...
+```
+
+### Failed
+
+```python
+def on_failed(
+    self,
+    state,
+    operation,
+    key,
+    old,
+    new,
+    failure,
+):
+    ...
+```
+
+### Done
+
+```python
+def on_done(
+    self,
+    state,
+    operation,
+    key,
+    old,
+    new,
+    failure,
+):
+    ...
+```
+
+For `on_done`:
+
+```python
+failure is None
+```
+
+means success.
+
+For an entity State:
+
+```text
+key = field name
+```
+
+For a collection State:
+
+```text
+key = row ID
+```
+
+The failure object explains why the mutation failed.
+
+---
+
+## 7. Pending State
+
+Pending belongs to State, not to the operation.
+
+State exposes:
+
+```python
+state.pending
+state.pending_count
+```
+
+`pending` means:
+
+> At least one unfinished mutation belongs to this State.
+
+`pending_count` counts unfinished operations, not changed fields.
+
+A transaction containing many writes is still one pending operation.
+
+There is no need for `operation.pending`.
+
+If:
+
+```python
+operation.done is False
+```
+
+the operation is unfinished.
+
+---
+
+## 8. ManyState
+
+A schema-backed many State behaves like a keyed collection of reactive
+`EntityState` objects.
+
+Example:
+
+```python
+fans["fan-1"]
+fans.get("fan-1")
+fans.keys()
+fans.values()
+fans.items()
+len(fans)
+```
+
+The collection owns membership.
+
+Each row entity owns its fields.
+
+```text
+ManyState
+    membership
+
+EntityState
+    field values
+```
+
+Changing:
+
+```python
+fans["fan-1"].speed = 70
+```
+
+does not mean collection membership changed.
+
+---
+
+## 9. Reactive `rows`
+
+`ManyState` and `QueryState` should expose a Kivy-observable membership map:
+
+```python
+state.rows
+```
+
+Its values are the live `EntityState` / query-row State objects:
+
+```python
+{
+    "fan-1": FanState(...),
+    "fan-2": FanState(...),
+}
+```
+
+The purpose of `rows` is:
+
+> Provide a reactive, KV-friendly `id -> State entity` mapping.
+
+Example in KV:
+
+```kv
+runtime: fan_state.rows.get(root.fan_id)
+```
+
+If the row does not exist:
+
+```python
+fan_state.rows.get("fan-1")
+```
+
+returns `None`.
+
+If it later enters the State, `rows` dispatches and KV re-evaluates.
+
+If it later leaves the State, `rows` dispatches and KV receives `None`.
+
+### `rows` is read-only
+
+Application code must not mutate membership through `rows`.
+
+These should fail:
+
+```python
+state.rows["fan-1"] = {}
+del state.rows["fan-1"]
+state.rows.clear()
+state.rows.update(...)
+state.rows.pop("fan-1")
+```
+
+Mutation occurs through `ManyState` itself.
+
+Optimistic:
+
+```python
+state["fan-1"] = {
+    "type": "side_fan",
+    "index": 0,
+}
+```
+
+```python
+del state["fan-1"]
+```
+
+Strict:
+
+```python
+state.insert(...)
+state.replace(...)
+state.remove(...)
+```
+
+The exact implementation may use a custom read-only observable mapping rather
+than exposing a raw mutable Kivy `DictProperty`.
+
+### `rows` only describes membership
+
+This:
+
+```python
+state["fan-1"].speed = 70
+```
+
+must not dispatch `rows`.
+
+The mapping still points from `"fan-1"` to the same `FanState`.
+
+Membership changes such as enter/leave do dispatch `rows`.
+
+A full row replacement may avoid dispatching `rows` when the existing
+`EntityState` object is preserved.
+
+---
+
+## 10. ManyState Optimistic Syntax
+
+### Insert
+
+If an ID does not exist:
+
+```python
+state["fan-1"] = {
+    "type": "side_fan",
+    "index": 0,
+}
+```
+
+means optimistic insert.
+
+### Replace
+
+If the ID already exists:
+
+```python
+state["fan-1"] = {
+    "type": "tunnel_fan",
+    "index": 1,
+}
+```
+
+means optimistic replace.
+
+### Remove
+
+```python
+del state["fan-1"]
+```
+
+means optimistic remove.
+
+Strict equivalents:
+
+```python
+state.insert(...)
+state.replace(...)
+state.remove(...)
+```
+
+---
+
+## 11. Replace Semantics
+
+Replace means full replacement, not merge.
+
+Suppose the current row is:
+
+```python
+{
+    "name": "John",
+    "age": 40,
+    "enabled": False,
+}
+```
+
+and replacement input is:
+
+```python
+{
+    "name": "Jack",
+}
+```
+
+The final row is reconstructed using normal schema creation semantics:
+
+```text
+name = "Jack"
+age = schema default
+enabled = schema default
+```
+
+Missing required fields without defaults cause failure.
+
+The existing reactive `EntityState` object should be preserved.
+
+```python
+row = people["john"]
+
+await people.replace(
+    "john",
+    name="Jack",
+)
+
+assert people["john"] is row
+```
+
+This preserves bindings and references.
+
+---
+
+## 12. Collection Events
+
+Schema-backed `ManyState` exposes structural Store events:
+
+```python
+on_insert
+on_remove
+on_replace
+```
+
+Example insert callback:
+
+```python
+def on_insert(
+    self,
+    state,
+    row_id,
+    row,
+):
+    ...
+```
+
+Example remove callback:
+
+```python
+def on_remove(
+    self,
+    state,
+    row_id,
+    row,
+):
+    ...
+```
+
+Replace preserves the reactive row object while applying the replacement data.
+
+Collection States also have membership events:
+
+```python
+on_enter
+on_leave
+```
+
+These describe whether an ID is currently visible in the State.
+
+For schema-backed `ManyState`, an actual Store insert can result in both:
+
+```text
+on_insert
+on_enter
+```
+
+A Store remove can result in:
+
+```text
+on_remove
+on_leave
+```
+
+Query-backed collections use membership events without pretending a Store row
+was inserted or removed.
+
+---
+
+## 13. Transactions
+
+Transactions are atomic.
+
+Example:
+
+```python
+with state.transaction():
+    state.name = "John"
+    state.age = 500
+    state.enabled = True
+```
+
+If `age` causes the transaction to fail:
+
+```text
+name     -> reverted
+age      -> reverted
+enabled  -> reverted
+```
+
+All optimistic transaction changes must be reverted before failure callbacks
+run.
+
+Only the actual failure cause needs to be reported.
 
 For example:
 
-duration_is_valid()
-is_first()
-next_onset()
-can_append_program()
+```text
+key = "age"
+failure.type = "field"
+```
 
-are domain behavior, not data synchronization, and should stay.
+The cancelled fields do not each receive fake failure causes.
 
-38. Public remote API we're targeting
+A transport-level failure may have no specific key:
 
-The essence is:
+```text
+key = None
+failure.type = "network"
+```
 
-state = RemoteStateManager(store)
+A transaction is one `StateOperation` and counts as one pending operation.
 
-settings = state.create(SettingsSchema)
-fans = state.create(FanSchema)
+---
 
+## 14. Atomic Apply Before Dispatch
+
+For a successful multi-field Store commit:
+
+```text
+a -> 10
+b -> 20
+c -> 30
+```
+
+State must apply all canonical values before dispatching observable callbacks.
+
+When the callback for `a` runs:
+
+```python
+state.b == 20
+state.c == 30
+```
+
+must already be true.
+
+The same rule applies to rollback:
+
+1. restore all canonical visible values;
+2. update collection membership;
+3. settle pending state;
+4. then dispatch failure / data events.
+
+Observers must never see a partially applied Store transaction.
+
+---
+
+## 15. Query
+
+`Query` should be:
+
+```text
+immutable
+hashable
+comparable by semantics
+```
+
+Equivalent queries must compare and hash equally:
+
+```python
+assert q1 == q2
+assert hash(q1) == hash(q2)
+```
+
+This allows StateManager to deduplicate subscriptions.
+
+Two screens creating equivalent queries should share one backend subscription.
+
+Query expressions and query values must therefore normalize into immutable,
+hashable internal structures.
+
+---
+
+## 16. QueryState Purpose
+
+A live `QueryState` is designed for reactive UI, not unrestricted SQL result-set
+semantics.
+
+The defining invariant is:
+
+> Every live QueryState row corresponds to exactly one root-schema row and keeps
+> that root row's ID for its lifetime.
+
+This gives the UI:
+
+- stable identity
+- stable EventDispatcher objects
+- O(1) lookup
+- predictable bindings
+- efficient keyed reconciliation
+- predictable reconnect behavior
+- simpler Pyright typing
+
+A live Query may enrich a root row, but it must never multiply that root row.
+
+---
+
+## 17. Query Membership
+
+Query membership is derived and read-only.
+
+A QueryState does not expose collection CRUD:
+
+```text
+no insert()
+no remove()
+no replace()
+
+no query_state[id] = ...
+no del query_state[id]
+```
+
+It exposes membership events:
+
+```python
+on_enter
+on_leave
+```
+
+Example:
+
+```python
 active_fans = state.create(
     Query(FanSchema).where(
         field("enabled") == True,
     )
 )
+```
 
-fans_with_components = state.create(
-    Query(FanSchema)
-    .join("component")
-    .where(
-        field("component.enabled") == True,
+If a fan becomes enabled:
+
+```text
+on_enter
+```
+
+If it becomes disabled:
+
+```text
+on_leave
+```
+
+No fake `on_insert` / `on_remove` is emitted because the underlying Store row
+may still exist.
+
+QueryState also exposes the reactive read-only:
+
+```python
+query_state.rows
+```
+
+mapping keyed by the root schema ID.
+
+---
+
+## 18. Query Row Editing
+
+Query collection membership is read-only.
+
+Fields on a Query row may be writable when the field maps directly and
+unambiguously to one underlying Store field.
+
+Example:
+
+```python
+row.enabled = False
+```
+
+may route to:
+
+```text
+FanSchema.enabled
+```
+
+A joined field may also be writable when its source is unambiguous.
+
+Computed, aggregate, or otherwise non-direct fields are read-only.
+
+If this rule creates excessive edge cases during implementation, joined-field
+writes should be restricted before adding more complexity.
+
+Schema State remains the canonical full CRUD interface.
+
+---
+
+## 19. Foreign-Key Joins
+
+Live Query joins are based on `ForeignKeyField`.
+
+They are not arbitrary SQL joins.
+
+Conceptually:
+
+```python
+Query(IoSchema).join(
+    IoSchema.component_id,
+)
+```
+
+is valid because:
+
+```text
+IoSchema.component_id -> ComponentSchema.id
+```
+
+The foreign-key metadata already tells Query:
+
+- source schema
+- target schema
+- relationship
+- field ownership
+- typing information
+
+### Root identity rule
+
+A join may enrich a root row but must never multiply it.
+
+Valid:
+
+```text
+many -> one
+one -> one
+```
+
+Valid chain:
+
+```text
+Io
+ |
+ v
+Component
+ |
+ v
+Controller
+ |
+ v
+Farm
+```
+
+as long as every root IO row still resolves to at most one final query row.
+
+Multiple independent foreign keys are also valid:
+
+```text
+Program
+ |-- primary_sensor -> Sensor
+ `-- backup_sensor  -> Sensor
+```
+
+The result is still keyed by `Program.id`.
+
+### Reverse one-to-many joins
+
+These are deliberately excluded from live QueryState.
+
+Given:
+
+```text
+Component
+    ^
+    |
+Io.component_id
+```
+
+this direction is valid:
+
+```text
+Io -> Component
+```
+
+This expanding direction is not a live join:
+
+```text
+Component -> many Io rows
+```
+
+Instead make `IoSchema` the query root:
+
+```python
+Query(IoSchema).where(
+    field("component_id") == component_id,
+)
+```
+
+Now the result is naturally keyed by IO IDs.
+
+---
+
+## 20. Join Types
+
+Initially only useful UI-safe join semantics should be supported.
+
+### `join()`
+
+Equivalent to an inner join for the relationship.
+
+The root row remains only when the foreign key resolves.
+
+### `left_join()`
+
+The root row remains even when the optional foreign key does not resolve.
+
+Joined fields are `None` when no joined row exists.
+
+Not initially supported:
+
+```text
+right join
+full outer join
+cross join
+arbitrary expression joins
+row-multiplying reverse joins
+```
+
+These do not fit the root identity invariant of live QueryState.
+
+---
+
+## 21. Join Result Shape
+
+Joined Query rows may be flat.
+
+Example:
+
+```python
+row.name
+row.enabled
+row.component_type
+```
+
+Query metadata tracks which Store field each result field originates from.
+
+If multiple selected/joined schemas expose the same output name, the collision
+must be resolved explicitly with an alias.
+
+No silent field overwriting.
+
+The query result shape should be machine-readable so Pyright / Kivy LSP can
+provide useful autocomplete.
+
+---
+
+## 22. Batching
+
+StateManager should micro-batch using asyncio.
+
+Do not rely on Kivy `Clock` for the State runtime.
+
+The first queued operation can schedule a flush on the next asyncio loop turn.
+
+Conceptually:
+
+```text
+loop.call_soon(flush)
+```
+
+Things created during the same synchronous turn may share one batch.
+
+Batch:
+
+- subscription changes
+- initial hydration requests
+- outgoing mutations
+- incoming Store commits
+
+### Batching is not transaction semantics
+
+A transport batch may contain:
+
+```text
+operation A
+operation B
+transaction C
+operation D
+```
+
+A failure in A must not fail B or D.
+
+Only the contents of transaction C are atomic together.
+
+---
+
+## 23. State Reads
+
+Reading State is synchronous memory access.
+
+Do not introduce APIs such as:
+
+```python
+await fan.speed
+```
+
+or network reads hidden behind property access.
+
+Once State is hydrated:
+
+```python
+fan.speed
+fans["fan-1"]
+fans.rows.get("fan-1")
+```
+
+are immediate local reads.
+
+State owns synchronization in the background.
+
+---
+
+## 24. Subscription Deduplication
+
+Equivalent Query objects share one backend subscription.
+
+Conceptually:
+
+```text
+Query
+   |
+   v
+SubscriptionEntry
+   |
+   +-- consumer State A
+   +-- consumer State B
+   `-- consumer State C
+```
+
+When another equivalent Query is created, StateManager reuses the existing
+subscription.
+
+When the final consumer disappears, StateManager may unsubscribe.
+
+Schema-backed State should use the same centralized subscription machinery where
+possible.
+
+---
+
+## 25. Reconnect / Resume
+
+Individual State objects must not independently resynchronize themselves.
+
+`StateManager` owns reconnect centrally.
+
+On reconnect, send one resume handshake containing information such as:
+
+```text
+server instance ID
+last applied revision
+unique active subscriptions
+unique active queries
+```
+
+### Replay when possible
+
+If:
+
+```text
+same server instance
++
+server still has all missing revisions
+```
+
+the server sends only the missing commits.
+
+Example:
+
+```text
+client last revision = 18420
+server current revision = 18465
+
+replay:
+    18421
+    ...
+    18465
+```
+
+### Snapshot fallback
+
+Request a new batched snapshot when replay is impossible.
+
+Examples:
+
+- server restarted
+- client was offline longer than replay history
+- revision gap cannot be recovered
+- synchronization mismatch was detected
+
+The server should keep a bounded recent commit/revision journal to make short
+disconnects cheap.
+
+One reconnect should not cause every State object to independently request a
+snapshot.
+
+---
+
+## 26. Local and Remote Backend Symmetry
+
+State behavior should not depend on whether the Store is local or remote.
+
+Conceptually:
+
+```text
+                State
+                  |
+                  v
+             StateBackend
+              /       \
+             /         \
+    LocalBackend     RemoteBackend
+         |                |
+       Store            network
+                          |
+                        Store
+```
+
+Local Store execution remains synchronous.
+
+Remote execution is asynchronous because of transport.
+
+Both expose the same State behavior:
+
+```python
+fan.speed = 70
+await fan.set(speed=70)
+```
+
+---
+
+## 27. Deferred Ideas
+
+The following ideas were discussed but are intentionally not part of the current
+refactor contract.
+
+### `StateRef`
+
+A reactive reference wrapper may still be useful later:
+
+```python
+state.ref(id)
+```
+
+or:
+
+```python
+state.reference(id)
+```
+
+However, the current preferred KV solution is the reactive read-only membership
+mapping:
+
+```kv
+runtime: state.rows.get(root.id)
+```
+
+Do not add `StateRef` unless `rows` proves insufficient.
+
+### FnWidget identity
+
+KivyFN may later give every `FnWidget`:
+
+```text
+immutable framework UID
+optional logical/data key
+O(1) child lookup maps
+```
+
+This fits keyed State-driven rendering well, but it is outside this Store
+refactor.
+
+### Unrestricted SQL-style queries
+
+A future one-shot reporting/read API may support:
+
+- expanding joins
+- aggregates
+- grouping
+- arbitrary projections
+- non-identity-preserving result sets
+
+Such an API should remain separate from live `QueryState`.
+
+Do not weaken live QueryState's stable root identity just to support reporting
+queries.
+
+---
+
+## 28. Core Invariants
+
+The refactor should preserve these rules above all else.
+
+1. Store is the synchronous data engine.
+2. State is the reactive application API.
+3. State uses asyncio; Store does not require it.
+4. State reads are synchronous.
+5. Direct property/mapping mutation is optimistic.
+6. Explicit mutation methods are strict and return `StateOperation`.
+7. Canonical State is never overwritten by optimistic State.
+8. Operation IDs are tracked for every mutation.
+9. `StateFailure` stays small and normalized.
+10. State exposes `pending` and `pending_count`.
+11. Transactions are atomic.
+12. Apply or rollback the whole transaction before dispatching callbacks.
+13. ManyState owns membership; EntityState owns field values.
+14. `rows` is a reactive, read-only `id -> State entity` membership map.
+15. Writes happen through State, never through `rows`.
+16. Query is immutable and hashable.
+17. Equivalent queries share backend subscriptions.
+18. Live QueryState preserves root-schema identity.
+19. Query membership is derived and read-only.
+20. Live joins follow foreign keys and may never multiply the root row.
+21. Query joins may be chained while the root identity remains stable.
+22. StateManager owns batching and reconnect.
+23. Batching never changes operation/transaction semantics.
+24. Reconnect prefers revision replay over full snapshots.
+25. Local and remote State expose the same public contract.
+
+---
+
+## 29. Small End-to-End Examples
+
+### Entity
+
+```python
+fans = state.create(FanSchema)
+
+fan = fans["fan-1"]
+
+fan.speed = 70
+
+operation = fan.set(
+    speed=80,
+)
+
+await operation
+
+if operation.failed:
+    print(operation.failure.message)
+```
+
+### KV lookup
+
+```kv
+<FanWidget>:
+    runtime: fan_state.rows.get(root.fan_id)
+```
+
+### ManyState optimistic insert
+
+```python
+fans["fan-10"] = {
+    "type": "side_fan",
+    "index": 10,
+}
+```
+
+### ManyState strict insert
+
+```python
+operation = fans.insert(
+    "fan-10",
+    type="side_fan",
+    index=10,
+)
+
+await operation
+```
+
+### Replace
+
+```python
+await fans.replace(
+    "fan-10",
+    type="tunnel_fan",
+)
+```
+
+Unspecified fields use normal schema defaults.
+
+### Optimistic remove
+
+```python
+del fans["fan-10"]
+```
+
+### Strict remove
+
+```python
+await fans.remove("fan-10")
+```
+
+### Query
+
+```python
+active_fans = state.create(
+    Query(FanSchema).where(
+        field("enabled") == True,
     )
 )
+```
 
-Optimistic:
+Membership is read-only:
 
-fan.enabled = True
+```python
+fan = active_fans.rows.get("fan-1")
+```
 
-fans[new_id] = {
-    "name": "Fan 2",
-}
+### Foreign-key join
 
-del fans[old_id]
-
-Confirmed:
-
-await fan.set(
-    enabled=True,
+```python
+ios = state.create(
+    Query(IoSchema).join(
+        IoSchema.component_id,
+    )
 )
+```
 
-await fans.insert(
-    new_id,
-    name="Fan 2",
+The query remains keyed by `IoSchema.id`.
+
+### Reverse one-to-many relationship
+
+Do not use a row-multiplying join.
+
+Use the referencing schema as the root:
+
+```python
+component_io = state.create(
+    Query(IoSchema).where(
+        field("component_id") == component_id,
+    )
 )
+```
 
-await fans.remove(old_id)
+Now each query result remains keyed by an IO ID.
 
-Transaction:
+---
 
-with state.transaction():
-    fan.enabled = True
+## 30. Refactor Principle
 
-    fans[new_id] = {
-        "name": "Fan 2",
-    }
+When an implementation choice adds a large number of edge cases for relatively
+little application value, do not add the feature.
 
-    del fans[old_id]
+The framework should be:
 
-Signals:
+```text
+simple for normal use
+powerful when needed
+predictable under failure
+stable for long-lived UI bindings
+```
 
-scale.bind(
-    on_tare=self._on_tare,
+The public State API should hide networking, subscription management, batching,
+reconnect, Store routing, optimistic overlays, and synchronization whenever the
+application does not explicitly need to care about them.
+
+---
+
+## 31. Direct Store Query Execution
+
+`Query` itself is not restricted to the live UI identity rules.
+
+The restriction applies only when a Query is converted into live reactive State.
+
+This means the same Query system can support two execution models.
+
+### One-shot Store query
+
+```python
+rows = store.query(
+    Query(ComponentSchema)
+    .join(...)
+    .where(...)
 )
+```
 
-scale.tare()
+`Store.query()` may support the full relational query model because its result is
+a one-shot snapshot.
 
-Errors:
+It does not need to preserve long-lived UI identity.
 
-fan.bind(
-    on_success=self._on_success,
-    on_error=self._on_error,
+This execution path may therefore support features such as:
+
+- row-multiplying joins
+- reverse one-to-many joins
+- arbitrary relational result cardinality
+- projections
+- composite result rows
+- reporting queries
+- exports
+- analytics
+- diagnostics
+- future grouping / aggregation features
+
+A Store query result is not required to behave like `ManyState`.
+
+It may return ordinary result rows whose lifetime ends with that query result.
+
+### Live QueryState
+
+```python
+live = state.create(
+    Query(IoSchema)
+    .join(
+        IoSchema.component_id,
+    )
 )
+```
 
-That is roughly the whole frontend store API.
+A Query used with `State.create()` must satisfy the stronger live-State
+invariants.
 
-What I would implement first
+In particular:
 
-Given that both repositories are on safe development branches and you're
-comfortable with a substantial refactor, I would implement in this order:
+```text
+one root Store row
+        |
+        v
+one stable QueryState row
+        |
+        v
+one stable root ID
+```
 
-Refactor kivyfn-store core semantics: actual-value no-op suppression,
-normalized canonical change handling, structural lifecycle hooks, and clean
-signal semantics.
-Build the new remote watch protocol: atomic initial snapshot/watch,
-watch_id, per-watch sequence, resnapshot recovery and synced.
-Build RemoteStateManager: create(), single/many live state, stable
-row identity, Kivy thread dispatch.
-Add optimistic property/collection mutation: normal assignment,
-__setitem__, __delitem__, rollback and on_success/on_error.
-Add confirmed methods: set(), insert(), remove() with result
-objects.
-Add remote transport batching: read/write/watch micro-batching while
-preserving transaction boundaries.
-Add state.transaction(): capture all normal state mutations and turn
-them into one canonical transaction.
-Expose schema signals as state events/methods.
-Implement live filtered QueryState.
-Implement path-based joins and nested joined state.
-Implement LocalStateManager separately and simply, using the same
-state shape but direct synchronous store behavior.
-Refactor Gabtech runtime lifecycle, removing runtime structural
-publishing and published-state diff caches.
-Migrate Gabtech frontend screens/controllers to state.create().
-Replace data-rebuilding registries with queries/joins where appropriate.
-Remove the old adapter/state synchronization layer once migration is
-complete.
+Joins may enrich the root row but may not multiply it.
 
-The biggest thing I would lock before implementation is that we should not
-try to preserve the old adapter architecture internally just to make migration
-easier. Since this is a development-branch total refactor, the new State API
-should be designed correctly first, and then gabtech-pro should be migrated
-to it. That will give us a much cleaner result than layering the new semantics
-on top of the old ones.
+If a Query does not preserve root identity, it is valid for:
+
+```python
+store.query(query)
+```
+
+but invalid for:
+
+```python
+state.create(query)
+```
+
+State should reject such a Query with a clear error explaining that the result
+does not preserve live root-row identity.
+
+Example:
+
+```text
+ComponentSchema -> many IoSchema rows
+```
+
+may be valid for a one-shot Store query:
+
+```python
+rows = store.query(query)
+```
+
+because several result rows for one component are acceptable.
+
+The same Query is not valid as live State because one component ID would no
+longer identify exactly one reactive query row.
+
+By contrast:
+
+```text
+IoSchema.component_id -> ComponentSchema
+```
+
+preserves one result per root IO row and is therefore valid for both:
+
+```python
+store.query(query)
+```
+
+and:
+
+```python
+state.create(query)
+```
+
+### Architectural rule
+
+Use:
+
+```python
+state.create(...)
+```
+
+for long-lived reactive UI data.
+
+Use:
+
+```python
+store.query(...)
+```
+
+for one-shot relational reads where stable reactive identity is unnecessary.
+
+This is the intentional direct-Store use case for application code.
+
+The framework should use one `Query` language for both execution models rather
+than creating separate UI-query and relational-query DSLs.
+

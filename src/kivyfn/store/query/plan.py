@@ -1,3 +1,4 @@
+# src/kivyfn/store/query/plan.py
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -18,8 +19,9 @@ from kivyfn.store.query.expression import (
     iter_field_paths,
 )
 from kivyfn.store.query.query import JoinKind, Query
+from kivyfn.store.query.result import QueryResult, QueryRow
+from kivyfn.store.query.shape import QueryJoinShape, QueryShape
 from kivyfn.store.schema import ManySchema
-from kivyfn.store.schema.fields import ForeignKeyField
 
 
 if TYPE_CHECKING:
@@ -33,368 +35,194 @@ _MISSING = object()
 
 @dataclass(frozen=True, slots=True)
 class CompiledJoin:
-    query_path: tuple[str, ...]
-    owner_path: tuple[str, ...]
-    field_name: str
-    output_name: str
-    kind: JoinKind
+    """One Query join resolved to its target Store node."""
+
+    shape: QueryJoinShape
     target: Node
 
 
 @dataclass(frozen=True, slots=True)
 class QueryPlan:
+    """Executable Store plan for one immutable Query."""
+
     query: Query[Any]
+    shape: QueryShape
     source: Node
     joins: tuple[CompiledJoin, ...]
-    dependencies: frozenset[Address[Any]]
+    dependencies: frozenset[Address]
 
     @classmethod
-    def compile(
-        cls,
-        engine: Engine,
-        query: Query[Any],
-    ) -> QueryPlan:
-        source = _resolve_source(
-            engine,
+    def compile(cls, engine: Engine, query: Query[Any]) -> QueryPlan:
+        source = _resolve_source(engine, query)
+
+        source_schema = source.schema
+
+        if not isinstance(source_schema, ManySchema):
+            raise ValueError("Query source must use a ManySchema")
+
+        shape = QueryShape.build(
             query,
+            source_schema,
+            lambda name: engine.get_node_by_schema(name).schema,
         )
 
-        if not isinstance(
-            source.schema,
-            ManySchema,
-        ):
-            raise ValueError(
-                "Query sources must use a ManySchema"
+        joins = tuple(
+            CompiledJoin(
+                shape=join,
+                target=engine.get_node_by_schema(join.target_schema),
             )
+            for join in shape.joins
+        )
 
-        joins: list[CompiledJoin] = []
-        dependencies: set[Address[Any]] = {
-            source.address,
-        }
+        relations: dict[tuple[str, ...], Schema] = {(): source.schema}
 
-        material_paths: dict[
-            tuple[str, ...],
-            Node,
-        ] = {
-            (): source,
-        }
-
-        query_paths: dict[
-            tuple[str, ...],
-            tuple[str, ...],
-        ] = {
-            (): (),
-        }
-
-        for join in query.joins:
-            requested = join.path.parts
-            owner_requested = requested[:-1]
-
-            owner_path = query_paths.get(
-                owner_requested,
-                owner_requested,
-            )
-
-            owner = material_paths.get(
-                owner_path,
-            )
-
-            if owner is None:
-                raise ValueError(
-                    (
-                        "Query joins must declare their "
-                        f"parent path first: {join.path!s}"
-                    )
-                )
-
-            field_name, relation = _foreign_key(
-                owner.schema,
-                requested[-1],
-            )
-
-            target = engine.get_node_by_schema(
-                relation.schema,
-            )
-
-            if not isinstance(
-                target.schema,
-                ManySchema,
-            ):
-                raise ValueError(
-                    (
-                        "Query foreign-key targets must "
-                        "use a ManySchema"
-                    )
-                )
-
-            output_name = (
-                join.alias
-                or relation.relation_name(
-                    field_name,
-                )
-            )
-
-            if output_name == field_name:
-                raise ValueError(
-                    (
-                        f"Foreign-key field {field_name!r} on "
-                        f"{owner.schema.name} needs an '_id' "
-                        "suffix, a relation name, or an "
-                        "explicit query alias"
-                    )
-                )
-
-            material_path = (
-                *owner_path,
-                output_name,
-            )
-
-            if material_path in material_paths:
-                raise ValueError(
-                    (
-                        "Query join output path already exists: "
-                        f"{'.'.join(material_path)}"
-                    )
-                )
-
-            compiled = CompiledJoin(
-                query_path=requested,
-                owner_path=owner_path,
-                field_name=field_name,
-                output_name=output_name,
-                kind=join.kind,
-                target=target,
-            )
-
-            joins.append(
-                compiled,
-            )
-
-            material_paths[
-                material_path
-            ] = target
-
-            query_paths[
-                requested
-            ] = material_path
-
-            dependencies.add(
-                target.address,
-            )
+        for join in joins:
+            relations[join.shape.relation_path] = join.target.schema
 
         if query.predicate is not None:
-            for path in iter_field_paths(
-                query.predicate,
-            ):
-                _validate_filter_path(
-                    path,
-                    source,
-                    material_paths,
-                )
+            for path in iter_field_paths(query.predicate):
+                _validate_filter_path(path, relations)
+
+        dependencies = frozenset(
+            {source.address, *(join.target.address for join in joins)}
+        )
 
         return cls(
             query=query,
+            shape=shape,
             source=source,
-            joins=tuple(joins),
-            dependencies=frozenset(
-                dependencies,
-            ),
+            joins=joins,
+            dependencies=dependencies,
         )
 
-    def execute(
-        self,
-    ) -> dict[str, dict[str, Any]]:
+    @property
+    def live_compatible(self) -> bool:
+        return self.shape.live_compatible
+
+    def execute(self) -> QueryResult:
         source_data = self.source.snapshot()
 
-        if not isinstance(
-            source_data,
-            dict,
-        ):
-            raise TypeError(
-                "Query source snapshot must be a mapping"
-            )
+        if not isinstance(source_data, Mapping):
+            raise TypeError("Query source snapshot must be a mapping")
 
-        result: dict[
-            str,
-            dict[str, Any],
-        ] = {}
+        result: list[QueryRow] = []
 
         for row_id, source_row in source_data.items():
-            if not isinstance(
-                source_row,
-                dict,
-            ):
-                raise TypeError(
-                    "Query source rows must be mappings"
-                )
+            if not isinstance(source_row, Mapping):
+                raise TypeError("Query source rows must be mappings")
 
-            materialized = dict(
-                source_row,
-            )
+            context = dict(source_row)
+            output = dict(source_row)
 
-            if not self._apply_joins(
-                materialized,
-            ):
+            if not self._apply_joins(context, output):
                 continue
 
             predicate = self.query.predicate
 
-            if predicate is not None:
-                if not evaluate_expression(
-                    predicate,
-                    materialized,
-                ):
-                    continue
+            if predicate is not None and not evaluate_expression(
+                predicate, context
+            ):
+                continue
 
-            result[
-                str(row_id)
-            ] = materialized
+            result.append(QueryRow(id=str(row_id), values=output))
 
-        return result
+        return tuple(result)
 
     def _apply_joins(
-        self,
-        materialized: dict[str, Any],
+        self, context: dict[str, Any], output: dict[str, Any]
     ) -> bool:
         for join in self.joins:
-            owner = _resolve_mapping(
-                materialized,
-                join.owner_path,
-            )
+            shape = join.shape
 
-            foreign_id = (
-                owner.get(
-                    join.field_name,
-                )
-                if owner is not None
-                else None
-            )
+            owner = _resolve_mapping(context, shape.owner_path)
+
+            if owner is None:
+                if shape.kind is JoinKind.INNER:
+                    return False
+
+                _write_join_output(output, join, None)
+                continue
+
+            foreign_id = owner.get(shape.field_name)
 
             row = (
-                join.target.snapshot(
-                    id=str(foreign_id),
-                )
+                join.target.snapshot(id=str(foreign_id))
                 if foreign_id is not None
                 else None
             )
 
-            if not isinstance(
-                row,
-                dict,
-            ):
-                if join.kind is JoinKind.INNER:
+            if not isinstance(row, Mapping):
+                if shape.kind is JoinKind.INNER:
                     return False
 
-                if owner is not None:
-                    owner[
-                        join.output_name
-                    ] = None
+                owner[shape.output_name] = None
 
+                _write_join_output(output, join, None)
                 continue
 
-            if owner is not None:
-                owner[
-                    join.output_name
-                ] = dict(row)
+            joined_row = dict(row)
+
+            owner[shape.output_name] = joined_row
+
+            _write_join_output(output, join, joined_row)
 
         return True
 
 
 def evaluate_expression(
-    expression: Expression,
-    row: Mapping[str, Any],
+    expression: Expression, row: Mapping[str, Any]
 ) -> bool:
-    if isinstance(
-        expression,
-        ComparisonExpression,
-    ):
-        value = _resolve_path(
-            row,
-            expression.field,
-        )
+    if isinstance(expression, ComparisonExpression):
+        value = _resolve_path(row, expression.field)
 
         if value is _MISSING:
             return False
 
-        return _compare(
-            value,
-            expression.operator,
-            expression.value,
-        )
+        return _compare(value, expression.operator, expression.value)
 
-    if isinstance(
-        expression,
-        MembershipExpression,
-    ):
-        value = _resolve_path(
-            row,
-            expression.field,
-        )
+    if isinstance(expression, MembershipExpression):
+        value = _resolve_path(row, expression.field)
 
         if value is _MISSING:
             return False
 
-        contained = (
-            value
-            in expression.values
-        )
+        contained = value in expression.values
 
-        if (
-            expression.operator
-            is MembershipOperator.IN
-        ):
+        if expression.operator is MembershipOperator.IN:
             return contained
 
         return not contained
 
-    if isinstance(
-        expression,
-        AndExpression,
-    ):
+    if isinstance(expression, AndExpression):
         return all(
-            evaluate_expression(
-                child,
-                row,
-            )
-            for child
-            in expression.expressions
+            evaluate_expression(child, row) for child in expression.expressions
         )
 
-    if isinstance(
-        expression,
-        OrExpression,
-    ):
+    if isinstance(expression, OrExpression):
         return any(
-            evaluate_expression(
-                child,
-                row,
-            )
-            for child
-            in expression.expressions
+            evaluate_expression(child, row) for child in expression.expressions
         )
 
-    if isinstance(
-        expression,
-        NotExpression,
-    ):
-        return not evaluate_expression(
-            expression.expression,
-            row,
-        )
+    if isinstance(expression, NotExpression):
+        return not evaluate_expression(expression.expression, row)
 
     raise TypeError(
-        (
-            "Unsupported query expression: "
-            f"{type(expression).__name__}"
-        )
+        f"Unsupported query expression: {type(expression).__name__}"
     )
 
 
-def _compare(
-    left: Any,
-    operator: ComparisonOperator,
-    right: Any,
-) -> bool:
+def _write_join_output(
+    output: dict[str, Any], join: CompiledJoin, row: Mapping[str, Any] | None
+) -> None:
+    shape = join.shape
+
+    for field_name in join.target.schema.fields():
+        output_name = f"{shape.output_prefix}_{field_name}"
+
+        output[output_name] = row.get(field_name) if row is not None else None
+
+
+def _compare(left: Any, operator: ComparisonOperator, right: Any) -> bool:
     if operator is ComparisonOperator.EQ:
         return left == right
 
@@ -410,182 +238,78 @@ def _compare(
     if operator is ComparisonOperator.LT:
         return left < right
 
-    return left <= right
+    if operator is ComparisonOperator.LTE:
+        return left <= right
+
+    raise ValueError(f"Unsupported comparison operator: {operator!r}")
 
 
-def _resolve_path(
-    row: Mapping[str, Any],
-    path: FieldPath,
-) -> Any:
+def _resolve_path(row: Mapping[str, Any], path: FieldPath) -> Any:
     current: Any = row
 
     for part in path.parts:
         if current is None:
             return None
 
-        if not isinstance(
-            current,
-            Mapping,
-        ):
+        if not isinstance(current, Mapping):
             return _MISSING
 
         if part not in current:
             return _MISSING
 
-        current = current[
-            part
-        ]
+        current = current[part]
 
     return current
 
 
 def _resolve_mapping(
-    row: dict[str, Any],
-    path: tuple[str, ...],
+    row: dict[str, Any], path: tuple[str, ...]
 ) -> dict[str, Any] | None:
     current: Any = row
 
     for part in path:
-        if not isinstance(
-            current,
-            dict,
-        ):
+        if not isinstance(current, dict):
             return None
 
-        current = current.get(
-            part,
-        )
+        current = current.get(part)
 
-    if not isinstance(
-        current,
-        dict,
-    ):
+    if not isinstance(current, dict):
         return None
 
     return current
 
 
-def _resolve_source(
-    engine: Engine,
-    query: Query[Any],
-) -> Node:
+def _resolve_source(engine: Engine, query: Query[Any]) -> Node:
     source = query.source
 
-    if isinstance(
-        source,
-        Address,
-    ):
-        node = engine.get_node_by_address(
-            source,
-        )
+    if isinstance(source, Address):
+        node = engine.get_node_by_address(source)
     else:
         schema_name = query.schema_name
 
         if schema_name is None:
-            raise TypeError(
-                "Query source cannot be resolved"
-            )
+            raise TypeError("Query source cannot be resolved")
 
-        node = engine.get_node_by_schema(
-            schema_name,
-        )
+        node = engine.get_node_by_schema(schema_name)
 
-    if not isinstance(
-        node.schema,
-        ManySchema,
-    ):
-        raise ValueError(
-            "Query source must use a ManySchema"
-        )
+    if not isinstance(node.schema, ManySchema):
+        raise ValueError("Query source must use a ManySchema")
 
     return node
 
 
-def _foreign_key(
-    schema: Schema,
-    relation_name: str,
-) -> tuple[
-    str,
-    ForeignKeyField,
-]:
-    candidates: list[
-        tuple[str, ForeignKeyField]
-    ] = []
-
-    for (
-        field_name,
-        field,
-    ) in schema.foreign_key_fields().items():
-        if field_name == relation_name:
-            candidates.append(
-                (
-                    field_name,
-                    field,
-                )
-            )
-            continue
-
-        if (
-            field.relation_name(
-                field_name,
-            )
-            == relation_name
-        ):
-            candidates.append(
-                (
-                    field_name,
-                    field,
-                )
-            )
-
-    if not candidates:
-        raise ValueError(
-            (
-                f"Query join relation {relation_name!r} "
-                f"does not exist on {schema.name}"
-            )
-        )
-
-    if len(candidates) > 1:
-        raise ValueError(
-            (
-                f"Query join relation {relation_name!r} "
-                f"is ambiguous on {schema.name}"
-            )
-        )
-
-    return candidates[0]
-
-
 def _validate_filter_path(
-    path: FieldPath,
-    source: Node,
-    joined: Mapping[
-        tuple[str, ...],
-        Node,
-    ],
+    path: FieldPath, relations: Mapping[tuple[str, ...], Schema]
 ) -> None:
     parts = path.parts
 
     if len(parts) == 1:
-        source.schema.get_field(
-            parts[0],
-        )
+        relations[()].get_field(parts[0])
         return
 
-    owner_path = parts[:-1]
-    owner = joined.get(
-        owner_path,
-    )
+    owner = relations.get(parts[:-1])
 
     if owner is None:
-        raise ValueError(
-            (
-                f"Query field path {path!s} "
-                "is not joined"
-            )
-        )
+        raise ValueError(f"Query field path {path!s} is not joined")
 
-    owner.schema.get_field(
-        parts[-1],
-    )
+    owner.get_field(parts[-1])

@@ -1,26 +1,24 @@
-from kivyfn.store.state.base import StateEvents
-from kivyfn.store.state.collection import CollectionState
-from kivyfn.store.state.entity import EntityState
-from kivyfn.store.state.local import LocalStateManager
-from kivyfn.store.state.manager import BaseStateManager
-from kivyfn.store.state.operation import (
+# src/kivyfn/store/state/__init__.py
+from kivyfn.store.state.manager import StateManager
+from kivyfn.store.state.mutation.failure import StateFailure, StateFailureType
+from kivyfn.store.state.mutation.operation import (
     StateOperation,
     StateOperationKind,
-    StateResult,
 )
-from kivyfn.store.state.remote import RemoteStateManager
-from kivyfn.store.state.transaction import StateTransaction
+from kivyfn.store.state.mutation.transaction import StateTransaction
+from kivyfn.store.state.reactive.collection import CollectionState
+from kivyfn.store.state.reactive.query import QueryCollectionState
+from kivyfn.store.state.reactive.state import State
 
 
 __all__ = [
-    "BaseStateManager",
     "CollectionState",
-    "EntityState",
-    "LocalStateManager",
-    "RemoteStateManager",
-    "StateEvents",
+    "QueryCollectionState",
+    "State",
+    "StateFailure",
+    "StateFailureType",
+    "StateManager",
     "StateOperation",
     "StateOperationKind",
-    "StateResult",
     "StateTransaction",
 ]

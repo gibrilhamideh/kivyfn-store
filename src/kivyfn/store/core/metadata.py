@@ -1,106 +1,325 @@
+# src/kivyfn/store/core/metadata.py
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from kivyfn.store.address import Address
-from kivyfn.store.schema.registry import ForeignKey, ForeignKeyRegistry
+from kivyfn.store.schema.policy import ForeignKeyPolicy
 from kivyfn.store.storage import parse_persist_interval
 
 
 if TYPE_CHECKING:
     from kivyfn.store.node import Node
-    from kivyfn.store.schema import Schema
 
 
+@dataclass(frozen=True, slots=True)
+class ForeignKey:
+    """Resolved foreign-key metadata for one schema field."""
+
+    schema: str
+    field: str
+    reference: str
+    on_delete: ForeignKeyPolicy
+
+
+@dataclass(frozen=True, slots=True)
 class EngineMetadata:
-    def __init__(self) -> None:
-        self.nodes_by_address: dict[Address, Node] = {}
-        self.nodes_by_schema: dict[str, Node] = {}
-        self.schemas_by_name: dict[str, Schema] = {}
+    """Immutable metadata derived from the Store node tree."""
 
-        self.persistent_nodes: set[Node] = set()
-        self.persistence_intervals: dict[Node, float] = {}
-
-        self.foreign_keys = ForeignKeyRegistry()
+    nodes_by_address: Mapping[Address, Node]
+    nodes_by_schema: Mapping[str, Node]
+    persistent_nodes: frozenset[Node]
+    persistence_intervals: Mapping[Node, float]
+    _foreign_keys_by_schema: Mapping[
+        str,
+        tuple[ForeignKey, ...],
+    ]
+    _referenced_by_schema: Mapping[
+        str,
+        tuple[ForeignKey, ...],
+    ]
 
     @classmethod
-    def build(cls, root: Node) -> EngineMetadata:
-        metadata = cls()
-        metadata._register_nodes(root)
-        metadata._build_foreign_keys()
-        metadata._validate_foreign_keys()
-        metadata._validate_delayed_persistence()
-        return metadata
+    def build(
+        cls,
+        root: Node,
+    ) -> EngineMetadata:
+        nodes_by_address: dict[
+            Address,
+            Node,
+        ] = {}
 
-    # -------------------------------------------------
-    # Build steps
-    # -------------------------------------------------
+        nodes_by_schema: dict[
+            str,
+            Node,
+        ] = {}
 
-    def _register_nodes(self, node: Node) -> None:
-        address = node.address
-        schema = node.schema
-        schema_name = schema.name
+        persistent_nodes: set[Node] = set()
 
-        if address in self.nodes_by_address:
-            raise RuntimeError(f"Duplicate node address: {address}")
+        persistence_intervals: dict[
+            Node,
+            float,
+        ] = {}
 
-        if schema_name in self.nodes_by_schema:
+        _register_nodes(
+            root,
+            nodes_by_address=nodes_by_address,
+            nodes_by_schema=nodes_by_schema,
+            persistent_nodes=persistent_nodes,
+            persistence_intervals=persistence_intervals,
+        )
+
+        (
+            foreign_keys_by_schema,
+            referenced_by_schema,
+        ) = _build_foreign_keys(
+            nodes_by_schema,
+        )
+
+        _validate_delayed_persistence(
+            persistence_intervals,
+            foreign_keys_by_schema,
+        )
+
+        return cls(
+            nodes_by_address=MappingProxyType(
+                nodes_by_address
+            ),
+            nodes_by_schema=MappingProxyType(
+                nodes_by_schema
+            ),
+            persistent_nodes=frozenset(
+                persistent_nodes
+            ),
+            persistence_intervals=MappingProxyType(
+                persistence_intervals
+            ),
+            _foreign_keys_by_schema=MappingProxyType(
+                foreign_keys_by_schema
+            ),
+            _referenced_by_schema=MappingProxyType(
+                referenced_by_schema
+            ),
+        )
+
+    def get_node_by_address(
+        self,
+        address: Address,
+    ) -> Node:
+        try:
+            return self.nodes_by_address[
+                address
+            ]
+        except KeyError:
             raise RuntimeError(
-                f"Schema '{schema_name}' is attached to multiple nodes"
-            )
+                f"Node address not found: {address}"
+            ) from None
 
-        self.nodes_by_address[address] = node
-        self.nodes_by_schema[schema_name] = node
-        self.schemas_by_name[schema_name] = schema
+    def get_node_by_schema(
+        self,
+        schema_name: str,
+    ) -> Node:
+        try:
+            return self.nodes_by_schema[
+                schema_name
+            ]
+        except KeyError:
+            raise RuntimeError(
+                "No node found for schema "
+                f"{schema_name!r}"
+            ) from None
 
-        interval = parse_persist_interval(schema.persist_interval)
+    def foreign_keys_of(
+        self,
+        schema_name: str,
+    ) -> tuple[ForeignKey, ...]:
+        return self._foreign_keys_by_schema.get(
+            schema_name,
+            (),
+        )
 
-        if interval is not None and not schema.persistent:
-            raise ValueError(
-                f"Schema '{schema_name}' defines persist_interval but "
-                "persistent is False"
-            )
+    def referenced_by(
+        self,
+        schema_name: str,
+    ) -> tuple[ForeignKey, ...]:
+        return self._referenced_by_schema.get(
+            schema_name,
+            (),
+        )
 
-        if schema.persistent:
-            self.persistent_nodes.add(node)
+    def is_persistent(
+        self,
+        node: Node,
+    ) -> bool:
+        return (
+            node
+            in self.persistent_nodes
+        )
 
-        if interval is not None:
-            self.persistence_intervals[node] = interval
+    def persistence_interval(
+        self,
+        node: Node,
+    ) -> float | None:
+        return self.persistence_intervals.get(
+            node
+        )
 
-        for child in node.children.values():
-            self._register_nodes(child)
 
-    def _build_foreign_keys(self) -> None:
-        for schema_name, schema in self.schemas_by_name.items():
-            for field_name, field in schema.foreign_key_fields().items():
-                self.foreign_keys.register(
-                    schema=schema_name,
-                    field=field_name,
-                    reference=field.schema,
-                    on_delete=field.on_delete,
-                )
+def _register_nodes(
+    node: Node,
+    *,
+    nodes_by_address: dict[Address, Node],
+    nodes_by_schema: dict[str, Node],
+    persistent_nodes: set[Node],
+    persistence_intervals: dict[Node, float],
+) -> None:
+    address = node.address
+    schema = node.schema
+    schema_name = schema.name
 
-    def _validate_foreign_keys(self) -> None:
-        for foreign_key in self.foreign_keys.all():
-            if foreign_key.schema not in self.schemas_by_name:
-                raise RuntimeError(
-                    "Foreign key source schema "
-                    f"'{foreign_key.schema}' is not registered in metadata"
-                )
+    if address in nodes_by_address:
+        raise RuntimeError(
+            f"Duplicate node address: {address}"
+        )
 
-            if foreign_key.reference not in self.schemas_by_name:
+    if schema_name in nodes_by_schema:
+        raise RuntimeError(
+            f"Schema {schema_name!r} is attached "
+            "to multiple nodes"
+        )
+
+    nodes_by_address[address] = node
+    nodes_by_schema[schema_name] = node
+
+    interval = parse_persist_interval(
+        schema.persist_interval
+    )
+
+    if (
+        interval is not None
+        and not schema.persistent
+    ):
+        raise ValueError(
+            f"Schema {schema_name!r} defines "
+            "persist_interval but persistent is False"
+        )
+
+    if schema.persistent:
+        persistent_nodes.add(
+            node
+        )
+
+    if interval is not None:
+        persistence_intervals[
+            node
+        ] = interval
+
+    for child in node.children.values():
+        _register_nodes(
+            child,
+            nodes_by_address=nodes_by_address,
+            nodes_by_schema=nodes_by_schema,
+            persistent_nodes=persistent_nodes,
+            persistence_intervals=persistence_intervals,
+        )
+
+
+def _build_foreign_keys(
+    nodes_by_schema: Mapping[str, Node],
+) -> tuple[
+    dict[str, tuple[ForeignKey, ...]],
+    dict[str, tuple[ForeignKey, ...]],
+]:
+    by_schema: defaultdict[
+        str,
+        list[ForeignKey],
+    ] = defaultdict(list)
+
+    referenced_by: defaultdict[
+        str,
+        list[ForeignKey],
+    ] = defaultdict(list)
+
+    for (
+        schema_name,
+        node,
+    ) in nodes_by_schema.items():
+        for (
+            field_name,
+            field,
+        ) in node.schema.foreign_key_fields().items():
+            reference = field.schema
+
+            if reference not in nodes_by_schema:
                 raise RuntimeError(
                     "Foreign key reference schema "
-                    f"'{foreign_key.reference}' is not registered in metadata"
+                    f"{reference!r} is not registered"
                 )
 
-    def _validate_delayed_persistence(self) -> None:
-        delayed = {
-            node.schema.name
-            for node in self.persistence_intervals
-        }
+            foreign_key = ForeignKey(
+                schema=schema_name,
+                field=field_name,
+                reference=reference,
+                on_delete=field.on_delete,
+            )
 
-        for foreign_key in self.foreign_keys.all():
+            by_schema[
+                schema_name
+            ].append(
+                foreign_key
+            )
+
+            referenced_by[
+                reference
+            ].append(
+                foreign_key
+            )
+
+    return (
+        {
+            schema: tuple(
+                foreign_keys
+            )
+            for (
+                schema,
+                foreign_keys,
+            ) in by_schema.items()
+        },
+        {
+            schema: tuple(
+                foreign_keys
+            )
+            for (
+                schema,
+                foreign_keys,
+            ) in referenced_by.items()
+        },
+    )
+
+
+def _validate_delayed_persistence(
+    persistence_intervals: Mapping[
+        Node,
+        float,
+    ],
+    foreign_keys_by_schema: Mapping[
+        str,
+        tuple[ForeignKey, ...],
+    ],
+) -> None:
+    delayed = {
+        node.schema.name
+        for node in persistence_intervals
+    }
+
+    for foreign_keys in (
+        foreign_keys_by_schema.values()
+    ):
+        for foreign_key in foreign_keys:
             if (
                 foreign_key.schema not in delayed
                 and foreign_key.reference not in delayed
@@ -108,48 +327,9 @@ class EngineMetadata:
                 continue
 
             raise ValueError(
-                "Delayed-persistence schemas cannot participate in "
-                "foreign-key relationships: "
-                f"{foreign_key.schema}.{foreign_key.field} -> "
+                "Delayed-persistence schemas cannot "
+                "participate in foreign-key relationships: "
+                f"{foreign_key.schema}."
+                f"{foreign_key.field} -> "
                 f"{foreign_key.reference}"
             )
-
-    # -------------------------------------------------
-    # Lookups
-    # -------------------------------------------------
-
-    def get_node_by_address(self, address: Address) -> Node:
-        try:
-            return self.nodes_by_address[address]
-        except KeyError:
-            raise RuntimeError(
-                f"Node address not found: {address}"
-            ) from None
-
-    def get_node_by_schema(self, schema_name: str) -> Node:
-        try:
-            return self.nodes_by_schema[schema_name]
-        except KeyError:
-            raise RuntimeError(
-                f"No node found for schema '{schema_name}'"
-            ) from None
-
-    def get_schema(self, schema_name: str) -> Schema:
-        try:
-            return self.schemas_by_name[schema_name]
-        except KeyError:
-            raise RuntimeError(
-                f"Schema '{schema_name}' is not registered"
-            ) from None
-
-    def foreign_keys_of(self, schema_name: str) -> list[ForeignKey]:
-        return self.foreign_keys.foreign_keys_of(schema_name)
-
-    def referenced_by(self, schema_name: str) -> list[ForeignKey]:
-        return self.foreign_keys.referenced_by(schema_name)
-
-    def is_persistent(self, node: Node) -> bool:
-        return node in self.persistent_nodes
-
-    def persistence_interval(self, node: Node) -> float | None:
-        return self.persistence_intervals.get(node)

@@ -1,258 +1,74 @@
-# kivyfn/store/events/event.py
+# src/kivyfn/store/events/event.py
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from typing import Any, Generic, Literal, TypeAlias, TypeVar
+from dataclasses import dataclass
+from typing import Any, ClassVar, TypeAlias
 
-from kivyfn.store.address import Address
-from kivyfn.store.operations import OpCode
-
-
-T = TypeVar("T")
+from kivyfn.store.operations import OpCode, OperationSource
 
 
-def _add_metadata(
-    payload: dict[str, Any],
-    *,
-    server_instance_id: str | None,
-    revision: int | None,
-) -> dict[str, Any]:
-    if server_instance_id is not None:
-        payload["server_instance_id"] = server_instance_id
-
-    if revision is not None:
-        payload["revision"] = revision
-
-    return payload
+Row: TypeAlias = dict[str, Any]
 
 
-def _metadata_from_payload(
-    payload: dict[str, Any],
-) -> tuple[str | None, int | None]:
-    instance_id = payload.get("server_instance_id")
-    revision = payload.get("revision")
-
-    if instance_id is not None:
-        if not isinstance(instance_id, str) or not instance_id:
-            raise ValueError(
-                "Store event server instance ID is invalid"
-            )
-
-    if revision is not None:
-        if isinstance(revision, bool) or not isinstance(revision, int):
-            raise ValueError(
-                "Store event revision must be an integer"
-            )
-
-        if revision < 0:
-            raise ValueError(
-                "Store event revision cannot be negative"
-            )
-
-    if (instance_id is None) != (revision is None):
-        raise ValueError(
-            "Store event revision metadata must be complete"
-        )
-
-    return instance_id, revision
-
-
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SetEvent:
-    """Scalar update on a many=False schema."""
+    """A field change on a single schema."""
 
-    address: Address[Any]
+    opcode: ClassVar[OpCode] = OpCode.SET
+
+    schema: str
+    source: OperationSource
     key: str
-    old_value: Any
-    new_value: Any
-    server_instance_id: str | None = None
-    revision: int | None = None
-
-    opcode: Literal[OpCode.SET] = field(
-        init=False,
-        default=OpCode.SET,
-    )
-
-    def payload(self) -> dict[str, Any]:
-        return _add_metadata(
-            {
-                "opcode": self.opcode.value,
-                "address": self.address.to_list(),
-                "id": None,
-                "key": self.key,
-                "old_value": self.old_value,
-                "new_value": self.new_value,
-            },
-            server_instance_id=self.server_instance_id,
-            revision=self.revision,
-        )
-
-    def copy_with(
-        self,
-        **changes: Any,
-    ) -> SetEvent:
-        return replace(self, **changes)
+    old: Any
+    new: Any
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class SetRowEvent:
-    """Scalar update on one row of a many=True schema."""
+    """A field change on one row of a many schema."""
 
-    address: Address[Any]
+    opcode: ClassVar[OpCode] = OpCode.SETROW
+
+    schema: str
+    source: OperationSource
     id: str
     key: str
-    old_value: Any
-    new_value: Any
-    server_instance_id: str | None = None
-    revision: int | None = None
-
-    opcode: Literal[OpCode.SETROW] = field(
-        init=False,
-        default=OpCode.SETROW,
-    )
-
-    def payload(self) -> dict[str, Any]:
-        return _add_metadata(
-            {
-                "opcode": self.opcode.value,
-                "address": self.address.to_list(),
-                "id": self.id,
-                "key": self.key,
-                "old_value": self.old_value,
-                "new_value": self.new_value,
-            },
-            server_instance_id=self.server_instance_id,
-            revision=self.revision,
-        )
-
-    def copy_with(
-        self,
-        **changes: Any,
-    ) -> SetRowEvent:
-        return replace(self, **changes)
+    old: Any
+    new: Any
 
 
-@dataclass(frozen=True, slots=True)
-class InsertEvent(Generic[T]):
-    """Insertion of one row into a many=True schema."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class InsertEvent:
+    """A row inserted into a many schema."""
 
-    address: Address[T]
+    opcode: ClassVar[OpCode] = OpCode.INSERT
+
+    schema: str
+    source: OperationSource
     id: str
-    new_value: T
-    server_instance_id: str | None = None
-    revision: int | None = None
-
-    opcode: Literal[OpCode.INSERT] = field(
-        init=False,
-        default=OpCode.INSERT,
-    )
-
-    def payload(self) -> dict[str, Any]:
-        return _add_metadata(
-            {
-                "opcode": self.opcode.value,
-                "address": self.address.to_list(),
-                "id": self.id,
-                "key": None,
-                "old_value": None,
-                "new_value": self.new_value,
-            },
-            server_instance_id=self.server_instance_id,
-            revision=self.revision,
-        )
-
-    def copy_with(
-        self,
-        **changes: Any,
-    ) -> InsertEvent[T]:
-        return replace(self, **changes)
+    new: Row
 
 
-@dataclass(frozen=True, slots=True)
-class RemoveEvent(Generic[T]):
-    """Removal of one row from a many=True schema."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RemoveEvent:
+    """A row removed from a many schema."""
 
-    address: Address[T]
+    opcode: ClassVar[OpCode] = OpCode.REMOVE
+
+    schema: str
+    source: OperationSource
     id: str
-    old_value: T
+    old: Row
+
+
+StoreEvent: TypeAlias = SetEvent | SetRowEvent | InsertEvent | RemoveEvent
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StoreCommit:
+    """One atomic batch of canonical Store changes."""
+
+    events: tuple[StoreEvent, ...]
+    operation_id: str | None = None
     server_instance_id: str | None = None
     revision: int | None = None
-
-    opcode: Literal[OpCode.REMOVE] = field(
-        init=False,
-        default=OpCode.REMOVE,
-    )
-
-    def payload(self) -> dict[str, Any]:
-        return _add_metadata(
-            {
-                "opcode": self.opcode.value,
-                "address": self.address.to_list(),
-                "id": self.id,
-                "key": None,
-                "old_value": self.old_value,
-                "new_value": None,
-            },
-            server_instance_id=self.server_instance_id,
-            revision=self.revision,
-        )
-
-    def copy_with(
-        self,
-        **changes: Any,
-    ) -> RemoveEvent[T]:
-        return replace(self, **changes)
-
-
-StoreEvent: TypeAlias = (
-    SetEvent
-    | SetRowEvent
-    | InsertEvent[Any]
-    | RemoveEvent[Any]
-)
-
-
-def event_from_payload(
-    payload: dict[str, Any],
-) -> StoreEvent:
-    opcode = OpCode(payload["opcode"])
-    address = Address(*payload["address"])
-    instance_id, revision = _metadata_from_payload(payload)
-
-    if opcode is OpCode.SET:
-        return SetEvent(
-            address=address,
-            key=payload["key"],
-            old_value=payload["old_value"],
-            new_value=payload["new_value"],
-            server_instance_id=instance_id,
-            revision=revision,
-        )
-
-    if opcode is OpCode.SETROW:
-        return SetRowEvent(
-            address=address,
-            id=payload["id"],
-            key=payload["key"],
-            old_value=payload["old_value"],
-            new_value=payload["new_value"],
-            server_instance_id=instance_id,
-            revision=revision,
-        )
-
-    if opcode is OpCode.INSERT:
-        return InsertEvent(
-            address=address,
-            id=payload["id"],
-            new_value=payload["new_value"],
-            server_instance_id=instance_id,
-            revision=revision,
-        )
-
-    return RemoveEvent(
-        address=address,
-        id=payload["id"],
-        old_value=payload["old_value"],
-        server_instance_id=instance_id,
-        revision=revision,
-    )

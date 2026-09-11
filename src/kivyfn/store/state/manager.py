@@ -1,1931 +1,598 @@
+# src/kivyfn/store/state/manager.py
 from __future__ import annotations
 
 import asyncio
-import contextvars
 
-from abc import ABC, abstractmethod
-from collections import defaultdict
-from collections.abc import Callable, Mapping
-from copy import deepcopy
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from typing import Any, TypeVar, cast, overload
-from weakref import WeakValueDictionary
 
-from kivy.properties import BooleanProperty
-
-from kivyfn.logging import get_logger
-from kivyfn.store.address import Address
-from kivyfn.store.error import (
-    StoreOperationError,
-    StoreStateError,
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.error import StoreErrorCode, StoreErrorStatus, StoreFailure
+from kivyfn.store.protocol.message.responses import (
+    FailureResponse,
+    ResponseItem,
+    SetResponse,
+    SetRowResponse,
 )
-from kivyfn.store.query import (
-    Query,
-    QueryChangeSet,
-    QueryInsertEvent,
-    QueryRemoveEvent,
-    QueryUpdateEvent,
+from kivyfn.store.query import Query
+from kivyfn.store.schema import ManySchema, SingleSchema
+from kivyfn.store.state.mutation.failure import StateFailure
+from kivyfn.store.state.mutation.operation import StateOperation
+from kivyfn.store.state.mutation.transaction import (
+    InsertAction,
+    RemoveAction,
+    SetAction,
+    SetRowAction,
+    SignalAction,
+    StateAction,
+    StateTransaction,
 )
-from kivyfn.store.schema import (
-    ManySchema,
-    Schema,
-    SingleSchema,
-)
-from kivyfn.store.state.base import StateEvents
-from kivyfn.store.state.collection import CollectionState
-from kivyfn.store.state.entity import EntityState, entity_type
-from kivyfn.store.state.operation import (
-    StateOperation,
-    StateOperationKind,
-    StateResult,
-)
-from kivyfn.store.state.transaction import StateTransaction
-from kivyfn.store.state.view import SingleStateView
-from kivyfn.store.signals.event import SignalEvent
+from kivyfn.store.state.reactive.collection import CollectionState
+from kivyfn.store.state.reactive.data import StateData
+from kivyfn.store.state.reactive.query import QueryCollectionState
+from kivyfn.store.state.reactive.state import State
+from kivyfn.store.state.registry import StateRegistry
 
 
-logger = get_logger(__name__)
+SingleSchemaT = TypeVar("SingleSchemaT", bound=SingleSchema)
+
+ManySchemaT = TypeVar("ManySchemaT", bound=ManySchema)
 
 
-SchemaT = TypeVar(
-    "SchemaT",
-    bound=Schema,
-)
-
-SingleSchemaT = TypeVar(
-    "SingleSchemaT",
-    bound=SingleSchema,
-)
-
-ManySchemaT = TypeVar(
-    "ManySchemaT",
-    bound=ManySchema,
-)
+@dataclass(slots=True)
+class _SetContext:
+    state: State[Any]
+    operation: StateOperation
+    values: dict[str, Any]
+    old: dict[str, Any]
 
 
-View = CollectionState[Any] | SingleStateView[Any]
+class StateManager:
+    """Application-facing coordinator for reactive Store State."""
 
-Dispatcher = Callable[..., None]
+    def __init__(self, client: StoreClient) -> None:
+        self._client = client
+        self._registry = StateRegistry(self)
 
+        self._sets: dict[str, _SetContext] = {}
 
-class BaseStateManager(StateEvents, ABC):
-    """Shared live-state API with local and remote backends."""
-
-    connected = BooleanProperty(True)
-
-    def __init__(
-        self,
-        *,
-        dispatcher: Dispatcher | None = None,
-        **kwargs: Any,
-    ) -> None:
-        self._dispatcher = dispatcher
-
-        self._schemas: dict[str, Schema] = {}
-        self._schema_types: dict[str, type[Schema]] = {}
-        self._addresses: dict[str, Address[Any]] = {}
-
-        self._entities: WeakValueDictionary[
-            tuple[str, str | None],
-            EntityState[Any],
-        ] = WeakValueDictionary()
-
-        self._views: set[View] = set()
-        self._direct_views: dict[str, View] = {}
-
-        self._entity_views: dict[
-            EntityState[Any],
-            set[View],
-        ] = defaultdict(set)
-
-        self._view_entities: dict[
-            View,
-            set[EntityState[Any]],
-        ] = defaultdict(set)
-
-        self._signal_bindings: dict[
-            tuple[str, str],
-            Any,
-        ] = {}
-
-        self._active_transaction: contextvars.ContextVar[
-            StateTransaction | None
-        ] = contextvars.ContextVar(
-            "kivyfn_store_state_transaction",
-            default=None,
+        self._transaction: ContextVar[StateTransaction | None] = ContextVar(
+            f"kivyfn_state_transaction_{id(self)}", default=None
         )
 
-        self._tasks: set[asyncio.Task[Any]] = set()
-        self._closed = False
+    @property
+    def client(self) -> StoreClient:
+        return self._client
 
-        super().__init__(**kwargs)
-
-    # -------------------------------------------------
-    # Public API
-    # -------------------------------------------------
+    @overload
+    def create(self, source: type[SingleSchemaT]) -> State[SingleSchemaT]: ...
 
     @overload
     def create(
-        self,
-        source: type[SingleSchemaT],
-    ) -> SingleSchemaT:
-        ...
+        self, source: type[ManySchemaT]
+    ) -> CollectionState[ManySchemaT]: ...
 
     @overload
     def create(
-        self,
-        source: type[ManySchemaT],
-    ) -> CollectionState[ManySchemaT]:
-        ...
-
-    @overload
-    def create(
-        self,
-        source: Query[ManySchemaT],
-    ) -> CollectionState[ManySchemaT]:
-        ...
+        self, source: Query[ManySchemaT]
+    ) -> QueryCollectionState[ManySchemaT]: ...
 
     def create(
-        self,
-        source: (
-            type[SingleSchema]
-            | type[ManySchema]
-            | Query[Any]
-        ),
+        self, source: (type[SingleSchema] | type[ManySchema] | Query[Any])
     ) -> Any:
-        """Create or return a live state representation."""
-        if self._closed:
-            raise StoreStateError(
-                "The state manager is closed"
-            )
-
-        if isinstance(source, Query):
-            return self._create_query_state(
-                source,
-            )
-
-        if not isinstance(source, type):
-            raise TypeError(
-                (
-                    "state.create() requires a SingleSchema class, "
-                    "ManySchema class, or Query"
-                )
-            )
-
-        if issubclass(source, SingleSchema):
-            return self._create_single_state(
-                source,
-            )
-
-        if issubclass(source, ManySchema):
-            return self._create_many_state(
-                source,
-            )
-
-        raise TypeError(
-            (
-                "state.create() requires a SingleSchema class, "
-                "ManySchema class, or Query"
-            )
-        )
+        return self._registry.create(source)
 
     def transaction(self) -> StateTransaction:
-        if self._closed:
-            raise StoreStateError(
-                "The state manager is closed"
-            )
+        return StateTransaction(self)
 
-        return StateTransaction(
-            self,
+    def enter_transaction(self, transaction: StateTransaction) -> object:
+        if self._transaction.get() is not None:
+            raise RuntimeError("Nested State transactions are not supported")
+
+        return self._transaction.set(transaction)
+
+    def leave_transaction(self, token: object) -> None:
+        self._transaction.reset(cast(Token[StateTransaction | None], token))
+
+    def request_transaction(self, transaction: StateTransaction) -> None:
+        raise NotImplementedError(
+            "StoreClient transaction request is the next branch"
         )
 
-    def close(self) -> None:
-        if self._closed:
-            return
+    def abort_transaction(
+        self, transaction: StateTransaction, error: BaseException
+    ) -> None:
+        self._rollback_transaction(transaction)
 
-        self._closed = True
+        failure = _failure_from_exception(error)
 
-        for view in tuple(self._views):
-            view.dispose()
+        self._fail_transaction_participants(transaction, failure)
 
-        for binding in tuple(
-            self._signal_bindings.values()
-        ):
-            self._dispose_signal_binding(
-                binding,
-            )
+        transaction.operation.fail(failure)
 
-        self._signal_bindings.clear()
+    def request_set(
+        self, state: State[Any], values: dict[str, Any], *, optimistic: bool
+    ) -> StateOperation:
+        if state.row_id is not None:
+            raise ValueError("request_set() requires a State without a row ID")
 
-        for task in tuple(self._tasks):
-            task.cancel()
+        transaction = self._transaction.get()
 
-        self._tasks.clear()
-        self._direct_views.clear()
-        self.synced = False
+        if transaction is not None:
+            return self._transaction_set(transaction, state, values)
 
-    # -------------------------------------------------
-    # State creation
-    # -------------------------------------------------
+        return self._request_set(
+            state, values, optimistic=optimistic, row=False
+        )
 
-    def _create_single_state(
+    def request_setrow(
+        self, state: State[Any], values: dict[str, Any], *, optimistic: bool
+    ) -> StateOperation:
+        if state.row_id is None:
+            raise ValueError("request_setrow() requires a State row ID")
+
+        transaction = self._transaction.get()
+
+        if transaction is not None:
+            return self._transaction_setrow(transaction, state, values)
+
+        return self._request_set(
+            state, values, optimistic=optimistic, row=True
+        )
+
+    def request_insert(
         self,
-        schema_type: type[SingleSchemaT],
-    ) -> SingleSchemaT:
-        self._register_schema_type(
-            schema_type,
-        )
-
-        schema = self._schema(
-            schema_type,
-        )
-
-        existing = self._direct_views.get(
-            schema.name,
-        )
-
-        if (
-            existing is not None
-            and not existing.disposed
-        ):
-            if not isinstance(
-                existing,
-                SingleStateView,
-            ):
-                raise StoreStateError(
-                    (
-                        f"State view type mismatch for "
-                        f"{schema.name}"
-                    )
-                )
-
-            return cast(
-                SingleSchemaT,
-                existing.entity,
-            )
-
-        entity = self._entity(
-            schema,
-            None,
-        )
-
-        view = SingleStateView(
-            manager=self,
-            schema=schema,
-            entity=entity,
-        )
-
-        self._views.add(
-            view,
-        )
-
-        self._direct_views[
-            schema.name
-        ] = view
-
-        self._start_view(
-            view,
-        )
-
-        return cast(
-            SingleSchemaT,
-            entity,
-        )
-
-    def _create_many_state(
-        self,
-        schema_type: type[ManySchemaT],
-    ) -> CollectionState[ManySchemaT]:
-        self._register_schema_type(
-            schema_type,
-        )
-
-        schema = self._schema(
-            schema_type,
-        )
-
-        existing = self._direct_views.get(
-            schema.name,
-        )
-
-        if (
-            existing is not None
-            and not existing.disposed
-        ):
-            if not isinstance(
-                existing,
-                CollectionState,
-            ):
-                raise StoreStateError(
-                    (
-                        f"State view type mismatch for "
-                        f"{schema.name}"
-                    )
-                )
-
-            return cast(
-                CollectionState[ManySchemaT],
-                existing,
-            )
-
-        query = Query(
-            schema_type,
-        )
-
-        collection = CollectionState(
-            manager=self,
-            schema=schema,
-            query=query,
-            mutable=True,
-        )
-
-        self._views.add(
-            collection,
-        )
-
-        self._direct_views[
-            schema.name
-        ] = collection
-
-        self._start_view(
-            collection,
-        )
-
-        return collection
-
-    def _create_query_state(
-        self,
-        query: Query[ManySchemaT],
-    ) -> CollectionState[ManySchemaT]:
-        if any(
-            join.alias is not None
-            for join in query.joins
-        ):
-            raise ValueError(
-                (
-                    "Live state joins use schema relationship "
-                    "names and do not support aliases"
-                )
-            )
-
-        schema_type = self._query_schema_type(
-            query,
-        )
-
-        self._register_schema_type(
-            schema_type,
-        )
-
-        schema = self._schema(
-            schema_type,
-        )
-
-        collection: CollectionState[ManySchemaT] = CollectionState(
-            manager=self,
-            schema=schema,
-            query=query,
-            mutable=False,
-        )
-
-        self._views.add(
-            collection,
-        )
-
-        self._start_view(
-            collection,
-        )
-
-        return collection
-
-    # -------------------------------------------------
-    # Query source resolution
-    # -------------------------------------------------
-
-    def _query_schema_type(
-        self,
-        query: Query[ManySchemaT],
-    ) -> type[ManySchemaT]:
-        source = query.source
-
-        if (
-            isinstance(source, type)
-            and issubclass(source, ManySchema)
-        ):
-            return cast(
-                type[ManySchemaT],
-                source,
-            )
-
-        if isinstance(source, str):
-            schema_type = self._find_schema_type(
-                source,
-            )
-        elif isinstance(source, Address):
-            schema_type = self._schema_type_for_address(
-                source,
-            )
-        else:
-            raise TypeError(
-                "Query source must reference a ManySchema"
-            )
-
-        if not issubclass(
-            schema_type,
-            ManySchema,
-        ):
-            raise TypeError(
-                "Query source must reference a ManySchema"
-            )
-
-        return cast(
-            type[ManySchemaT],
-            schema_type,
-        )
-
-    # -------------------------------------------------
-    # Schema/entity management
-    # -------------------------------------------------
-
-    def _schema(
-        self,
-        schema_type: type[SchemaT],
-    ) -> SchemaT:
-        name = schema_type.__name__
-
-        schema = self._schemas.get(
-            name,
-        )
-
-        if schema is None:
-            schema = schema_type()
-
-            self._schemas[
-                name
-            ] = schema
-
-            self._schema_types[
-                name
-            ] = schema_type
-
-        return cast(
-            SchemaT,
-            schema,
-        )
-
-    def _entity(
-        self,
-        schema: SchemaT,
-        row_id: str | None,
-    ) -> EntityState[SchemaT]:
-        key = (
-            schema.name,
-            row_id,
-        )
-
-        entity = self._entities.get(
-            key,
-        )
-
-        if entity is not None:
-            return cast(
-                EntityState[SchemaT],
-                entity,
-            )
-
-        schema_type = self._schema_types.get(
-            schema.name,
-        )
-
-        if schema_type is None:
-            schema_type = self._find_schema_type(
-                schema.name,
-            )
-
-            self._register_schema_type(
-                schema_type,
-            )
-
-        state_type = entity_type(
-            cast(
-                type[SchemaT],
-                schema_type,
-            )
-        )
-
-        entity = state_type(
-            manager=self,
-            schema=schema,
-            row_id=row_id,
-        )
-
-        address = self._addresses.get(
-            schema.name,
-        )
-
-        if address is not None:
-            entity._address = address
-
-        self._entities[
-            key
-        ] = cast(
-            EntityState[Any],
-            entity,
-        )
-
-        return entity
-
-    # -------------------------------------------------
-    # Hydration
-    # -------------------------------------------------
-
-    def _hydrate_entity(
-        self,
-        entity: EntityState[Any],
+        collection: CollectionState[Any],
+        row_id: str,
         values: dict[str, Any],
-        query: Query[Any],
-        visited: set[
-            tuple[str, str | None]
-        ]
-        | None = None,
-    ) -> None:
-        seen = (
-            visited
-            if visited is not None
-            else set()
-        )
-
-        key = (
-            entity.schema.name,
-            entity.row_id,
-        )
-
-        if key in seen:
-            return
-
-        seen.add(
-            key,
-        )
-
-        entity._hydrate(
-            values,
-        )
-
-        schema = entity.schema
-
-        for (
-            field_name,
-            field,
-        ) in schema.foreign_key_fields().items():
-            relation = field.relation_name(
-                field_name,
-            )
-
-            if (
-                relation == field_name
-                or relation not in values
-            ):
-                continue
-
-            joined = values.get(
-                relation,
-            )
-
-            foreign_id = values.get(
-                field_name,
-            )
-
-            if (
-                joined is None
-                or foreign_id is None
-            ):
-                entity._set_relation(
-                    relation,
-                    None,
-                )
-
-                continue
-
-            if not isinstance(
-                joined,
-                Mapping,
-            ):
-                continue
-
-            schema_type = self._find_schema_type(
-                field.schema,
-            )
-
-            target_schema = self._schema(
-                schema_type,
-            )
-
-            self._observe_schema(
-                target_schema,
-            )
-
-            target = self._entity(
-                target_schema,
-                str(foreign_id),
-            )
-
-            self._hydrate_entity(
-                target,
-                dict(joined),
-                query,
-                seen,
-            )
-
-            entity._set_relation(
-                relation,
-                target,
-            )
-
-        seen.discard(
-            key,
-        )
-
-    # -------------------------------------------------
-    # Query changes
-    # -------------------------------------------------
-
-    def _apply_query_change(
-        self,
-        view: CollectionState[Any],
-        change: QueryChangeSet,
-    ) -> None:
-        if view.disposed:
-            return
-
-        for event in change.events:
-            if isinstance(
-                event,
-                QueryInsertEvent,
-            ):
-                entity = self._entity(
-                    view.schema,
-                    event.id,
-                )
-
-                self._hydrate_entity(
-                    entity,
-                    dict(event.new_value),
-                    view.query,
-                )
-
-                view._insert_entity(
-                    entity,
-                    notify=True,
-                )
-
-                continue
-
-            if isinstance(
-                event,
-                QueryUpdateEvent,
-            ):
-                entity = self._entity(
-                    view.schema,
-                    event.id,
-                )
-
-                self._hydrate_entity(
-                    entity,
-                    dict(event.new_value),
-                    view.query,
-                )
-
-                if event.id not in view.rows:
-                    view._insert_entity(
-                        entity,
-                        notify=True,
-                    )
-
-                continue
-
-            if isinstance(
-                event,
-                QueryRemoveEvent,
-            ):
-                view._remove_entity(
-                    event.id,
-                    notify=True,
-                )
-
-    # -------------------------------------------------
-    # Synchronization
-    # -------------------------------------------------
-
-    def _set_view_synced(
-        self,
-        view: View,
-        value: bool,
-    ) -> None:
-        if view.disposed:
-            self._recalculate_synced()
-            return
-
-        view.synced = value
-
-        for entity in self._view_entities.get(
-            view,
-            (),
-        ):
-            self._update_entity_synced(
-                entity,
-            )
-
-        self._recalculate_synced()
-
-    def _register_entity_view(
-        self,
-        view: View,
-        entity: EntityState[Any],
-    ) -> None:
-        self._view_entities[
-            view
-        ].add(
-            entity,
-        )
-
-        self._entity_views[
-            entity
-        ].add(
-            view,
-        )
-
-        self._update_entity_synced(
-            entity,
-        )
-
-    def _unregister_entity_view(
-        self,
-        view: View,
-        entity: EntityState[Any],
-    ) -> None:
-        self._view_entities.get(
-            view,
-            set(),
-        ).discard(
-            entity,
-        )
-
-        views = self._entity_views.get(
-            entity,
-        )
-
-        if views is not None:
-            views.discard(
-                view,
-            )
-
-            if not views:
-                self._entity_views.pop(
-                    entity,
-                    None,
-                )
-
-        self._update_entity_synced(
-            entity,
-        )
-
-    def _update_entity_synced(
-        self,
-        entity: EntityState[Any],
-    ) -> None:
-        views = self._entity_views.get(
-            entity,
-            (),
-        )
-
-        entity.synced = any(
-            view.synced
-            for view in views
-        )
-
-    def _recalculate_synced(self) -> None:
-        active = [
-            view
-            for view in self._views
-            if not view.disposed
-        ]
-
-        self.synced = (
-            bool(active)
-            and all(
-                view.synced
-                for view in active
-            )
-        )
-
-    # -------------------------------------------------
-    # Update operations
-    # -------------------------------------------------
-
-    def _request_update(
-        self,
-        entity: EntityState[Any],
-        values: Mapping[str, Any],
-        *,
-        optimistic: bool,
-        previous: Mapping[str, Any] | None = None,
-    ) -> StateOperation:
-        checked = dict(
-            values,
-        )
-
-        old_values = (
-            dict(previous)
-            if previous is not None
-            else {
-                name: deepcopy(
-                    getattr(
-                        entity,
-                        name,
-                    )
-                )
-                for name in checked
-            }
-        )
-
-        transaction = self._active_transaction.get()
-
-        try:
-            entity.schema.challenge_fields(
-                checked,
-            )
-        except Exception as exc:
-            if optimistic:
-                entity._restore_assignment(
-                    old_values,
-                )
-
-            if transaction is not None:
-                self._attach_operation(
-                    transaction.operation,
-                    entity=entity,
-                )
-
-                transaction.fail(
-                    exc,
-                )
-
-                return transaction.operation
-
-            operation = StateOperation(
-                StateOperationKind.UPDATE,
-                schema=entity.schema.name,
-                row_id=entity.row_id,
-                requested=checked,
-                previous=old_values,
-                optimistic=optimistic,
-            )
-
-            self._attach_operation(
-                operation,
-                entity=entity,
-            )
-
-            self._finish_operation(
-                operation,
-                self._failed_result(
-                    exc,
-                ),
-            )
-
-            return operation
-
-        if transaction is not None:
-            operation = transaction.operation
-
-            self._attach_operation(
-                operation,
-                entity=entity,
-            )
-
-            entity._begin_overlay(
-                operation,
-                checked,
-            )
-
-            try:
-                transaction.add_update(
-                    entity,
-                    checked,
-                )
-            except Exception as exc:
-                entity._discard_overlay(
-                    operation,
-                    set(checked),
-                )
-
-                transaction.fail(
-                    exc,
-                )
-
-            return operation
-
-        operation = StateOperation(
-            StateOperationKind.UPDATE,
-            schema=entity.schema.name,
-            row_id=entity.row_id,
-            requested=checked,
-            previous=old_values,
-            optimistic=optimistic,
-        )
-
-        self._attach_operation(
-            operation,
-            entity=entity,
-        )
-
-        if optimistic:
-            entity._begin_overlay(
-                operation,
-                checked,
-            )
-
-        self._submit_update(
-            operation,
-            entity,
-            checked,
-        )
-
-        return operation
-
-    # -------------------------------------------------
-    # Insert operations
-    # -------------------------------------------------
-
-    def _request_insert(
-        self,
-        collection: CollectionState[Any],
-        row_id: str,
-        values: Mapping[str, Any],
         *,
         optimistic: bool,
     ) -> StateOperation:
-        transaction = self._active_transaction.get()
-
-        built = collection.schema.defaults()
-
-        built.update(
-            dict(values),
-        )
-
-        try:
-            collection.schema.challenge_fields(
-                built,
-            )
-        except Exception as exc:
-            if transaction is not None:
-                self._attach_operation(
-                    transaction.operation,
-                    collection=collection,
-                )
-
-                transaction.fail(
-                    exc,
-                )
-
-                return transaction.operation
-
-            operation = StateOperation(
-                StateOperationKind.INSERT,
-                schema=collection.schema.name,
-                row_id=row_id,
-                requested=built,
-                optimistic=optimistic,
-            )
-
-            self._attach_operation(
-                operation,
-                collection=collection,
-            )
-
-            self._finish_operation(
-                operation,
-                self._failed_result(
-                    exc,
-                ),
-            )
-
-            return operation
-
-        entity = self._entity(
-            collection.schema,
-            row_id,
-        )
+        transaction = self._transaction.get()
 
         if transaction is not None:
-            operation = transaction.operation
-
-            self._attach_operation(
-                operation,
-                entity=entity,
-                collection=collection,
+            return self._transaction_insert(
+                transaction, collection, row_id, values
             )
 
-            entity._begin_overlay(
-                operation,
-                built,
-            )
-
-            try:
-                transaction.add_insert(
-                    collection,
-                    entity,
-                    built,
-                )
-            except Exception as exc:
-                entity._discard_overlay(
-                    operation,
-                )
-
-                transaction.fail(
-                    exc,
-                )
-
-                return operation
-
-            collection._optimistic_insertions.add(
-                row_id,
-            )
-
-            collection._insert_entity(
-                entity,
-                notify=True,
-                force=True,
-            )
-
-            return operation
-
-        operation = StateOperation(
-            StateOperationKind.INSERT,
-            schema=collection.schema.name,
-            row_id=row_id,
-            requested=built,
-            optimistic=optimistic,
+        raise NotImplementedError(
+            "StoreClient insert request is the next collection branch"
         )
 
-        self._attach_operation(
-            operation,
-            entity=entity,
-            collection=collection,
-        )
-
-        if optimistic:
-            entity._begin_overlay(
-                operation,
-                built,
-            )
-
-            collection._optimistic_insertions.add(
-                row_id,
-            )
-
-            collection._insert_entity(
-                entity,
-                notify=True,
-                force=True,
-            )
-
-        self._submit_insert(
-            operation,
-            collection,
-            entity,
-            built,
-        )
-
-        return operation
-
-    # -------------------------------------------------
-    # Remove operations
-    # -------------------------------------------------
-
-    def _request_remove(
+    def request_remove(
         self,
         collection: CollectionState[Any],
         row_id: str,
         *,
         optimistic: bool,
     ) -> StateOperation:
-        entity = cast(
-            EntityState[Any],
-            collection[row_id],
-        )
-
-        transaction = self._active_transaction.get()
+        transaction = self._transaction.get()
 
         if transaction is not None:
-            operation = transaction.operation
+            return self._transaction_remove(transaction, collection, row_id)
 
-            self._attach_operation(
-                operation,
-                entity=entity,
-                collection=collection,
-            )
-
-            try:
-                cancelled = transaction.add_remove(
-                    collection,
-                    entity,
-                )
-            except Exception as exc:
-                transaction.fail(
-                    exc,
-                )
-
-                return operation
-
-            entity._discard_overlay(
-                operation,
-            )
-
-            if cancelled is StateOperationKind.INSERT:
-                collection._optimistic_insertions.discard(
-                    row_id,
-                )
-
-                collection._remove_entity(
-                    row_id,
-                    notify=True,
-                    force=True,
-                )
-
-                return operation
-
-            collection._optimistic_removals[
-                row_id
-            ] = entity
-
-            collection._remove_entity(
-                row_id,
-                notify=True,
-                force=True,
-            )
-
-            return operation
-
-        operation = StateOperation(
-            StateOperationKind.REMOVE,
-            schema=collection.schema.name,
-            row_id=row_id,
-            previous={
-                name: deepcopy(
-                    getattr(
-                        entity,
-                        name,
-                    )
-                )
-                for name
-                in entity.schema.field_names()
-            },
-            optimistic=optimistic,
+        raise NotImplementedError(
+            "StoreClient remove request is the next collection branch"
         )
 
-        self._attach_operation(
-            operation,
-            entity=entity,
-            collection=collection,
+    def request_signal(
+        self, state: State[Any], signal: str, data: Any
+    ) -> StateOperation:
+        transaction = self._transaction.get()
+
+        if transaction is not None:
+            return self._transaction_signal(transaction, state, signal, data)
+
+        raise NotImplementedError(
+            "StoreClient signal request is the next signal branch"
         )
+
+    def _request_set(
+        self,
+        state: State[Any],
+        values: dict[str, Any],
+        *,
+        optimistic: bool,
+        row: bool,
+    ) -> StateOperation:
+        if not values:
+            raise ValueError("State set requires at least one field")
+
+        copied = StateData.copy_values(values)
+        fields = frozenset(copied)
+        old = state.visible_snapshot(fields)
+
+        operation = StateOperation("set", optimistic=optimistic)
+        context = _SetContext(
+            state=state, operation=operation, values=copied, old=old
+        )
+
+        self._sets[operation.id] = context
 
         if optimistic:
-            collection._optimistic_removals[
-                row_id
-            ] = entity
+            changed = state.stage_overlay(operation, copied)
+            state.publish(changed)
 
-            collection._remove_entity(
-                row_id,
-                notify=True,
-                force=True,
+        for key, value in copied.items():
+            state.begin_operation(operation, key, old.get(key), value)
+
+        try:
+            if row:
+                future = self._client.setrow(
+                    operation_id=operation.id,
+                    schema=state.schema.name,
+                    row_id=cast(str, state.row_id),
+                    values=copied,
+                )
+            else:
+                future = self._client.set(
+                    operation_id=operation.id,
+                    schema=state.schema.name,
+                    values=copied,
+                )
+        except BaseException as error:
+            self._sets.pop(operation.id, None)
+            self._fail_set(context, _failure_from_exception(error))
+            return operation
+
+        future.add_done_callback(
+            lambda completed: self._complete_set(
+                operation.id, completed, row=row
             )
-
-        self._submit_remove(
-            operation,
-            collection,
-            entity,
         )
 
         return operation
 
-    # -------------------------------------------------
-    # Signal operations
-    # -------------------------------------------------
-
-    def _request_signal(
+    def _transaction_set(
         self,
-        entity: EntityState[Any],
+        transaction: StateTransaction,
+        state: State[Any],
+        values: dict[str, Any],
+    ) -> StateOperation:
+        copied, old = _set_values(state, values)
+
+        transaction.add_set(state, old, copied)
+        self._stage_transaction_set(transaction, state, old, copied)
+
+        return transaction.operation
+
+    def _transaction_setrow(
+        self,
+        transaction: StateTransaction,
+        state: State[Any],
+        values: dict[str, Any],
+    ) -> StateOperation:
+        copied, old = _set_values(state, values)
+
+        transaction.add_setrow(state, old, copied)
+        self._stage_transaction_set(transaction, state, old, copied)
+
+        return transaction.operation
+
+    def _stage_transaction_set(
+        self,
+        transaction: StateTransaction,
+        state: State[Any],
+        old: dict[str, Any],
+        new: dict[str, Any],
+    ) -> None:
+        changed = state.stage_overlay(transaction.operation, new)
+        state.publish(changed)
+
+        for key, value in new.items():
+            state.begin_operation(
+                transaction.operation, key, old.get(key), value
+            )
+
+    def _transaction_insert(
+        self,
+        transaction: StateTransaction,
+        collection: CollectionState[Any],
+        row_id: str,
+        values: dict[str, Any],
+    ) -> StateOperation:
+        prepared = _record_values(collection, values)
+
+        delta = collection.stage_enter(row_id)
+        state = collection[row_id]
+
+        transaction.add_insert(collection, state, prepared)
+
+        changed = state.stage_overlay(transaction.operation, prepared)
+        state.publish(changed)
+
+        collection.publish_membership(delta)
+        collection.begin_operation(
+            transaction.operation, row_id, None, prepared
+        )
+
+        return transaction.operation
+
+    def _transaction_remove(
+        self,
+        transaction: StateTransaction,
+        collection: CollectionState[Any],
+        row_id: str,
+    ) -> StateOperation:
+        state = collection[row_id]
+        fields = frozenset(state.fields)
+        old = state.visible_snapshot(fields)
+
+        cancelled_insert = transaction.add_remove(collection, state, old)
+
+        changed = state.discard_overlay(transaction.operation)
+        state.publish(changed)
+
+        delta = collection.stage_leave(row_id)
+        collection.publish_membership(delta)
+
+        if not cancelled_insert:
+            collection.begin_operation(
+                transaction.operation, row_id, old, None
+            )
+
+        return transaction.operation
+
+    def _transaction_signal(
+        self,
+        transaction: StateTransaction,
+        state: State[Any],
         signal: str,
         data: Any,
     ) -> StateOperation:
-        transaction = self._active_transaction.get()
+        copied = StateData.copy(data)
 
-        try:
-            entity.schema.get_signal(
-                signal,
-            )
-        except Exception as exc:
-            if transaction is not None:
-                self._attach_operation(
-                    transaction.operation,
-                    entity=entity,
-                )
+        transaction.add_signal(state, signal, copied)
+        state.begin_operation(transaction.operation, signal, None, copied)
 
-                transaction.fail(
-                    exc,
-                )
+        return transaction.operation
 
-                return transaction.operation
+    def _rollback_transaction(self, transaction: StateTransaction) -> None:
+        for action in reversed(transaction.actions):
+            self._rollback_action(transaction, action)
 
-            operation = StateOperation(
-                StateOperationKind.SIGNAL,
-                schema=entity.schema.name,
-                row_id=entity.row_id,
-                signal=signal,
-                requested=data,
-            )
-
-            self._attach_operation(
-                operation,
-                entity=entity,
-            )
-
-            self._finish_operation(
-                operation,
-                self._failed_result(
-                    exc,
-                ),
-            )
-
-            return operation
-
-        if transaction is not None:
-            operation = transaction.operation
-
-            self._attach_operation(
-                operation,
-                entity=entity,
-            )
-
-            transaction.add_signal(
-                entity,
-                signal,
-                data,
-            )
-
-            return operation
-
-        operation = StateOperation(
-            StateOperationKind.SIGNAL,
-            schema=entity.schema.name,
-            row_id=entity.row_id,
-            signal=signal,
-            requested=data,
-        )
-
-        self._attach_operation(
-            operation,
-            entity=entity,
-        )
-
-        self._submit_signal(
-            operation,
-            entity,
-            signal,
-            data,
-        )
-
-        return operation
-
-    # -------------------------------------------------
-    # Operation lifecycle
-    # -------------------------------------------------
-
-    def _attach_operation(
-        self,
-        operation: StateOperation,
-        *,
-        entity: EntityState[Any] | None = None,
-        collection: CollectionState[Any] | None = None,
-    ) -> None:
-        operation._attach(
-            self,
-        )
-
-        if entity is not None:
-            operation._attach(
-                entity,
-            )
-
-            for view in self._entity_views.get(
-                entity,
-                (),
-            ):
-                operation._attach(
-                    view,
-                )
-
-        if collection is not None:
-            operation._attach(
-                collection,
-            )
-
-    def _complete_update(
-        self,
-        operation: StateOperation,
-        entity: EntityState[Any],
-        values: dict[str, Any],
-        result: StateResult,
-    ) -> None:
-        if operation.optimistic:
-            entity._resolve_overlay(
-                operation,
-                accepted=result.ok,
-                values=values,
-            )
-
-        elif result.ok:
-            entity._apply_confirmed(
-                values,
-            )
-
-        self._finish_operation(
-            operation,
-            result,
-        )
-
-    def _complete_insert(
-        self,
-        operation: StateOperation,
-        collection: CollectionState[Any],
-        entity: EntityState[Any],
-        values: dict[str, Any],
-        result: StateResult,
-    ) -> None:
-        row_id = cast(
-            str,
-            operation.row_id,
-        )
-
-        if operation.optimistic:
-            entity._resolve_overlay(
-                operation,
-                accepted=result.ok,
-                values=values,
-            )
-
-            collection._optimistic_insertions.discard(
-                row_id,
-            )
-
-        if result.ok:
-            entity._hydrate(
-                values,
-            )
-
-            collection._insert_entity(
-                entity,
-                notify=True,
-                force=True,
-            )
-
-        elif operation.optimistic:
-            collection._remove_entity(
-                row_id,
-                notify=True,
-                force=True,
-            )
-
-        self._finish_operation(
-            operation,
-            result,
-        )
-
-    def _complete_remove(
-        self,
-        operation: StateOperation,
-        collection: CollectionState[Any],
-        entity: EntityState[Any],
-        result: StateResult,
-    ) -> None:
-        row_id = cast(
-            str,
-            operation.row_id,
-        )
-
-        if result.ok:
-            collection._optimistic_removals.pop(
-                row_id,
-                None,
-            )
-
-            collection._remove_entity(
-                row_id,
-                notify=True,
-                force=True,
-            )
-
-        elif operation.optimistic:
-            retained = (
-                collection._optimistic_removals.pop(
-                    row_id,
-                    entity,
-                )
-            )
-
-            collection._insert_entity(
-                retained,
-                notify=True,
-                force=True,
-            )
-
-        self._finish_operation(
-            operation,
-            result,
-        )
-
-    def _finish_operation(
-        self,
-        operation: StateOperation,
-        result: StateResult,
-    ) -> None:
-        operation._finish(
-            result,
-        )
-
-    # -------------------------------------------------
-    # Signals
-    # -------------------------------------------------
-
-    def _dispatch_signal(
-        self,
-        event: SignalEvent[Any],
-    ) -> None:
-        for entity in tuple(
-            self._entities.values()
-        ):
-            if entity.address != event.address:
-                continue
-
-            if entity.row_id != event.id:
-                continue
-
-            try:
-                entity.dispatch(
-                    f"on_{event.signal}",
-                    event,
-                )
-            except Exception:
-                logger.exception(
-                    (
-                        "State signal callback failed: "
-                        "schema=%s row_id=%s signal=%s"
-                    ),
-                    entity.schema.name,
-                    entity.row_id,
-                    event.signal,
-                )
-
-    # -------------------------------------------------
-    # Dispatching
-    # -------------------------------------------------
-
-    def _dispatch(
-        self,
-        callback: Callable[..., Any],
-        *args: Any,
-    ) -> None:
-        if self._dispatcher is None:
-            callback(
-                *args,
-            )
-
-            return
-
-        self._dispatcher(
-            callback,
-            *args,
-        )
-
-    # -------------------------------------------------
-    # Tasks
-    # -------------------------------------------------
-
-    def _track_task(
-        self,
-        coroutine: Any,
-    ) -> asyncio.Task[Any]:
-        try:
-            task = asyncio.create_task(
-                coroutine,
-            )
-        except RuntimeError:
-            close = getattr(
-                coroutine,
-                "close",
-                None,
-            )
-
-            if callable(close):
-                close()
-
-            raise StoreStateError(
-                (
-                    "Remote state requires a running "
-                    "asyncio event loop"
-                )
-            ) from None
-
-        self._tasks.add(
-            task,
-        )
-
-        task.add_done_callback(
-            self._task_done,
-        )
-
-        return task
-
-    def _task_done(
-        self,
-        task: asyncio.Task[Any],
-    ) -> None:
-        self._tasks.discard(
-            task,
-        )
-
-        if task.cancelled():
-            return
-
-        error = task.exception()
-
-        if error is not None:
-            logger.error(
-                "State background task failed: %s",
-                error,
-                exc_info=(
-                    type(error),
-                    error,
-                    error.__traceback__,
-                ),
-            )
-
-    # -------------------------------------------------
-    # Schema discovery
-    # -------------------------------------------------
-
-    def _register_schema_type(
-        self,
-        schema_type: type[Schema],
-    ) -> None:
-        self._schema_types[
-            schema_type.__name__
-        ] = schema_type
-
-    def _find_schema_type(
-        self,
-        name: str,
-    ) -> type[Schema]:
-        known = self._schema_types.get(
-            name,
-        )
-
-        if known is not None:
-            return known
-
-        for schema_type in _schema_subclasses(
-            Schema,
-        ):
-            if schema_type.__name__ == name:
-                self._register_schema_type(
-                    schema_type,
-                )
-
-                return schema_type
-
-        raise StoreStateError(
-            (
-                f"Schema class {name!r} is not "
-                "loaded in this process"
-            )
-        )
-
-    # -------------------------------------------------
-    # Transactions
-    # -------------------------------------------------
-
-    def _enter_transaction(
-        self,
-        transaction: StateTransaction,
-    ) -> Any:
-        active = self._active_transaction.get()
-
-        if active is not None:
-            raise RuntimeError(
-                "Nested state transactions are not supported"
-            )
-
-        return self._active_transaction.set(
-            transaction,
-        )
-
-    def _leave_transaction(
-        self,
-        token: Any,
-    ) -> None:
-        self._active_transaction.reset(
-            token,
-        )
-
-    def _cancel_transaction(
-        self,
-        transaction: StateTransaction,
-        error: BaseException,
-    ) -> None:
-        self._complete_state_transaction(
-            transaction,
-            self._failed_result(
-                error,
-            ),
-        )
-
-    def _complete_state_transaction(
-        self,
-        transaction: StateTransaction,
-        result: StateResult,
+    def _rollback_action(
+        self, transaction: StateTransaction, action: StateAction
     ) -> None:
         operation = transaction.operation
 
+        if isinstance(action, (SetAction, SetRowAction)):
+            changed = action.state.discard_overlay(operation)
+            action.state.publish(changed)
+            return
+
+        if isinstance(action, InsertAction):
+            changed = action.state.discard_overlay(operation)
+            action.state.publish(changed)
+
+            delta = action.collection.stage_leave(
+                cast(str, action.state.row_id)
+            )
+            action.collection.publish_membership(delta)
+            return
+
+        if isinstance(action, RemoveAction):
+            row_id = cast(str, action.state.row_id)
+            delta = action.collection.stage_enter(row_id)
+            action.collection.publish_membership(delta)
+            return
+
+        if isinstance(action, SignalAction):
+            return
+
+        raise TypeError("Unsupported State transaction action")
+
+    def _fail_transaction_participants(
+        self, transaction: StateTransaction, failure: StateFailure
+    ) -> None:
+        operation = transaction.operation
+
+        states: set[State[Any]] = set()
+        collections: set[CollectionState[Any]] = set()
+
         for action in transaction.actions:
-            entity = action.entity
-
-            if action.kind is StateOperationKind.UPDATE:
-                entity._resolve_overlay(
-                    operation,
-                    accepted=result.ok,
-                    values=action.values,
-                )
-
+            if isinstance(action, (SetAction, SetRowAction, SignalAction)):
+                states.add(action.state)
                 continue
 
-            if action.kind is StateOperationKind.SIGNAL:
-                continue
+            collections.add(action.collection)
 
-            collection = action.collection
+        for state in states:
+            state.fail_operation(operation, None, None, None, failure)
 
-            if collection is None:
-                continue
+        for collection in collections:
+            collection.fail_operation(operation, "", None, None, failure)
 
-            row_id = cast(
-                str,
-                entity.row_id,
+    def _complete_set(
+        self,
+        operation_id: str,
+        future: asyncio.Future[ResponseItem],
+        *,
+        row: bool,
+    ) -> None:
+        context = self._sets.pop(operation_id, None)
+
+        if context is None:
+            return
+
+        if future.cancelled():
+            self._fail_set(
+                context,
+                StateFailure(
+                    type="network", message="Store set was cancelled"
+                ),
+            )
+            return
+
+        try:
+            response = future.result()
+        except BaseException as error:
+            self._fail_set(context, _failure_from_exception(error))
+            return
+
+        if isinstance(response, FailureResponse):
+            self._fail_set(
+                context,
+                _state_failure(response.failure),
+                key=_failure_key(response.failure, context),
+            )
+            return
+
+        expected = SetRowResponse if row else SetResponse
+
+        if not isinstance(response, expected):
+            self._fail_set(
+                context,
+                StateFailure(
+                    type="internal",
+                    message="Store returned an invalid set response",
+                ),
+            )
+            return
+
+        if response.operation_id != context.operation.id:
+            self._fail_set(
+                context,
+                StateFailure(
+                    type="internal",
+                    message="Store set operation ID does not match",
+                ),
+            )
+            return
+
+        canonical = dict(response.values)
+        missing = set(context.values) - set(canonical)
+
+        if missing:
+            self._fail_set(
+                context,
+                StateFailure(
+                    type="internal",
+                    message="Store set response is missing fields",
+                ),
+            )
+            return
+
+        self._succeed_set(context, canonical)
+
+    def _succeed_set(
+        self, context: _SetContext, canonical: dict[str, Any]
+    ) -> None:
+        state = context.state
+        operation = context.operation
+
+        changed = set(state.stage_canonical(canonical))
+        changed.update(state.discard_overlay(operation))
+
+        state.publish(changed)
+
+        for key in context.values:
+            state.succeed_operation(
+                operation, key, context.old.get(key), canonical.get(key)
             )
 
-            if action.kind is StateOperationKind.INSERT:
-                entity._resolve_overlay(
-                    operation,
-                    accepted=result.ok,
-                    values=action.values,
-                )
+        operation.succeed()
 
-                collection._optimistic_insertions.discard(
-                    row_id,
-                )
-
-                if result.ok:
-                    entity._hydrate(
-                        action.values or {},
-                    )
-
-                    collection._insert_entity(
-                        entity,
-                        notify=True,
-                        force=True,
-                    )
-
-                else:
-                    collection._remove_entity(
-                        row_id,
-                        notify=True,
-                        force=True,
-                    )
-
-                continue
-
-            if result.ok:
-                collection._optimistic_removals.pop(
-                    row_id,
-                    None,
-                )
-
-                collection._remove_entity(
-                    row_id,
-                    notify=True,
-                    force=True,
-                )
-
-            else:
-                retained = (
-                    collection._optimistic_removals.pop(
-                        row_id,
-                        entity,
-                    )
-                )
-
-                collection._insert_entity(
-                    retained,
-                    notify=True,
-                    force=True,
-                )
-
-        self._finish_operation(
-            operation,
-            result,
-        )
-
-    # -------------------------------------------------
-    # Address/schema observation
-    # -------------------------------------------------
-
-    def _observe_schema(
+    def _fail_set(
         self,
-        schema: Schema,
+        context: _SetContext,
+        failure: StateFailure,
+        *,
+        key: str | None = None,
     ) -> None:
-        """Prepare address and signal support for joined schemas."""
+        state = context.state
+        operation = context.operation
 
-    def _update_address(
-        self,
-        schema_name: str,
-        address: Address[Any],
-    ) -> None:
-        self._addresses[
-            schema_name
-        ] = address
+        changed = state.discard_overlay(operation)
+        state.publish(changed)
 
-        for (
-            name,
-            _row_id,
-        ), entity in tuple(
-            self._entities.items()
-        ):
-            if name == schema_name:
-                entity._address = address
+        if key is None and len(context.values) == 1:
+            key = next(iter(context.values))
 
-    # -------------------------------------------------
-    # Disposal
-    # -------------------------------------------------
+        old = context.old.get(key) if key is not None else None
+        new = context.values.get(key) if key is not None else None
 
-    def _dispose_view(
-        self,
-        view: View,
-    ) -> None:
-        self._views.discard(
-            view,
-        )
-
-        if (
-            self._direct_views.get(
-                view.schema.name,
-            )
-            is view
-        ):
-            self._direct_views.pop(
-                view.schema.name,
-                None,
-            )
-
-        for entity in tuple(
-            self._view_entities.pop(
-                view,
-                (),
-            )
-        ):
-            self._unregister_entity_view(
-                view,
-                entity,
-            )
-
-        self._dispose_subscription(
-            view._subscription,
-        )
-
-        self._recalculate_synced()
-
-    # -------------------------------------------------
-    # Errors
-    # -------------------------------------------------
-
-    @staticmethod
-    def _failed_result(
-        error: BaseException,
-    ) -> StateResult:
-        public_error: Any = error
-
-        if isinstance(
-            error,
-            StoreOperationError,
-        ):
-            public_error = error.failure()
-
-        return StateResult(
-            ok=False,
-            changed=False,
-            error=public_error,
-        )
-
-    # -------------------------------------------------
-    # Backend hooks
-    # -------------------------------------------------
-
-    @abstractmethod
-    def _start_view(
-        self,
-        view: View,
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _schema_type_for_address(
-        self,
-        address: Address[Any],
-    ) -> type[Schema]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _submit_update(
-        self,
-        operation: StateOperation,
-        entity: EntityState[Any],
-        values: dict[str, Any],
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _submit_insert(
-        self,
-        operation: StateOperation,
-        collection: CollectionState[Any],
-        entity: EntityState[Any],
-        values: dict[str, Any],
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _submit_remove(
-        self,
-        operation: StateOperation,
-        collection: CollectionState[Any],
-        entity: EntityState[Any],
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _submit_signal(
-        self,
-        operation: StateOperation,
-        entity: EntityState[Any],
-        signal: str,
-        data: Any,
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _submit_state_transaction(
-        self,
-        transaction: StateTransaction,
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _dispose_subscription(
-        self,
-        subscription: Any,
-    ) -> None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _dispose_signal_binding(
-        self,
-        binding: Any,
-    ) -> None:
-        raise NotImplementedError
+        state.fail_operation(operation, key, old, new, failure)
+        operation.fail(failure)
 
 
-def _schema_subclasses(
-    schema_type: type[Schema],
-) -> tuple[type[Schema], ...]:
-    result: list[type[Schema]] = []
+def _set_values(
+    state: State[Any], values: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not values:
+        raise ValueError("State set requires at least one field")
 
-    for child in schema_type.__subclasses__():
-        result.append(
-            child,
-        )
+    copied = StateData.copy_values(values)
+    old = state.visible_snapshot(frozenset(copied))
 
-        result.extend(
-            _schema_subclasses(
-                child,
-            )
-        )
+    return copied, old
 
-    return tuple(
-        result,
-    )
+
+def _record_values(
+    collection: CollectionState[Any], values: dict[str, Any]
+) -> dict[str, Any]:
+    prepared = collection.schema.defaults()
+    prepared.update(StateData.copy_values(values))
+    collection.schema.challenge_fields(prepared)
+
+    return StateData.copy_values(prepared)
+
+
+def _failure_key(failure: StoreFailure, context: _SetContext) -> str | None:
+    store_context = failure.context
+
+    if store_context is not None:
+        field = store_context.field
+
+        if field in context.values:
+            return field
+
+    return None
+
+
+def _state_failure(failure: StoreFailure) -> StateFailure:
+    source = failure.context.source if failure.context is not None else None
+
+    if source == "trigger":
+        failure_type = "trigger"
+    elif source == "policy":
+        failure_type = "policy"
+    elif failure.code in {
+        StoreErrorCode.FIELD_NOT_FOUND,
+        StoreErrorCode.FIELD_VALIDATION_FAILED,
+    }:
+        failure_type = "field"
+    elif failure.code in {
+        StoreErrorCode.FOREIGN_KEY_NOT_FOUND,
+        StoreErrorCode.FOREIGN_KEY_RESTRICTED,
+    }:
+        failure_type = "foreign_key"
+    elif failure.status == StoreErrorStatus.NOT_FOUND:
+        failure_type = "not_found"
+    elif failure.status == StoreErrorStatus.CONFLICT:
+        failure_type = "conflict"
+    elif failure.status == StoreErrorStatus.TIMEOUT:
+        failure_type = "timeout"
+    elif failure.status == StoreErrorStatus.UNAVAILABLE:
+        failure_type = "network"
+    else:
+        failure_type = "internal"
+
+    return StateFailure(type=failure_type, message=failure.message)
+
+
+def _failure_from_exception(error: BaseException) -> StateFailure:
+    if isinstance(error, asyncio.TimeoutError):
+        failure_type = "timeout"
+    elif isinstance(error, ConnectionError):
+        failure_type = "network"
+    else:
+        failure_type = "internal"
+
+    message = str(error)
+
+    if not message:
+        message = type(error).__name__
+
+    return StateFailure(type=failure_type, message=message)

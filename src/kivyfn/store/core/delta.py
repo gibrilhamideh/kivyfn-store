@@ -1,9 +1,15 @@
-# kivyfn/store/core/delta.py
+# src/kivyfn/store/core/delta.py
 from __future__ import annotations
 
 from collections import defaultdict
 from typing import Any
 
+from kivyfn.store.core.operations import (
+    InsertOperation,
+    Operation,
+    RemoveOperation,
+    SetRowOperation,
+)
 from kivyfn.store.error import (
     RowAlreadyExistsError,
     RowErrorDetail,
@@ -12,57 +18,41 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.node import Node
 
-from .operations import (
-    InsertOperation,
-    RemoveOperation,
-    SetRowOperation,
-)
-
 
 class Delta:
     """
-    Represents the normalized net row-level change of a transaction.
+    Normalized future row state for one transaction.
 
-    Responsibilities:
-        - Normalize row operations
-        - Enforce structural consistency
-        - Provide logical resolution API
+    Delta validates structural row operations and exposes the logical row state
+    that will exist if the transaction commits.
 
-    Does NOT validate relational constraints.
+    Relational constraints are validated separately by ConstraintGuard.
     """
-
-    # ============================================================
-    # Init
-    # ============================================================
 
     def __init__(
         self,
-        engine: Any,
-        operations: list[Any],
+        operations: list[Operation],
     ) -> None:
-        self.engine = engine
-
-        # node -> {id -> full row}
         self._inserted: defaultdict[
             Node,
             dict[str, dict[str, Any]],
         ] = defaultdict(dict)
 
-        # node -> set[id]
         self._removed: defaultdict[
             Node,
             set[str],
         ] = defaultdict(set)
 
-        # node -> {id -> {field -> value}}
+        self._replaced: defaultdict[
+            Node,
+            set[str],
+        ] = defaultdict(set)
+
         self._updated: defaultdict[
             Node,
             defaultdict[str, dict[str, Any]],
-        ] = defaultdict(
-            lambda: defaultdict(dict)
-        )
+        ] = defaultdict(lambda: defaultdict(dict))
 
-        # metadata
         self._touched_nodes: set[Node] = set()
 
         self._touched_fields: defaultdict[
@@ -71,24 +61,33 @@ class Delta:
         ] = defaultdict(set)
 
         for operation in operations:
-            self._touched_nodes.add(
-                operation.node,
-            )
+            self._touched_nodes.add(operation.node)
 
-            if isinstance(operation, InsertOperation):
+            if isinstance(
+                operation,
+                InsertOperation,
+            ):
                 self._insert(
                     operation.node,
                     operation.id,
                     operation.value,
                 )
+                continue
 
-            elif isinstance(operation, RemoveOperation):
+            if isinstance(
+                operation,
+                RemoveOperation,
+            ):
                 self._remove(
                     operation.node,
                     operation.id,
                 )
+                continue
 
-            elif isinstance(operation, SetRowOperation):
+            if isinstance(
+                operation,
+                SetRowOperation,
+            ):
                 self._update(
                     operation.node,
                     operation.id,
@@ -96,9 +95,9 @@ class Delta:
                     operation.new_value,
                 )
 
-    # ============================================================
-    # Structural Rules
-    # ============================================================
+    # -------------------------------------------------
+    # Structural normalization
+    # -------------------------------------------------
 
     def _insert(
         self,
@@ -106,13 +105,6 @@ class Delta:
         row_id: str,
         row: dict[str, Any],
     ) -> None:
-        # Insert after remove is treated as a replacement.
-        if row_id in self._removed[node]:
-            self._removed[node].remove(
-                row_id,
-            )
-
-        # Duplicate insert in the same transaction.
         if row_id in self._inserted[node]:
             raise RowOperationConflictError(
                 (
@@ -128,11 +120,9 @@ class Delta:
                 ),
             )
 
-        # Insert existing base ID, unless it was removed first.
-        if (
-            row_id in node.value
-            and row_id not in self._removed[node]
-        ):
+        was_removed = row_id in self._removed[node]
+
+        if row_id in node.value and not was_removed:
             raise RowAlreadyExistsError(
                 (
                     f"Row {row_id!r} already exists "
@@ -146,26 +136,37 @@ class Delta:
                 ),
             )
 
-        self._inserted[node][row_id] = dict(
-            row,
+        if was_removed:
+            self._removed[node].remove(row_id)
+            self._replaced[node].add(row_id)
+
+        self._inserted[node][row_id] = dict(row)
+
+        self._updated[node].pop(
+            row_id,
+            None,
         )
 
-        for field in row:
-            self._touched_fields[node].add(
-                field,
-            )
+        self._touched_fields[node].update(row)
 
     def _remove(
         self,
         node: Node,
         row_id: str,
     ) -> None:
-        # Removing a row inserted in this transaction cancels the insertion.
         if row_id in self._inserted[node]:
             del self._inserted[node][row_id]
+
+            if row_id in self._replaced[node]:
+                self._replaced[node].remove(row_id)
+                self._removed[node].add(row_id)
+
+            self._updated[node].pop(
+                row_id,
+                None,
+            )
             return
 
-        # Duplicate remove.
         if row_id in self._removed[node]:
             raise RowOperationConflictError(
                 (
@@ -181,7 +182,6 @@ class Delta:
                 ),
             )
 
-        # Removing a nonexistent row.
         if row_id not in node.value:
             raise RowNotFoundError(
                 (
@@ -196,11 +196,8 @@ class Delta:
                 ),
             )
 
-        self._removed[node].add(
-            row_id,
-        )
+        self._removed[node].add(row_id)
 
-        # Drop pending updates.
         self._updated[node].pop(
             row_id,
             None,
@@ -213,16 +210,12 @@ class Delta:
         field: str,
         value: Any,
     ) -> None:
-        self._touched_fields[node].add(
-            field,
-        )
+        self._touched_fields[node].add(field)
 
-        # Updating a row inserted in this transaction updates that row.
         if row_id in self._inserted[node]:
             self._inserted[node][row_id][field] = value
             return
 
-        # Updating a row removed in this transaction is a conflict.
         if row_id in self._removed[node]:
             raise RowOperationConflictError(
                 (
@@ -238,7 +231,6 @@ class Delta:
                 ),
             )
 
-        # Updating a nonexistent row.
         if row_id not in node.value:
             raise RowNotFoundError(
                 (
@@ -255,18 +247,15 @@ class Delta:
 
         self._updated[node][row_id][field] = value
 
-    # ============================================================
-    # Logical Resolution API
-    # ============================================================
+    # -------------------------------------------------
+    # Logical future-state API
+    # -------------------------------------------------
 
     def exists(
         self,
         node: Node,
         row_id: str,
     ) -> bool:
-        """
-        Return whether a row logically exists after applying the delta.
-        """
         if row_id in self._inserted[node]:
             return True
 
@@ -281,96 +270,61 @@ class Delta:
         row_id: str,
         field: str,
     ) -> Any:
-        """
-        Resolve a logical field value after applying the delta.
-        """
-        if row_id in self._inserted[node]:
-            return self._inserted[node][row_id].get(
-                field,
-            )
+        inserted = self._inserted[node].get(row_id)
+
+        if inserted is not None:
+            return inserted.get(field)
 
         if row_id in self._removed[node]:
             return None
 
-        updated_fields = self._updated[node].get(
-            row_id,
-        )
+        updated = self._updated[node].get(row_id)
 
-        if (
-            updated_fields
-            and field in updated_fields
+        if updated is not None and field in updated:
+            return updated[field]
+
+        row = node.value.get(row_id)
+
+        if not isinstance(
+            row,
+            dict,
         ):
-            return updated_fields[field]
+            return None
 
-        row = node.value.get(
-            row_id,
-        )
-
-        return (
-            row.get(field)
-            if row
-            else None
-        )
-
-    def ids(
-        self,
-        node: Node,
-    ) -> set[str]:
-        """
-        Return the logical row IDs after applying the delta.
-        """
-        base_ids = set(
-            node.value.keys(),
-        )
-
-        if self._removed[node]:
-            base_ids -= self.removed_ids(
-                node,
-            )
-
-        if self._inserted[node]:
-            base_ids |= self.inserted_ids(
-                node,
-            )
-
-        return base_ids
-
-    def removed_ids(
-        self,
-        node: Node,
-    ) -> set[str]:
-        return set(
-            self._removed[node],
-        )
+        return row.get(field)
 
     def inserted_ids(
         self,
         node: Node,
-    ) -> set[str]:
-        return set(
-            self._inserted[node].keys(),
-        )
+    ) -> frozenset[str]:
+        return frozenset(self._inserted[node])
+
+    def removed_ids(
+        self,
+        node: Node,
+    ) -> frozenset[str]:
+        return frozenset(self._removed[node])
 
     def updated_ids(
         self,
         node: Node,
-    ) -> set[str]:
-        return set(
-            self._updated[node].keys(),
-        )
-
-    # ============================================================
-    # Metadata
-    # ============================================================
+    ) -> frozenset[str]:
+        return frozenset(self._updated[node])
 
     @property
-    def touched_nodes(
-        self,
-    ) -> set[Node]:
-        return self._touched_nodes
+    def touched_nodes(self) -> frozenset[Node]:
+        return frozenset(self._touched_nodes)
+
+    @property
+    def removed_nodes(self) -> frozenset[Node]:
+        return frozenset(
+            node
+            for node, row_ids in self._removed.items()
+            if row_ids
+        )
 
     def touched_fields(
         self,
         node: Node,
-    ) -> set[str]:
-        return self._touched_fields[node]
+    ) -> frozenset[str]:
+        return frozenset(self._touched_fields[node])

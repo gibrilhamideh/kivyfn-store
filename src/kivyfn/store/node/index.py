@@ -1,7 +1,8 @@
-# kivyfn/store/node/index.py
+# src/kivyfn/store/node/index.py
 from __future__ import annotations
 
-from typing import Any, Literal, overload
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from kivyfn.store.error import (
     ConstraintErrorDetail,
@@ -10,315 +11,156 @@ from kivyfn.store.error import (
     UniqueConstraintError,
 )
 
+if TYPE_CHECKING:
+    from kivyfn.store.schema import Schema
 
-IndexKey = tuple[str, ...]
+IndexKey: TypeAlias = tuple[str, ...]
 
 
-class Index:
-    def __init__(
-        self,
-        fields: IndexKey,
-        *,
-        schema: str,
-        unique: bool = False,
-    ) -> None:
+class _Index:
+    """One internal Store index."""
+
+    def __init__(self, fields: IndexKey, *, schema: str, unique: bool) -> None:
         self.fields = fields
         self.schema = schema
         self.unique = unique
+        self._rows: dict[Any, set[str]] = {}
 
-        self._map: dict[Any, set[str]] = {}
-
-    def build_key(
-        self,
-        row: dict[str, Any],
-    ) -> Any:
+    def key(self, row: Mapping[str, Any]) -> Any | None:
         if len(self.fields) == 1:
-            return row.get(
-                self.fields[0],
-            )
+            return row.get(self.fields[0])
 
-        return tuple(
-            row.get(field)
-            for field in self.fields
-        )
+        values = tuple(row.get(field) for field in self.fields)
 
-    def add(
-        self,
-        row_id: str,
-        row: dict[str, Any],
-    ) -> None:
-        key = self.build_key(
-            row,
-        )
+        if any(value is None for value in values):
+            return None
 
-        if key is None:
+        return values
+
+    def validate(self, row_id: str, key: Any | None) -> None:
+        if key is None or not self.unique:
             return
 
-        rows = self._map.setdefault(
-            key,
-            set(),
-        )
+        rows = self._rows.get(key)
 
-        if (
-            self.unique
-            and rows
-            and row_id not in rows
-        ):
-            raise self._unique_error(
-                row_id=row_id,
-                key=key,
-                existing_row_id=next(iter(rows)),
-            )
-
-        rows.add(
-            row_id,
-        )
-
-    def remove(
-        self,
-        row_id: str,
-        row: dict[str, Any],
-    ) -> None:
-        key = self.build_key(
-            row,
-        )
-
-        if key is None:
+        if not rows or row_id in rows:
             return
 
-        rows = self._map.get(
-            key,
-        )
-
-        if not rows:
-            return
-
-        rows.discard(
-            row_id,
-        )
-
-        if not rows:
-            del self._map[key]
-
-    def update(
-        self,
-        row_id: str,
-        old_row: dict[str, Any],
-        new_row: dict[str, Any],
-    ) -> None:
-        old_key = self.build_key(
-            old_row,
-        )
-
-        new_key = self.build_key(
-            new_row,
-        )
-
-        if old_key == new_key:
-            return
-
-        self._validate_add(
-            row_id,
-            new_key,
-        )
-
-        self.remove(
-            row_id,
-            old_row,
-        )
-
-        self.add(
-            row_id,
-            new_row,
-        )
-
-    def lookup(
-        self,
-        value: Any,
-        *,
-        first: bool = False,
-    ) -> set[str] | str | None:
-        rows = self._map.get(
-            value,
-        )
-
-        if not rows:
-            return None if first else set()
-
-        if first:
-            return next(
-                iter(rows),
-            )
-
-        return set(
-            rows,
-        )
-
-    def _validate_add(
-        self,
-        row_id: str,
-        key: Any,
-    ) -> None:
-        if key is None:
-            return
-
-        rows = self._map.get(
-            key,
-        )
-
-        if (
-            self.unique
-            and rows
-            and row_id not in rows
-        ):
-            raise self._unique_error(
-                row_id=row_id,
-                key=key,
-                existing_row_id=next(iter(rows)),
-            )
-
-    def _unique_error(
-        self,
-        *,
-        row_id: str,
-        key: Any,
-        existing_row_id: str,
-    ) -> UniqueConstraintError:
-        return UniqueConstraintError(
-            (
-                "Unique constraint violated on "
-                f"{self.schema}.{'.'.join(self.fields)}"
-            ),
+        raise UniqueConstraintError(
+            f"Unique constraint violated on {self.schema}.{'.'.join(self.fields)}",
             detail=ConstraintErrorDetail(
                 schema=self.schema,
                 fields=self.fields,
                 value=key,
                 row_id=row_id,
-                existing_row_id=existing_row_id,
+                existing_row_id=next(iter(rows)),
             ),
         )
 
+    def add(self, row_id: str, key: Any | None) -> None:
+        if key is None:
+            return
+
+        self._rows.setdefault(key, set()).add(row_id)
+
+    def remove(self, row_id: str, key: Any | None) -> None:
+        if key is None:
+            return
+
+        rows = self._rows.get(key)
+
+        if rows is None:
+            return
+
+        rows.discard(row_id)
+
+        if not rows:
+            del self._rows[key]
+
+    def lookup_all(self, value: Any) -> frozenset[str]:
+        rows = self._rows.get(value)
+
+        if not rows:
+            return frozenset()
+
+        return frozenset(rows)
+
+    def lookup_one(self, value: Any) -> str | None:
+        rows = self._rows.get(value)
+
+        if not rows:
+            return None
+
+        return next(iter(rows))
+
 
 class IndexManager:
-    def __init__(
-        self,
-        schema: Any,
-    ) -> None:
+    """Indexes one schema's many-row Store data."""
+
+    def __init__(self, schema: Schema) -> None:
         self._schema = schema.name
-        self._indexes: dict[IndexKey, Index] = {}
 
         unique_keys = schema.unique_keys()
 
-        for fields in schema.index_keys():
-            self._indexes[fields] = Index(
+        self._indexes = {
+            fields: _Index(
                 fields,
                 schema=self._schema,
                 unique=fields in unique_keys,
             )
+            for fields in schema.index_keys()
+        }
 
-    def add(
-        self,
-        row_id: str,
-        row: dict[str, Any],
-    ) -> None:
-        # Validate all indexes first so partial mutation cannot occur.
+    def add(self, row_id: str, row: Mapping[str, Any]) -> None:
+        keys = {index: index.key(row) for index in self._indexes.values()}
+
+        for index, key in keys.items():
+            index.validate(row_id, key)
+
+        for index, key in keys.items():
+            index.add(row_id, key)
+
+    def remove(self, row_id: str, row: Mapping[str, Any]) -> None:
         for index in self._indexes.values():
-            key = index.build_key(
-                row,
-            )
-
-            index._validate_add(
-                row_id,
-                key,
-            )
-
-        for index in self._indexes.values():
-            index.add(
-                row_id,
-                row,
-            )
-
-    def remove(
-        self,
-        row_id: str,
-        row: dict[str, Any],
-    ) -> None:
-        for index in self._indexes.values():
-            index.remove(
-                row_id,
-                row,
-            )
+            index.remove(row_id, index.key(row))
 
     def update(
         self,
         row_id: str,
-        old_row: dict[str, Any],
-        new_row: dict[str, Any],
+        old_row: Mapping[str, Any],
+        new_row: Mapping[str, Any],
     ) -> None:
-        # Validate all new keys first so partial mutation cannot occur.
-        for index in self._indexes.values():
-            old_key = index.build_key(
-                old_row,
-            )
-
-            new_key = index.build_key(
-                new_row,
-            )
-
-            if old_key != new_key:
-                index._validate_add(
-                    row_id,
-                    new_key,
-                )
+        changed: list[tuple[_Index, Any | None, Any | None]] = []
 
         for index in self._indexes.values():
-            index.update(
-                row_id,
-                old_row,
-                new_row,
-            )
+            old_key = index.key(old_row)
+            new_key = index.key(new_row)
 
-    @overload
-    def lookup(
-        self,
-        fields: str | tuple[str, ...],
-        value: Any,
-        *,
-        first: Literal[True],
-    ) -> str | None:
-        ...
+            if old_key == new_key:
+                continue
 
-    @overload
-    def lookup(
-        self,
-        fields: str | tuple[str, ...],
-        value: Any,
-        *,
-        first: Literal[False] = False,
-    ) -> set[str]:
-        ...
+            index.validate(row_id, new_key)
 
-    def lookup(
-        self,
-        fields: str | tuple[str, ...],
-        value: Any,
-        *,
-        first: bool = False,
-    ) -> set[str] | str | None:
-        key = self._normalize_fields(
-            fields,
-        )
+            changed.append((index, old_key, new_key))
 
-        index = self._indexes.get(
-            key,
-        )
+        for index, old_key, new_key in changed:
+            index.remove(row_id, old_key)
+            index.add(row_id, new_key)
+
+    def lookup_all(self, fields: str | IndexKey, value: Any) -> frozenset[str]:
+        return self._index(fields, value).lookup_all(value)
+
+    def lookup_one(self, fields: str | IndexKey, value: Any) -> str | None:
+        return self._index(fields, value).lookup_one(value)
+
+    def _index(self, fields: str | IndexKey, value: Any) -> _Index:
+        key = (fields,) if isinstance(fields, str) else fields
+
+        index = self._indexes.get(key)
 
         if index is None:
             raise IndexNotFoundError(
-                (
-                    "No index exists for "
-                    f"{self._schema}.{'.'.join(key)}"
-                ),
+                f"No index exists for {self._schema}.{'.'.join(key)}",
                 detail=IndexErrorDetail(
                     schema=self._schema,
                     fields=key,
@@ -326,18 +168,5 @@ class IndexManager:
                 ),
             )
 
-        return index.lookup(
-            value,
-            first=first,
-        )
+        return index
 
-    def _normalize_fields(
-        self,
-        fields: str | tuple[str, ...],
-    ) -> IndexKey:
-        if isinstance(fields, str):
-            return (fields,)
-
-        return tuple(
-            fields,
-        )

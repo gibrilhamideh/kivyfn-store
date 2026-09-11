@@ -25,6 +25,12 @@ dependencies = [
     "aiohttp>=3.9"
 ]
 
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
 
 [dependency-groups]
 dev = [

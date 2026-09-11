@@ -1,34 +1,20 @@
-from kivyfn.store.address import Address
-from kivyfn.store.local.store import LocalStore
-from kivyfn.store.query import Query, field
-from kivyfn.store.remote.store import RemoteStore
-from kivyfn.store.state import (
-    CollectionState,
-    EntityState,
-    LocalStateManager,
-    RemoteStateManager,
-    StateOperation,
-    StateOperationKind,
-    StateResult,
-    StateTransaction,
-)
-from kivyfn.store.transaction import Transaction, TransactionResult
+# src/kivyfn/store/__init__.py
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.query import Query, QueryResult, QueryRow, field
+from kivyfn.store.schema import ManySchema, Schema, SingleSchema
+from kivyfn.store.store import Store
 
 
 __all__ = [
-    "Address",
-    "CollectionState",
-    "EntityState",
-    "LocalStateManager",
-    "LocalStore",
+    "ManySchema",
     "Query",
-    "RemoteStateManager",
-    "RemoteStore",
-    "StateOperation",
-    "StateOperationKind",
-    "StateResult",
-    "StateTransaction",
-    "Transaction",
-    "TransactionResult",
+    "QueryResult",
+    "QueryRow",
+    "Schema",
+    "SingleSchema",
+    "Store",
+    "StoreClient",
+    "StoreHost",
     "field",
 ]
