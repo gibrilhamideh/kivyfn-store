@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from kivyfn.store.error import StoreConnectionError, StoreStateError
 from kivyfn.store.protocol.message.requests import Request
 from kivyfn.store.protocol.message.responses import Response
 from kivyfn.store.transport.client import (
@@ -48,11 +49,21 @@ class DirectClientTransport(ClientTransport):
         if self._connected:
             return
 
-        host = cast(DirectHostTransport, resolve_host(self._name))
+        try:
+            host = cast(DirectHostTransport, resolve_host(self._name))
+        except LookupError as error:
+            raise StoreConnectionError(
+                f"Direct Store endpoint is unavailable: {self._name!r}"
+            ) from error
 
-        client_id = await host.connect_client(
-            self._handle_event, self._handle_host_close
-        )
+        try:
+            client_id = await host.connect_client(
+                self._handle_event, self._handle_host_close
+            )
+        except StoreStateError as error:
+            raise StoreConnectionError(
+                f"Direct Store endpoint is unavailable: {self._name!r}"
+            ) from error
 
         self._host = host
         self._client_id = client_id
@@ -74,7 +85,16 @@ class DirectClientTransport(ClientTransport):
 
     async def request(self, request: Request) -> Response:
         host, client_id = self._require_connection()
-        return await host.request(client_id, request)
+        try:
+            return await host.request(client_id, request)
+        except StoreConnectionError:
+            await self._handle_host_close()
+            raise
+        except StoreStateError as error:
+            await self._handle_host_close()
+            raise StoreConnectionError(
+                f"Direct Store connection was lost: {self._name!r}"
+            ) from error
 
     async def _handle_event(self, event: str, message: object | None) -> None:
         handler = self._event_handler
@@ -101,7 +121,7 @@ class DirectClientTransport(ClientTransport):
             or self._host is None
             or self._client_id is None
         ):
-            raise RuntimeError(
+            raise StoreConnectionError(
                 f"Direct Store client is not connected: {self._name!r}"
             )
 

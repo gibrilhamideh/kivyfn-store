@@ -1,7 +1,7 @@
 # src/kivyfn/store/events/event.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeAlias
 
 from kivyfn.store.operations import OpCode, OperationSource
@@ -66,9 +66,23 @@ StoreEvent: TypeAlias = SetEvent | SetRowEvent | InsertEvent | RemoveEvent
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class StoreCommit:
-    """One atomic batch of canonical Store changes."""
+    """One atomic batch of canonical Store changes.
+
+    schema_revisions contains each changed schema's in-memory revision
+    after this commit. Each affected schema advances once, regardless of
+    how many events it contributes. Revisions are comparable only within
+    the same server_instance_id.
+
+    Store assigns the instance ID and schema revisions after successful
+    execution. Engine-created commits start with no instance ID and an
+    empty mapping. Successful no-op commits also have an empty mapping
+    and are not published. There is no global revision or replay history.
+
+    Subscription messages may filter events while keeping revisions for
+    changed query dependencies whose raw events are not included.
+    """
 
     events: tuple[StoreEvent, ...]
     operation_id: str | None = None
     server_instance_id: str | None = None
-    revision: int | None = None
+    schema_revisions: dict[str, int] = field(default_factory=dict)

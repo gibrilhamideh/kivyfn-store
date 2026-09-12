@@ -20,7 +20,6 @@ from kivyfn.store.error import (
     StoreStateError,
 )
 from kivyfn.store.events import StoreCommit
-from kivyfn.store.journal import CommitJournal, JournalEntry
 from kivyfn.store.protocol.message.requests import (
     InsertRequest,
     RemoveRequest,
@@ -41,23 +40,22 @@ logger = get_logger(__name__)
 
 
 class Store:
-    """Canonical synchronous state, execution, and commit publication.
+    """
+    Canonical synchronous state, execution, and commit publication.
 
     Each execute() call submits one atomic batch of typed mutation requests.
     The Store builds instructions, delegates execution to Engine, and records
-    successful changes before notifying commit consumers. Host components use
-    public Store methods for reads and synchronized() when several operations
-    must share one revision.
+    each changed schema's revision before notifying commit consumers. Host
+    components use public Store methods for reads and synchronized() when
+    snapshots, revision checks, and subscriptions need one consistent view.
+    Each Node owns one in-memory counter; Store keeps no replay history.
     """
 
-    def __init__(
-        self, root: Node, config: StoreConfig, *, journal_size: int = 10_000
-    ) -> None:
+    def __init__(self, root: Node, config: StoreConfig) -> None:
         self._engine = Engine(root=root, config=config)
         self._instructions = InstructionBuilder(self._engine.metadata)
 
         self._instance_id = uuid4().hex
-        self._journal = CommitJournal(journal_size)
 
         self._lock = RLock()
         self._shutdown = False
@@ -107,13 +105,12 @@ class Store:
         return self._instance_id
 
     @property
-    def revision(self) -> int:
-        with self._lock:
-            return self._journal.revision
-
-    @property
-    def journal_size(self) -> int:
-        return self._journal.max_entries
+    def schema_revisions(self) -> dict[str, int]:
+        """Return a detached mapping of schema names to current revisions."""
+        with self.synchronized():
+            self._require_booted()
+            nodes = self._engine.metadata.nodes_by_schema
+            return {schema: node.revision for schema, node in nodes.items()}
 
     def _require_booted(self) -> None:
         if self._shutdown:
@@ -168,6 +165,39 @@ class Store:
             self._require_booted()
             return self._engine.snapshot_by_schema(schema, id=id, key=key)
 
+    def snapshot_if_changed(
+        self,
+        schema: str,
+        *,
+        revision: int | None = None,
+        server_instance_id: str | None = None,
+    ) -> tuple[int, dict[str, Any] | None]:
+        """Return (current revision, snapshot) for one complete schema.
+
+        A None snapshot means a matching cache can be reused. An empty
+        collection instead returns {} when a fresh snapshot is required.
+        Omit revision when the client has no complete, valid confirmed cache.
+        Revisions from a different Store instance always require a snapshot.
+
+        The comparison and snapshot share the Store lock. Host must also
+        register the subscription inside an outer synchronized() scope and
+        order this result before subsequent live updates. This method alone
+        does not establish a subscription or protect old client callbacks.
+        """
+        with self.synchronized():
+            self._require_booted()
+            node = self._engine.get_node_by_schema(schema)
+            current = node.revision
+
+            if (
+                server_instance_id == self._instance_id
+                and type(revision) is int
+                and revision == current
+            ):
+                return current, None
+
+            return current, node.snapshot()
+
     def query(self, query: Query[Any]) -> QueryResult:
         """Execute one Query against current canonical Store state."""
         with self.synchronized():
@@ -202,7 +232,8 @@ class Store:
 
         Request decoding belongs to the codec. InstructionBuilder resolves
         schemas; Engine compiles instructions and validates the complete batch
-        before applying it. Rejected batches never reach the journal or feed.
+        before applying it. Rejected batches do not advance schema revisions
+        or publish commits. A successful no-op does not advance them either.
         """
         with self.synchronized():
             self._require_booted()
@@ -218,71 +249,21 @@ class Store:
                     success=False, stage=StoreErrorStage.RESOLVE, error=error
                 )
 
-            result = self._engine.execute(
-                instructions, operation_id=operation_id
-            )
+            try:
+                result = self._engine.execute(
+                    instructions, operation_id=operation_id
+                )
 
-            if not result.success:
-                return result
+                if not result.success:
+                    return result
 
-            commit = self._record_commit(cast(StoreCommit, result.commit))
-            return replace(result, commit=commit)
-
-    # -------------------------------------------------
-    # Replay
-    # -------------------------------------------------
-
-    def replay_after(self, revision: int) -> tuple[StoreCommit, ...] | None:
-        """
-        Return retained commits after revision.
-
-        None means the requested gap is no longer replayable and a fresh
-        snapshot is required.
-        """
-        with self.synchronized():
-            self._require_booted()
-            entries = self._journal.replay_after(revision)
-
-            if entries is None:
-                return None
-
-            return tuple(self._stamp_entry(entry) for entry in entries)
-
-    # -------------------------------------------------
-    # Undo / redo
-    # -------------------------------------------------
-
-    def undo(self, *, operation_id: str | None = None) -> StoreCommit:
-        with self.synchronized():
-            self._require_booted()
-            commit = self._engine.undo(operation_id=operation_id)
-
-            if commit is None:
-                raise StoreStateError("There is no Store commit to undo")
-
-            return self._record_commit(commit)
-
-    def redo(self, *, operation_id: str | None = None) -> StoreCommit:
-        with self.synchronized():
-            self._require_booted()
-            commit = self._engine.redo(operation_id=operation_id)
-
-            if commit is None:
-                raise StoreStateError("There is no Store commit to redo")
-
-            return self._record_commit(commit)
-
-    @property
-    def can_undo(self) -> bool:
-        with self.synchronized():
-            self._require_booted()
-            return self._engine.can_undo
-
-    @property
-    def can_redo(self) -> bool:
-        with self.synchronized():
-            self._require_booted()
-            return self._engine.can_redo
+                commit = self._record_commit(cast(StoreCommit, result.commit))
+                return replace(result, commit=commit)
+            except Exception:
+                # Execution or persistence may have partly changed data.
+                # Do not let old revisions validate an uncertain Store.
+                self.shutdown()
+                raise
 
     # -------------------------------------------------
     # Commit feed
@@ -296,9 +277,10 @@ class Store:
 
         Callbacks run synchronously on the committing thread while the
         Store lock is held. Capture subscription data and enqueue delivery
-        without waiting for transport I/O. Notifications follow revision
-        order; an earlier callback can still write reentrantly, so a live
-        query consumer must capture only at the current Store revision.
+        without waiting for transport I/O. Notifications follow commit order.
+        An earlier callback can write reentrantly, so reads inside a callback
+        can observe later data than the supplied commit describes. Consumers
+        must check their dependency revisions when capturing live queries.
 
         The returned function detaches the consumer and is idempotent.
         """
@@ -336,33 +318,40 @@ class Store:
                         callback(current)
                     except Exception:
                         logger.exception(
-                            "Store commit callback failed at revision %s",
-                            current.revision,
+                            "Store commit callback failed for schemas %s",
+                            current.schema_revisions,
                         )
         finally:
             self._publishing_commits = False
 
     # -------------------------------------------------
-    # Revision stamping
+    # Schema revision stamping
     # -------------------------------------------------
 
     def _record_commit(self, commit: StoreCommit) -> StoreCommit:
-        if not commit.events:
-            return replace(
-                commit,
-                server_instance_id=self._instance_id,
-                revision=self._journal.revision,
-            )
+        """
+        Advance each changed schema once after successful execution.
 
-        entry = self._journal.record(commit)
-        stamped = self._stamp_entry(entry)
-        self._publish_commit(stamped)
+        Trigger and policy changes are included because they share the same
+        commit. No-op commits have an empty mapping and are not published.
+        Host can read current requested-schema revisions under synchronized()
+        when constructing a successful no-op response.
+        """
+        schemas = dict.fromkeys(event.schema for event in commit.events)
+        nodes = {
+            schema: self._engine.get_node_by_schema(schema)
+            for schema in schemas
+        }
+        revisions = {
+            schema: node.advance_revision() for schema, node in nodes.items()
+        }
+        stamped = replace(
+            commit,
+            server_instance_id=self._instance_id,
+            schema_revisions=revisions,
+        )
+
+        if stamped.events:
+            self._publish_commit(stamped)
 
         return stamped
-
-    def _stamp_entry(self, entry: JournalEntry) -> StoreCommit:
-        return replace(
-            entry.commit,
-            server_instance_id=self._instance_id,
-            revision=entry.revision,
-        )

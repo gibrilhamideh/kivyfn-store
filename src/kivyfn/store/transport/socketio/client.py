@@ -101,19 +101,22 @@ class SocketIOClientTransport(ClientTransport):
                 if not self.connected:
                     raise StoreConnectionError("Store connection closed")
             except TimeoutError as exc:
+                self._drop_connection(notify=False)
                 await self._disconnect_socket()
                 raise StoreTimeoutError("Store connection timed out") from exc
             except SocketIOConnectionError as exc:
+                self._drop_connection(notify=False)
                 await self._disconnect_socket()
                 raise StoreConnectionError("Store connection failed") from exc
             except BaseException:
+                self._drop_connection(notify=False)
                 await self._disconnect_socket()
                 raise
             finally:
                 self._connecting = None
 
     async def disconnect(self) -> None:
-        self.on_disconnect()
+        self._drop_connection(notify=False)
         if self._connecting is not None:
             self._connecting.cancel()
 
@@ -152,13 +155,13 @@ class SocketIOClientTransport(ClientTransport):
 
             return decode_response(payload)
         except SocketIOTimeoutError as exc:
-            await self.disconnect()
+            await self._disconnect_lost()
             raise StoreTimeoutError("Store request timed out") from exc
         except (SocketIOConnectionError, BadNamespaceError) as exc:
-            await self.disconnect()
+            await self._disconnect_lost()
             raise StoreConnectionError("Store connection was lost") from exc
         except (TypeError, ValueError) as exc:
-            await self.disconnect()
+            await self._disconnect_lost()
             raise StoreProtocolError("Invalid Store message") from exc
         except asyncio.CancelledError:
             caller = asyncio.current_task()
@@ -173,19 +176,7 @@ class SocketIOClientTransport(ClientTransport):
         self._connected = True
 
     def on_disconnect(self, reason: object = None) -> None:
-        if not self._connected:
-            return
-
-        self._connected = False
-        self._generation += 1
-        if self._pending is not None:
-            self._pending.cancel()
-
-        handler = self._disconnect_handler
-        self._event_handler = None
-        self._disconnect_handler = None
-        if handler is not None:
-            self._notification = asyncio.create_task(self._notify(handler))
+        self._drop_connection(notify=self._connecting is None)
 
     async def on_message(self, *values: object) -> None:
         generation = self._generation
@@ -199,7 +190,27 @@ class SocketIOClientTransport(ClientTransport):
                 await handler("message", decode_event_message(payload))
             except Exception:
                 logger.exception("Store event delivery failed")
-                await self.disconnect()
+                await self._disconnect_lost()
+
+    async def _disconnect_lost(self) -> None:
+        self._drop_connection(notify=True)
+        await self.disconnect()
+
+    def _drop_connection(self, *, notify: bool) -> None:
+        connected = self._connected
+        self._connected = False
+
+        if connected:
+            self._generation += 1
+            if self._pending is not None:
+                self._pending.cancel()
+
+        handler = self._disconnect_handler if connected and notify else None
+        self._event_handler = None
+        self._disconnect_handler = None
+
+        if handler is not None:
+            self._notification = asyncio.create_task(self._notify(handler))
 
     async def _notify(self, handler: ClientDisconnectHandler) -> None:
         try:

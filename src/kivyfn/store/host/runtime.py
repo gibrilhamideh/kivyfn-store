@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from kivyfn.logging import get_logger
-from kivyfn.store.error import StoreStateError
+from kivyfn.store.error import StoreInternalError, StoreStateError
 from kivyfn.store.events import StoreCommit
 from kivyfn.store.host.client import HostClients
 
@@ -48,6 +48,8 @@ class HostRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._generation = object()
+        self._closed: asyncio.Future[BaseException | None] | None = None
+        self._failure: Exception | None = None
         self._failure_task: asyncio.Task[None] | None = None
 
     @property
@@ -62,10 +64,14 @@ class HostRuntime:
             if self._unsubscribe is not None:
                 await self._close()
 
+            loop = asyncio.get_running_loop()
+            self._closed = loop.create_future()
+            self._failure = None
+
             try:
                 with self._store.synchronized():
                     self._generation = object()
-                    self._loop = asyncio.get_running_loop()
+                    self._loop = loop
                     self._unsubscribe = self._store.subscribe_commits(
                         self._on_commit
                     )
@@ -78,6 +84,23 @@ class HostRuntime:
     async def stop(self) -> None:
         async with self._lifecycle:
             await self._close()
+
+    async def wait_closed(self) -> None:
+        """Wait for this host generation to stop.
+
+        A normal stop returns normally. An internal runtime failure is raised
+        after cleanup so a process owner can terminate instead of remaining
+        ready with a stopped host.
+        """
+        closed = self._closed
+        if closed is None:
+            raise StoreStateError("StoreHost has not been started")
+
+        failure = await asyncio.shield(closed)
+        if failure is not None:
+            raise StoreInternalError(
+                "StoreHost stopped after an internal failure"
+            ) from failure
 
     def connect(self, client_id: str) -> None:
         with self._store.synchronized():
@@ -98,19 +121,29 @@ class HostRuntime:
             raise StoreStateError("StoreHost is stopped")
 
     async def _close(self) -> None:
-        with self._store.synchronized():
-            self._loop = None
-
-            if self._unsubscribe is not None:
-                self._unsubscribe()
-                self._unsubscribe = None
-
-            self._subscriptions.clear()
-
+        failure: BaseException | None = self._failure
         try:
-            await self.clients.clear()
+            with self._store.synchronized():
+                self._loop = None
+
+                if self._unsubscribe is not None:
+                    self._unsubscribe()
+                    self._unsubscribe = None
+
+                self._subscriptions.clear()
+
+            try:
+                await self.clients.clear()
+            finally:
+                await self._transport.stop()
+        except BaseException as error:
+            if failure is None:
+                failure = error
+            raise
         finally:
-            await self._transport.stop()
+            closed = self._closed
+            if closed is not None and not closed.done():
+                closed.set_result(failure)
 
     def _on_commit(self, commit: StoreCommit) -> None:
         """The Store invokes this callback while holding its lock."""
@@ -120,21 +153,22 @@ class HostRuntime:
         try:
             for client_id, message in self._subscriptions.capture(commit):
                 self.clients.enqueue(client_id, message)
-        except Exception:
+        except Exception as error:
             logger.exception("Store subscription capture failed")
-            self._fail()
+            self._fail(error)
 
     def _on_client_error(self, client_id: str, error: Exception) -> None:
         logger.error(
             "Store event delivery to %s failed", client_id, exc_info=error
         )
         with self._store.synchronized():
-            self._fail()
+            self._fail(error)
 
-    def _fail(self) -> None:
+    def _fail(self, error: Exception) -> None:
         loop = self._loop
 
         if loop is not None:
+            self._failure = error
             self._loop = None
             loop.call_soon_threadsafe(
                 self._launch_failure_stop, self._generation

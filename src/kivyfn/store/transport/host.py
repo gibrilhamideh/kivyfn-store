@@ -38,5 +38,5 @@ class HostTransport(ABC):
     @property
     @abstractmethod
     def endpoint(self) -> dict[str, Any]:
-        """Describe the bound transport address for process readiness."""
+        """Describe the bound address and its StoreClient endpoint."""
         raise NotImplementedError

@@ -36,12 +36,17 @@ class ClientTransport(ABC):
         event_handler: ClientEventHandler,
         disconnect_handler: ClientDisconnectHandler,
     ) -> None:
-        """Connect to the host and begin receiving events."""
+        """Connect and install handlers for events and unexpected loss.
+
+        The disconnect handler is called only after an established connection
+        is lost without an explicit disconnect() call. Initial connection
+        failures are raised directly from this method.
+        """
         raise NotImplementedError
 
     @abstractmethod
     async def disconnect(self) -> None:
-        """Disconnect from the host and release transport resources."""
+        """Disconnect intentionally without calling the disconnect handler."""
         raise NotImplementedError
 
     @abstractmethod

@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 
 
 class StoreProcess:
-    """Run a Store and its host in a managed child process.
+    """
+    Run a Store and its host in a managed child process.
 
     The child constructs the Store, host, and transport from the root,
     configuration, and endpoint. Readiness includes the bound transport
@@ -122,7 +123,21 @@ class StoreProcess:
             try:
                 await host.start()
                 context.ready(host.transport.endpoint)
-                await stopped.wait()
+                stop_waiter = asyncio.create_task(stopped.wait())
+                host_waiter = asyncio.create_task(host.wait_closed())
+                try:
+                    done, _ = await asyncio.wait(
+                        (stop_waiter, host_waiter),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if host_waiter in done:
+                        await host_waiter
+                finally:
+                    stop_waiter.cancel()
+                    host_waiter.cancel()
+                    await asyncio.gather(
+                        stop_waiter, host_waiter, return_exceptions=True
+                    )
             finally:
                 await host.stop()
         finally:
@@ -134,8 +149,22 @@ class StoreProcess:
 
     @property
     def endpoint(self) -> str:
-        """Configured listening endpoint; readiness has the bound address."""
+        """Bound client endpoint, or the configured endpoint before ready."""
+        return self.client_endpoint or self._endpoint
+
+    @property
+    def configured_endpoint(self) -> str:
         return self._endpoint
+
+    @property
+    def client_endpoint(self) -> str | None:
+        """Endpoint accepted by StoreClient once the child is ready."""
+        payload = self.ready_payload
+        if payload is None:
+            return None
+
+        endpoint = payload.get("endpoint")
+        return endpoint if isinstance(endpoint, str) and endpoint else None
 
     @property
     def process(self) -> FnProcess | None:

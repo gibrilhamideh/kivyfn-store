@@ -1,5 +1,15 @@
 # src/kivyfn/store/protocol/message/requests.py
-"""Typed requests; incoming payload validation belongs to the codec."""
+"""Typed requests; incoming payload validation belongs to the codec.
+
+Subscription cache hints pair a Store instance ID with applied revisions.
+Send them only while retaining a complete, valid confirmed snapshot for the
+same subscription. Omit both fields to request a fresh snapshot, including
+after an event application failure. Optimistic values are not cache data.
+
+These hints allow unchanged snapshots to be omitted; they never request
+replay or impose write preconditions. The host must register subscriptions,
+compare revisions, and capture snapshots under one consistent boundary.
+"""
 
 from __future__ import annotations
 
@@ -104,23 +114,34 @@ class QueryRequest(RequestItem):
 
 @dataclass(frozen=True, slots=True)
 class SingleSubscriptionRequest(RequestItem):
-    """Subscribe to one SingleSchema."""
+    """Subscribe to one SingleSchema, optionally reusing its cached data."""
 
     schema: str
+    store_instance_id: str | None = None
+    revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CollectionSubscriptionRequest(RequestItem):
-    """Subscribe to one ManySchema."""
+    """Subscribe to one ManySchema, optionally reusing its complete cache."""
 
     schema: str
+    store_instance_id: str | None = None
+    revision: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class QuerySubscriptionRequest(RequestItem):
-    """Subscribe to one live Query."""
+    """Subscribe to one live Query, optionally reusing its complete result.
+
+    Cache revisions must cover the root and every joined schema of the
+    exact same query. The host resolves and checks those dependencies before
+    deciding whether the cached result can replace a fresh snapshot.
+    """
 
     query: Query[Any]
+    store_instance_id: str | None = None
+    schema_revisions: dict[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)

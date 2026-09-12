@@ -33,6 +33,9 @@ class StoreHost:
     async def stop(self) -> None:
         await self.runtime.stop()
 
+    async def wait_closed(self) -> None:
+        await self.runtime.wait_closed()
+
     async def connect(self, client_id: str) -> None:
         self.runtime.connect(client_id)
 

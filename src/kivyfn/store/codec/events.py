@@ -84,8 +84,17 @@ def decode_event(payload: object) -> StoreEvent:
             raise ValueError(f"Unknown Store event type: {kind!r}")
 
 
-def encode_commit(commit: StoreCommit) -> dict[str, Any]:
-    """Encode one atomic commit, preserving its event order."""
+def encode_commit(
+    commit: StoreCommit, *, require_stamp: bool = False
+) -> dict[str, Any]:
+    """Encode one atomic commit with independent schema revisions."""
+    revisions = _schema_revisions(commit.schema_revisions)
+    _validate_stamp(
+        commit.server_instance_id,
+        revisions,
+        commit.events,
+        require_stamp=require_stamp,
+    )
     payload: dict[str, Any] = {
         "events": [encode_event(event) for event in commit.events]
     }
@@ -95,7 +104,7 @@ def encode_commit(commit: StoreCommit) -> dict[str, Any]:
 
     if commit.server_instance_id is not None:
         payload["server_instance_id"] = commit.server_instance_id
-        payload["revision"] = commit.revision
+        payload["schema_revisions"] = revisions
 
     return payload
 
@@ -105,27 +114,34 @@ def decode_commit(
 ) -> StoreCommit:
     """Decode a commit; network notifications require its Store stamp.
 
-    Unstamped commits represent engine results. Instance ID and revision
-    must occur together. Empty event lists are valid for filtered commits
-    and successful operations that leave canonical data unchanged.
+    Unstamped Engine results have no schema revisions. Stamped commits
+    require an instance ID and a mapping covering every included event's
+    schema. Extra entries are allowed for filtered query dependencies.
+    Empty event lists are valid for filtered commits and successful no-ops.
     """
     data = _object(payload, "Store commit")
-    events = _list(data.get("events"), "commit events")
+
+    if "revision" in data:
+        raise ValueError("Global commit revisions are no longer supported")
+
+    events = tuple(
+        decode_event(event)
+        for event in _list(data.get("events"), "commit events")
+    )
     operation_id = _optional_string(data, "operation_id")
     instance_id = _optional_string(data, "server_instance_id")
-    revision = data.get("revision")
-
-    if instance_id is None:
-        if require_stamp or revision is not None:
-            raise ValueError("Store commit revision metadata must be complete")
-    else:
-        revision = _revision(revision)
+    revisions = _schema_revisions(
+        data.get("schema_revisions", {} if instance_id is None else None)
+    )
+    _validate_stamp(
+        instance_id, revisions, events, require_stamp=require_stamp
+    )
 
     return StoreCommit(
-        events=tuple(decode_event(event) for event in events),
+        events=events,
         operation_id=operation_id,
         server_instance_id=instance_id,
-        revision=revision,
+        schema_revisions=revisions,
     )
 
 
@@ -155,9 +171,14 @@ def decode_query_event(payload: object) -> QueryEvent:
 
 def encode_event_message(message: EventMessage) -> dict[str, Any]:
     """Encode one subscription notification as {"event": {...}}."""
+    commit = encode_commit(message.commit, require_stamp=True)
+
+    if not message.commit.schema_revisions:
+        raise ValueError("A subscription event requires schema revisions")
+
     return {
         "event": {
-            "commit": encode_commit(message.commit),
+            "commit": commit,
             "subscription_ids": list(message.subscription_ids),
             "query_events": [
                 encode_query_event(event) for event in message.query_events
@@ -171,6 +192,10 @@ def decode_event_message(payload: object) -> EventMessage:
     envelope = _object(payload, "event message")
     data = _object(envelope.get("event"), "subscription event")
     commit = decode_commit(data.get("commit"), require_stamp=True)
+
+    if not commit.schema_revisions:
+        raise ValueError("A subscription event requires schema revisions")
+
     subscription_ids = _ids(data.get("subscription_ids"), "subscription IDs")
 
     if not subscription_ids:
@@ -232,11 +257,40 @@ def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     return _string(payload, key)
 
 
-def _revision(value: object) -> int:
-    if type(value) is not int or value < 0:
-        raise ValueError("Store revision must be a non-negative integer")
+def _schema_revisions(value: object) -> dict[str, int]:
+    data = _object(value, "schema revisions")
+    revisions: dict[str, int] = {}
 
-    return value
+    for schema, revision in data.items():
+        if not isinstance(schema, str) or not schema:
+            raise ValueError("Revision schema names must be non-empty strings")
+
+        if type(revision) is not int or revision < 0:
+            raise ValueError("Schema revisions must be non-negative integers")
+
+        revisions[schema] = revision
+
+    return revisions
+
+
+def _validate_stamp(
+    instance_id: str | None,
+    revisions: dict[str, int],
+    events: tuple[StoreEvent, ...],
+    *,
+    require_stamp: bool,
+) -> None:
+    if instance_id is None:
+        if require_stamp or revisions:
+            raise ValueError("Schema revisions require a Store instance ID")
+
+        return
+
+    if not isinstance(instance_id, str) or not instance_id:
+        raise ValueError("Store instance ID must be a non-empty string")
+
+    if any(event.schema not in revisions for event in events):
+        raise ValueError("Every Store event schema requires a revision")
 
 
 def _row(value: object) -> dict[str, Any]:

@@ -30,6 +30,9 @@ def encode_request(request: Request) -> dict[str, Any]:
     Request and transaction mutation order are preserved. Field values and
     signal data retain their transport representation; the Store applies
     schema rules when processing the decoded request.
+
+    Subscription cache hints are validated in both directions. With no
+    cache, both metadata fields are omitted from the payload.
     """
     return {"requests": [_encode_item(item) for item in request.items]}
 
@@ -43,6 +46,10 @@ def decode_request(payload: object) -> Request:
 
     The returned items retain wire order. The host must process them in that
     order; a batch groups delivery and does not make its items atomic.
+
+    Subscription cache metadata must supply both the Store instance and
+    applied revisions, or neither. Omitted or null fields mean no cache.
+    The host checks query dependencies and snapshot reuse, not this codec.
     """
     data = _object(payload, "request message")
     values = _list(data.get("requests"), "requests")
@@ -82,12 +89,33 @@ def _encode_item(request: RequestType) -> dict[str, Any]:
             payload.update(type="query", query=query_to_payload(request.query))
         case SingleSubscriptionRequest():
             payload.update(type="subscribe_single", schema=request.schema)
+            instance_id, revision = _schema_cache(
+                request.store_instance_id, request.revision
+            )
+            if instance_id is not None:
+                payload.update(
+                    store_instance_id=instance_id, revision=revision
+                )
         case CollectionSubscriptionRequest():
             payload.update(type="subscribe_collection", schema=request.schema)
+            instance_id, revision = _schema_cache(
+                request.store_instance_id, request.revision
+            )
+            if instance_id is not None:
+                payload.update(
+                    store_instance_id=instance_id, revision=revision
+                )
         case QuerySubscriptionRequest():
             payload.update(
                 type="subscribe_query", query=query_to_payload(request.query)
             )
+            instance_id, revisions = _query_cache(
+                request.store_instance_id, request.schema_revisions
+            )
+            if instance_id is not None:
+                payload.update(
+                    store_instance_id=instance_id, schema_revisions=revisions
+                )
         case UnsubscribeRequest():
             payload.update(
                 type="unsubscribe", subscription_id=request.subscription_id
@@ -102,6 +130,13 @@ def _decode_item(payload: object) -> RequestType:
     data = _object(payload, "request item")
     kind = _string(data, "type")
     request_id = _string(data, "request_id")
+
+    allowed_cache: tuple[str, ...] = ()
+    if kind in ("subscribe_single", "subscribe_collection"):
+        allowed_cache = ("store_instance_id", "revision")
+    elif kind == "subscribe_query":
+        allowed_cache = ("store_instance_id", "schema_revisions")
+    _check_cache_fields(data, allowed_cache)
 
     match kind:
         case "operation":
@@ -129,17 +164,34 @@ def _decode_item(payload: object) -> RequestType:
                 query=query_from_payload(data.get("query")),
             )
         case "subscribe_single":
+            instance_id, revision = _schema_cache(
+                data.get("store_instance_id"), data.get("revision")
+            )
             return SingleSubscriptionRequest(
-                request_id=request_id, schema=_string(data, "schema")
+                request_id=request_id,
+                schema=_string(data, "schema"),
+                store_instance_id=instance_id,
+                revision=revision,
             )
         case "subscribe_collection":
+            instance_id, revision = _schema_cache(
+                data.get("store_instance_id"), data.get("revision")
+            )
             return CollectionSubscriptionRequest(
-                request_id=request_id, schema=_string(data, "schema")
+                request_id=request_id,
+                schema=_string(data, "schema"),
+                store_instance_id=instance_id,
+                revision=revision,
             )
         case "subscribe_query":
+            instance_id, revisions = _query_cache(
+                data.get("store_instance_id"), data.get("schema_revisions")
+            )
             return QuerySubscriptionRequest(
                 request_id=request_id,
                 query=query_from_payload(data.get("query")),
+                store_instance_id=instance_id,
+                schema_revisions=revisions,
             )
         case "unsubscribe":
             return UnsubscribeRequest(
@@ -189,6 +241,7 @@ def _encode_mutation(mutation: MutationRequest) -> dict[str, Any]:
 
 def _decode_mutation(payload: object) -> MutationRequest:
     data = _object(payload, "mutation")
+    _check_cache_fields(data)
     kind = _string(data, "type")
     schema = _string(data, "schema")
 
@@ -224,6 +277,71 @@ def _decode_mutation(payload: object) -> MutationRequest:
             )
         case _:
             raise ValueError(f"Unknown Store mutation type: {kind!r}")
+
+
+def _schema_cache(
+    instance_id: object, revision: object
+) -> tuple[str | None, int | None]:
+    instance = _cache_instance(instance_id, revision)
+    if instance is None:
+        return None, None
+
+    return instance, _revision(revision)
+
+
+def _query_cache(
+    instance_id: object, revisions: object
+) -> tuple[str | None, dict[str, int] | None]:
+    instance = _cache_instance(instance_id, revisions)
+    if instance is None:
+        return None, None
+
+    values = _object(revisions, "cached schema revisions")
+    if not values:
+        raise ValueError("Cached query revisions cannot be empty")
+
+    result: dict[str, int] = {}
+    for schema, revision in values.items():
+        if not isinstance(schema, str) or not schema:
+            raise ValueError("Cached schema names must be non-empty strings")
+        result[schema] = _revision(revision)
+
+    return instance, result
+
+
+def _cache_instance(instance_id: object, revisions: object) -> str | None:
+    if instance_id is None and revisions is None:
+        return None
+
+    if (
+        not isinstance(instance_id, str)
+        or not instance_id
+        or revisions is None
+    ):
+        raise ValueError(
+            "Subscription cache requires a non-empty store_instance_id "
+            "and cached revisions together"
+        )
+
+    return instance_id
+
+
+def _revision(value: object) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError("Cached revision must be a non-negative integer")
+
+    return value
+
+
+def _check_cache_fields(
+    payload: dict[str, Any], allowed: tuple[str, ...] = ()
+) -> None:
+    fields = {"store_instance_id", "revision", "schema_revisions"}
+    unexpected = (fields - set(allowed)) & payload.keys()
+    if unexpected:
+        raise ValueError(
+            f"Cache fields are not valid here: {sorted(unexpected)!r}"
+        )
 
 
 def _values(

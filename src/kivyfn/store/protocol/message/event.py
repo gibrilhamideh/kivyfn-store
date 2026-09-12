@@ -9,10 +9,12 @@ from kivyfn.store.query import QueryResult
 
 @dataclass(frozen=True, slots=True)
 class QueryEvent:
-    """Changes to one live query result at the enclosing commit's revision.
+    """Changes to one live query result caused by the enclosing commit.
 
     Rows contain complete values for newly included or changed result rows.
     Removed IDs leave this query result; their Store rows may still exist.
+    The enclosing commit supplies the Store instance ID, operation ID, and
+    revisions of changed dependency schemas. No query counter is needed.
     """
 
     subscription_id: str
@@ -24,16 +26,24 @@ class QueryEvent:
 class EventMessage:
     """One commit's subscription notification for one client.
 
-    The Store supplies a stamped commit. Its events are filtered to this
-    client's whole-schema subscriptions, preserving their original order.
-    Query changes share the commit's operation ID, instance ID, and revision.
+    The Store supplies a stamped commit. Host filters its events to this
+    client's covered whole-schema subscriptions, preserving event order.
+    schema_revisions includes changed schemas needed by any covered
+    subscription, including dependencies of covered queries. It can contain
+    schemas whose raw events have been filtered out.
 
     Subscription IDs identify every registration covered by this message,
     including queries. Clients route only to IDs they still have bound,
     stage all changes together, and then publish State notifications.
 
-    An empty filtered commit can carry query changes or advance the covered
-    subscriptions through a revision without changing their visible data.
+    A covered query with unchanged result rows needs no QueryEvent; its
+    dependency revisions still advance. An empty filtered event tuple can
+    therefore carry query changes or just changed dependency revisions.
+
+    Revision progress belongs to each covered subscription. Query dependency
+    metadata alone must not advance a whole-schema cache that did not receive
+    its canonical events. Host filters revision metadata to the remaining
+    covered subscriptions when queued delivery is prepared.
     """
 
     commit: StoreCommit

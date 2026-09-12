@@ -1,11 +1,12 @@
 # src/kivyfn/store/host/subscription.py
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import uuid4
 
-from kivyfn.store.error import InvalidOperationError
+from kivyfn.store.error import InvalidOperationError, StoreStateError
 from kivyfn.store.events import StoreCommit
 from kivyfn.store.host.query import HostQueries, HostQuery
 from kivyfn.store.host.revision import SubscriptionRevision
@@ -32,7 +33,7 @@ SubscriptionKey: TypeAlias = str | Query[Any]
 
 @dataclass(frozen=True, slots=True)
 class HostSubscription:
-    """One owned subscription with its shared source and delivery cursor."""
+    """One owned subscription with its source and schema delivery progress."""
 
     subscription_id: str
     client_id: str
@@ -57,9 +58,13 @@ class HostSubscription:
 class HostSubscriptions:
     """Own subscription snapshots, dependency indexes, and event selection.
 
-    Codec validation is complete before requests arrive here. Schema-kind and
-    live-query rules are checked while resolving the subscription. Store's
-    public synchronization scope keeps snapshots and their revisions together.
+    Resolve schema kinds and query dependencies before checking cache hints.
+    Store's lock covers snapshots, revision comparisons, and registration.
+    None snapshots certify a matching cache; empty snapshots replace data.
+
+    Capture runs synchronously during commit publication. The runtime queues
+    messages for ordered delivery, including to the requesting subscriber.
+    Clients must coordinate snapshot installation with buffered live events.
     """
 
     def __init__(self, store: Store, queries: HostQueries) -> None:
@@ -86,10 +91,13 @@ class HostSubscriptions:
                     f"{request.schema} is not a {schema_type.__name__}"
                 )
 
-            snapshot = self._store.snapshot_by_schema(request.schema)
-            revision = self._store.revision
+            revision, snapshot = self._store.snapshot_if_changed(
+                request.schema,
+                revision=request.revision,
+                server_instance_id=request.store_instance_id,
+            )
             subscription, _ = self._acquire(
-                client_id, request.schema, revision
+                client_id, request.schema, {request.schema: revision}
             )
 
             if single:
@@ -98,37 +106,53 @@ class HostSubscriptions:
                     subscription_id=subscription.subscription_id,
                     store_instance_id=self._store.instance_id,
                     revision=revision,
-                    values=tuple(snapshot.items()),
+                    values=(
+                        None if snapshot is None else tuple(snapshot.items())
+                    ),
                 )
+
+            rows = None
+            if snapshot is not None:
+                rows = tuple(QueryRow(id, row) for id, row in snapshot.items())
 
             return CollectionSubscriptionResponse(
                 request_id=request.request_id,
                 subscription_id=subscription.subscription_id,
                 store_instance_id=self._store.instance_id,
                 revision=revision,
-                rows=tuple(QueryRow(id, row) for id, row in snapshot.items()),
+                rows=rows,
             )
 
     def subscribe_query(
         self, client_id: str, request: QuerySubscriptionRequest
     ) -> QuerySubscriptionResponse:
         with self._store.synchronized():
-            query = self._queries.acquire(request.query, self._store.revision)
-            subscription, created = self._acquire(
-                client_id, query, query.revision
-            )
+            query = self._queries.acquire(request.query)
+            created = False
+            try:
+                revisions = query.schema_revisions
+                cached = request.schema_revisions
+                unchanged = (
+                    request.store_instance_id == self._store.instance_id
+                    and cached is not None
+                    and all(type(value) is int for value in cached.values())
+                    and cached == revisions
+                )
+                subscription, created = self._acquire(
+                    client_id, query, revisions
+                )
 
-            if not created:
-                self._queries.release(query)
-
-            return QuerySubscriptionResponse(
-                request_id=request.request_id,
-                subscription_id=subscription.subscription_id,
-                store_instance_id=self._store.instance_id,
-                revision=query.revision,
-                shape=query.shape,
-                rows=query.rows,
-            )
+                return QuerySubscriptionResponse(
+                    request_id=request.request_id,
+                    subscription_id=subscription.subscription_id,
+                    store_instance_id=self._store.instance_id,
+                    schema_revisions=revisions,
+                    shape=query.shape,
+                    rows=None if unchanged else query.rows,
+                )
+            finally:
+                if not created:
+                    self._queries.release(query)
 
     def get(
         self, client_id: str, subscription_id: str
@@ -151,7 +175,7 @@ class HostSubscriptions:
         with self._store.synchronized():
             selected: dict[str, HostSubscription] = {}
 
-            for schema in dict.fromkeys(e.schema for e in commit.events):
+            for schema in commit.schema_revisions:
                 selected.update(self._by_schema.get(schema, {}))
 
             return tuple(selected.values())
@@ -159,13 +183,19 @@ class HostSubscriptions:
     def capture(
         self, commit: StoreCommit
     ) -> tuple[tuple[str, EventMessage], ...]:
-        """Capture all affected query results before asynchronous delivery."""
+        """Capture a complete Store commit before asynchronous delivery."""
         with self._store.synchronized():
-            revision = cast(int, commit.revision)
+            self._require_instance(commit)
+            changed_schemas = {event.schema for event in commit.events}
+            if changed_schemas != set(commit.schema_revisions):
+                raise StoreStateError(
+                    "Store commit revisions must match its changes"
+                )
+
             selected: dict[str, list[HostSubscription]] = {}
 
             for subscription in self.affected(commit):
-                if not subscription.revision.covers(revision):
+                if not subscription.revision.covers(commit.schema_revisions):
                     selected.setdefault(subscription.client_id, []).append(
                         subscription
                     )
@@ -173,33 +203,22 @@ class HostSubscriptions:
             messages: list[tuple[str, EventMessage]] = []
 
             for client_id, subscriptions in selected.items():
-                schemas: set[str] = set()
                 query_events: list[QueryEvent] = []
 
                 for subscription in subscriptions:
                     source = subscription.source
 
-                    if isinstance(source, str):
-                        schemas.add(source)
-                    else:
-                        source.capture(revision)
+                    if isinstance(source, HostQuery):
+                        if not source.capture(commit.schema_revisions):
+                            raise StoreStateError(
+                                "Query changes do not cover this subscription"
+                            )
                         event = source.event(subscription.subscription_id)
 
                         if event is not None:
                             query_events.append(event)
 
-                message = EventMessage(
-                    commit=replace(
-                        commit,
-                        events=tuple(
-                            e for e in commit.events if e.schema in schemas
-                        ),
-                    ),
-                    subscription_ids=tuple(
-                        s.subscription_id for s in subscriptions
-                    ),
-                    query_events=tuple(query_events),
-                )
+                message = _message(commit, subscriptions, query_events)
                 messages.append((client_id, message))
 
             return tuple(messages)
@@ -207,43 +226,49 @@ class HostSubscriptions:
     def prepare(
         self, client_id: str, message: EventMessage
     ) -> EventMessage | None:
-        """Filter released subscriptions and revisions covered by snapshots."""
-        with self._store.synchronized():
-            revision = cast(int, message.commit.revision)
-            subscription_ids: list[str] = []
-            schemas: set[str] = set()
+        """Filter covered changes and validate all progress before advancing.
 
-            for subscription_id in message.subscription_ids:
+        This is delivery progress, not a client acknowledgement. The runtime
+        must invalidate the connection if validation or transport delivery
+        fails. A later snapshot or release can discard already queued data.
+        """
+        with self._store.synchronized():
+            self._require_instance(message.commit)
+            revisions = message.commit.schema_revisions
+            subscriptions: list[HostSubscription] = []
+            changed_schemas = {event.schema for event in message.commit.events}
+
+            for subscription_id in dict.fromkeys(message.subscription_ids):
                 subscription = self.get(client_id, subscription_id)
 
                 if subscription is None:
                     continue
 
-                if not subscription.revision.accept(revision):
+                candidate = SubscriptionRevision(subscription.revision.current)
+                if not candidate.accept(revisions):
                     continue
 
-                subscription_ids.append(subscription_id)
+                source = subscription.source
+                if isinstance(source, str) and source not in changed_schemas:
+                    raise StoreStateError(
+                        "Schema update is missing its canonical events"
+                    )
+                subscriptions.append(subscription)
 
-                if isinstance(subscription.source, str):
-                    schemas.add(subscription.source)
-
-            if not subscription_ids:
+            if not subscriptions:
                 return None
 
-            covered = set(subscription_ids)
-            return EventMessage(
-                commit=replace(
-                    message.commit,
-                    events=tuple(
-                        e for e in message.commit.events if e.schema in schemas
-                    ),
-                ),
-                subscription_ids=tuple(subscription_ids),
-                query_events=tuple(
-                    e
-                    for e in message.query_events
-                    if e.subscription_id in covered
-                ),
+            prepared = _message(
+                message.commit, subscriptions, message.query_events
+            )
+            for subscription in subscriptions:
+                subscription.revision.accept(revisions)
+            return prepared
+
+    def _require_instance(self, commit: StoreCommit) -> None:
+        if commit.server_instance_id != self._store.instance_id:
+            raise StoreStateError(
+                "Subscription commit belongs to another Store"
             )
 
     def release(
@@ -274,20 +299,23 @@ class HostSubscriptions:
             self._queries.clear()
 
     def _acquire(
-        self, client_id: str, source: str | HostQuery, revision: int
+        self,
+        client_id: str,
+        source: str | HostQuery,
+        revisions: Mapping[str, int],
     ) -> tuple[HostSubscription, bool]:
         key = source if isinstance(source, str) else source.source
         existing = self._by_client.get(client_id, {}).get(key)
 
         if existing is not None:
-            existing.revision.hydrate(revision)
+            existing.revision.hydrate(revisions)
             return existing, False
 
         subscription = HostSubscription(
             subscription_id=uuid4().hex,
             client_id=client_id,
             source=source,
-            revision=SubscriptionRevision(revision),
+            revision=SubscriptionRevision(revisions),
         )
         self._by_id[subscription.subscription_id] = subscription
         self._by_client.setdefault(client_id, {})[key] = subscription
@@ -322,3 +350,38 @@ class HostSubscriptions:
     def __len__(self) -> int:
         with self._store.synchronized():
             return len(self._by_id)
+
+
+def _message(
+    commit: StoreCommit,
+    subscriptions: Sequence[HostSubscription],
+    query_events: Sequence[QueryEvent],
+) -> EventMessage:
+    """Limit events and revision metadata to covered subscriptions."""
+    schemas = {
+        subscription.source
+        for subscription in subscriptions
+        if isinstance(subscription.source, str)
+    }
+    dependencies = {
+        schema
+        for subscription in subscriptions
+        for schema in subscription.dependencies
+    }
+    subscription_ids = tuple(s.subscription_id for s in subscriptions)
+    covered = set(subscription_ids)
+    return EventMessage(
+        commit=replace(
+            commit,
+            events=tuple(e for e in commit.events if e.schema in schemas),
+            schema_revisions={
+                schema: revision
+                for schema, revision in commit.schema_revisions.items()
+                if schema in dependencies
+            },
+        ),
+        subscription_ids=subscription_ids,
+        query_events=tuple(
+            e for e in query_events if e.subscription_id in covered
+        ),
+    )

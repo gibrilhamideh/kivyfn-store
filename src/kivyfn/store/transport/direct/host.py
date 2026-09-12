@@ -41,7 +41,11 @@ class DirectHostTransport(HostTransport):
 
     @property
     def endpoint(self) -> dict[str, Any]:
-        return {"transport": "direct", "name": self.name}
+        return {
+            "transport": "direct",
+            "name": self.name,
+            "endpoint": f"direct://{self.name}",
+        }
 
     async def start(self, store_host: StoreHost) -> None:
         if self.running:
@@ -90,6 +94,10 @@ class DirectHostTransport(HostTransport):
         self._clients[client_id] = (event_handler, close_handler)
         try:
             await self.store_host.connect(client_id)
+            if not self.running or client_id not in self._clients:
+                raise StoreConnectionError(
+                    "Direct Store endpoint stopped during connection"
+                )
         except BaseException:
             self._clients.pop(client_id, None)
             await self.store_host.disconnect(client_id)

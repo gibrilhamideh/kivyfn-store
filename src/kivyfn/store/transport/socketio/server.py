@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlunsplit
 
 import socketio
 from aiohttp import web
@@ -172,11 +173,22 @@ class SocketIOServerTransport(HostTransport):
 
     @property
     def endpoint(self) -> dict[str, Any]:
+        host = self.host
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
+        elif host == "::":
+            host = "::1"
+        if ":" in host:
+            host = f"[{host}]"
+        endpoint = urlunsplit(
+            ("http", f"{host}:{self.port}", f"/{self.socketio_path}", "", "")
+        )
         return {
             "transport": "socketio",
             "host": self.host,
             "port": self.port,
             "socketio_path": self.socketio_path,
+            "endpoint": endpoint,
         }
 
     def _create_server(self) -> None:

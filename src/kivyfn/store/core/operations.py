@@ -1,7 +1,7 @@
 # src/kivyfn/store/core/operations.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from kivyfn.store.events.event import (
     InsertEvent,
@@ -23,9 +23,6 @@ if TYPE_CHECKING:
     from kivyfn.store.node import Node
 
 
-_UNSET = object()
-
-
 class Operation:
     def __init__(self, node: Node, instruction: Instruction) -> None:
         self.node = node
@@ -35,9 +32,6 @@ class Operation:
         self.source = instruction.source
 
     def execute(self) -> StoreEvent:
-        raise NotImplementedError()
-
-    def undo(self) -> StoreEvent:
         raise NotImplementedError()
 
     def _repr_details(self) -> str:
@@ -58,34 +52,19 @@ class SetOperation(Operation):
         super().__init__(node, instruction)
         self.key = instruction.key
         self.new_value = instruction.value
-        self._old_value: Any = _UNSET
 
     def _repr_details(self) -> str:
         return f"key={self.key!r}, value={self.new_value!r}"
 
     def execute(self) -> SetEvent:
-        self._old_value = self.node.set(self.key, self.new_value)
+        old_value = self.node.set(self.key, self.new_value)
 
         return SetEvent(
             schema=self.node.schema.name,
             source=self.source,
             key=self.key,
-            old=self._old_value,
+            old=old_value,
             new=self.new_value,
-        )
-
-    def undo(self) -> SetEvent:
-        if self._old_value is _UNSET:
-            raise RuntimeError("Cannot undo a SET operation before execution")
-
-        current = self.node.set(self.key, self._old_value)
-
-        return SetEvent(
-            schema=self.node.schema.name,
-            source=self.source,
-            key=self.key,
-            old=current,
-            new=self._old_value,
         )
 
 
@@ -95,38 +74,20 @@ class SetRowOperation(Operation):
         self.id = instruction.id
         self.key = instruction.key
         self.new_value = instruction.value
-        self._old_value: Any = _UNSET
 
     def _repr_details(self) -> str:
         return f"id={self.id!r}, key={self.key!r}, value={self.new_value!r}"
 
     def execute(self) -> SetRowEvent:
-        self._old_value = self.node.setrow(self.id, self.key, self.new_value)
+        old_value = self.node.setrow(self.id, self.key, self.new_value)
 
         return SetRowEvent(
             schema=self.node.schema.name,
             source=self.source,
             id=self.id,
             key=self.key,
-            old=self._old_value,
+            old=old_value,
             new=self.new_value,
-        )
-
-    def undo(self) -> SetRowEvent:
-        if self._old_value is _UNSET:
-            raise RuntimeError(
-                "Cannot undo a SETROW operation before execution"
-            )
-
-        current = self.node.setrow(self.id, self.key, self._old_value)
-
-        return SetRowEvent(
-            schema=self.node.schema.name,
-            source=self.source,
-            id=self.id,
-            key=self.key,
-            old=current,
-            new=self._old_value,
         )
 
 
@@ -153,51 +114,21 @@ class InsertOperation(Operation):
             new=row,
         )
 
-    def undo(self) -> RemoveEvent:
-        row = self.node.remove(self.id)
-
-        return RemoveEvent(
-            schema=self.node.schema.name,
-            source=self.source,
-            id=self.id,
-            old=row,
-        )
-
 
 class RemoveOperation(Operation):
     def __init__(self, node: Node, instruction: RemoveInstruction) -> None:
         super().__init__(node, instruction)
         self.id = instruction.id
-        self._old_row: dict[str, Any] | None = None
 
     def _repr_details(self) -> str:
         return f"id={self.id!r}"
 
     def execute(self) -> RemoveEvent:
-        self._old_row = self.node.remove(self.id)
+        old_row = self.node.remove(self.id)
 
         return RemoveEvent(
             schema=self.node.schema.name,
             source=self.source,
             id=self.id,
-            old=self._old_row,
-        )
-
-    def undo(self) -> InsertEvent:
-        if self._old_row is None:
-            raise RuntimeError(
-                "Cannot undo a REMOVE operation before execution"
-            )
-
-        self.node.insert(self.id, self._old_row)
-        row = self.node.snapshot(id=self.id)
-
-        if not isinstance(row, dict):
-            raise RuntimeError("Restored Store row could not be read back")
-
-        return InsertEvent(
-            schema=self.node.schema.name,
-            source=self.source,
-            id=self.id,
-            new=row,
+            old=old_row,
         )

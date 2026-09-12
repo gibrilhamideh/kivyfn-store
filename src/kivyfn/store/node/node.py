@@ -29,7 +29,8 @@ class Node:
     def __init__(self, schema: Schema, address: Address) -> None:
         if not isinstance(schema, (SingleSchema, ManySchema)):
             raise TypeError(
-                f"Schema {type(schema).__name__!r} must inherit SingleSchema or ManySchema"
+                f"Schema {type(schema).__name__!r} must inherit "
+                "SingleSchema or ManySchema"
             )
 
         self.schema = schema
@@ -38,10 +39,34 @@ class Node:
 
         self.value: dict[str, Any] = {}
 
-        self._indexes = IndexManager(schema) if isinstance(schema, ManySchema) else None
+        self._revision = 0
+        self._indexes = (
+            IndexManager(schema) if isinstance(schema, ManySchema) else None
+        )
 
     def __repr__(self) -> str:
-        return f"Node(schema={self.schema.name}, children={len(self.children)})"
+        return (
+            f"Node(schema={self.schema.name}, children={len(self.children)})"
+        )
+
+    # -------------------------------------------------
+    # Schema revision
+    # -------------------------------------------------
+
+    @property
+    def revision(self) -> int:
+        """Current schema revision within this Store instance."""
+        return self._revision
+
+    def advance_revision(self) -> int:
+        """Advance once after a successful commit changes this schema.
+
+        Store calls this under its mutation lock after execution succeeds.
+        Boot and low-level mutation methods do not advance the counter.
+        The counter is in memory only and has no retained event history.
+        """
+        self._revision += 1
+        return self._revision
 
     # -------------------------------------------------
     # Build / boot
@@ -63,7 +88,10 @@ class Node:
 
         if not isinstance(data, Mapping):
             if not recover:
-                raise TypeError(f"Persisted schema {self.schema.name!r} must contain a mapping")
+                raise TypeError(
+                    f"Persisted schema {self.schema.name!r} "
+                    "must contain a mapping"
+                )
 
             logger.error(
                 "Resetting persisted schema %s: expected mapping, got %s",
@@ -77,7 +105,10 @@ class Node:
 
             if not isinstance(raw_row, Mapping):
                 if not recover:
-                    raise TypeError(f"Persisted row {self.schema.name}[{row_id}] must contain a mapping")
+                    raise TypeError(
+                        f"Persisted row {self.schema.name}[{row_id}] "
+                        "must contain a mapping"
+                    )
 
                 logger.error(
                     "Removing persisted row %s[%s]: expected mapping, got %s",
@@ -94,7 +125,8 @@ class Node:
                     raise
 
                 logger.error(
-                    "Removing persisted row %s[%s]: field could not be recovered: %s",
+                    "Removing persisted row %s[%s]: "
+                    "field could not be recovered: %s",
                     self.schema.name,
                     row_id,
                     exc,
@@ -120,7 +152,10 @@ class Node:
 
         elif not isinstance(data, Mapping):
             if not recover:
-                raise TypeError(f"Persisted schema {self.schema.name!r} must contain a mapping")
+                raise TypeError(
+                    f"Persisted schema {self.schema.name!r} "
+                    "must contain a mapping"
+                )
 
             logger.error(
                 "Resetting persisted schema %s: expected mapping, got %s",
@@ -161,7 +196,8 @@ class Node:
                     location += f"[{row_id}]"
 
                 logger.error(
-                    "Recovering persisted field %s.%s: invalid value %r replaced with default %r: %s",
+                    "Recovering persisted field %s.%s: invalid value %r "
+                    "replaced with default %r: %s",
                     location,
                     name,
                     value,
@@ -279,12 +315,16 @@ class Node:
     # Read / lookup API
     # -------------------------------------------------
 
-    def lookup_one(self, fields: str | tuple[str, ...], value: Any) -> str | None:
+    def lookup_one(
+        self, fields: str | tuple[str, ...], value: Any
+    ) -> str | None:
         indexes = self._many_indexes(operation="lookup")
 
         return indexes.lookup_one(fields, value)
 
-    def lookup_all(self, fields: str | tuple[str, ...], value: Any) -> frozenset[str]:
+    def lookup_all(
+        self, fields: str | tuple[str, ...], value: Any
+    ) -> frozenset[str]:
         indexes = self._many_indexes(operation="lookup")
 
         return indexes.lookup_all(fields, value)
@@ -319,10 +359,7 @@ class Node:
     # -------------------------------------------------
 
     def _many_indexes(
-        self,
-        *,
-        operation: str,
-        row_id: str | None = None,
+        self, *, operation: str, row_id: str | None = None
     ) -> IndexManager:
         if not isinstance(self.schema, ManySchema) or self._indexes is None:
             raise InvalidOperationError(
@@ -349,4 +386,3 @@ class Node:
                 operation=operation,
             ),
         )
-
