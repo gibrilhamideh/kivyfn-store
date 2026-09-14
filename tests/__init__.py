@@ -1,0 +1,1 @@
+"""KivyFN Store test suite."""

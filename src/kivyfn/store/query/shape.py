@@ -5,8 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from kivyfn.store.query import Query
-from kivyfn.store.query.query import JoinKind
+from kivyfn.store.query.query import JoinKind, Query
 from kivyfn.store.schema import ManySchema, Schema
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 
@@ -60,9 +59,7 @@ class QueryShape:
     ) -> QueryShape:
         joins: list[QueryJoinShape] = []
         fields = _root_fields(root)
-
         field_names = {field.name for field in fields}
-
         relations: dict[tuple[str, ...], Schema] = {(): root}
 
         for join in query.joins:
@@ -78,7 +75,6 @@ class QueryShape:
                 )
 
             field_name, relation = _foreign_key(owner, requested[-1])
-
             target = resolve_schema(relation.schema)
 
             if not isinstance(target, ManySchema):
@@ -86,8 +82,7 @@ class QueryShape:
                     "Query foreign-key targets must use a ManySchema"
                 )
 
-            output_name = join.alias or relation.relation_name(field_name)
-            relation_path = (*owner_path, output_name)
+            relation_path = (*owner_path, join.alias)
 
             if relation_path in relations:
                 raise ValueError(
@@ -101,7 +96,7 @@ class QueryShape:
                 owner_path=owner_path,
                 relation_path=relation_path,
                 field_name=field_name,
-                output_name=output_name,
+                output_name=join.alias,
                 output_prefix=output_prefix,
                 target_schema=target.name,
                 kind=join.kind,
@@ -175,28 +170,14 @@ def _joined_fields(
 
 
 def _foreign_key(
-    schema: Schema, relation_name: str
+    schema: Schema, field_name: str
 ) -> tuple[str, ForeignKeyField]:
-    candidates: list[tuple[str, ForeignKeyField]] = []
+    field = schema.foreign_key_fields().get(field_name)
 
-    for field_name, field in schema.foreign_key_fields().items():
-        if field_name == relation_name:
-            candidates.append((field_name, field))
-            continue
-
-        if field.relation_name(field_name) == relation_name:
-            candidates.append((field_name, field))
-
-    if not candidates:
+    if field is None:
         raise ValueError(
-            f"Query join relation {relation_name!r} does not exist "
+            f"Query join field {field_name!r} is not a foreign key "
             f"on {schema.name}"
         )
 
-    if len(candidates) > 1:
-        raise ValueError(
-            f"Query join relation {relation_name!r} is ambiguous "
-            f"on {schema.name}"
-        )
-
-    return candidates[0]
+    return field_name, field

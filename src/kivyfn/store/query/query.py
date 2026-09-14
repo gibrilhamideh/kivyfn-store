@@ -25,7 +25,7 @@ class JoinKind(str, Enum):
 class JoinSpec:
     path: FieldPath
     kind: JoinKind
-    alias: str | None = None
+    alias: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, FieldPath):
@@ -84,14 +84,10 @@ class Query(Generic[SchemaT]):
 
         return replace(self, predicate=predicate)
 
-    def join(
-        self, path: str | FieldPath, *, as_: str | None = None
-    ) -> Query[SchemaT]:
+    def join(self, path: str | FieldPath, *, as_: str) -> Query[SchemaT]:
         return self._join(path, alias=as_, kind=JoinKind.INNER)
 
-    def left_join(
-        self, path: str | FieldPath, *, as_: str | None = None
-    ) -> Query[SchemaT]:
+    def left_join(self, path: str | FieldPath, *, as_: str) -> Query[SchemaT]:
         return self._join(path, alias=as_, kind=JoinKind.LEFT)
 
     @property
@@ -107,7 +103,7 @@ class Query(Generic[SchemaT]):
         return None
 
     def _join(
-        self, path: str | FieldPath, *, alias: str | None, kind: JoinKind
+        self, path: str | FieldPath, *, alias: str, kind: JoinKind
     ) -> Query[SchemaT]:
         field_path = path if isinstance(path, FieldPath) else FieldPath(path)
 
@@ -141,9 +137,6 @@ def _validate_joins(joins: tuple[JoinSpec, ...]) -> None:
 
         paths.add(join.path)
 
-        if join.alias is None:
-            continue
-
         if join.alias in aliases:
             raise ValueError(
                 f"Query join alias {join.alias!r} is already used"
@@ -152,10 +145,7 @@ def _validate_joins(joins: tuple[JoinSpec, ...]) -> None:
         aliases.add(join.alias)
 
 
-def _validate_alias(alias: str | None) -> None:
-    if alias is None:
-        return
-
+def _validate_alias(alias: str) -> None:
     if not isinstance(alias, str) or not alias:
         raise ValueError("Query join aliases must be non-empty strings")
 

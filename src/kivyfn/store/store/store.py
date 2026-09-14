@@ -62,11 +62,21 @@ class Store:
         if self._shutdown:
             raise StoreStateError("A shut-down Store cannot be booted")
 
+        logger.info("Booting Store instance=%s", self._instance_id)
+
         self._engine.boot()
+
+        logger.info(
+            "Store booted instance=%s schemas=%d",
+            self._instance_id,
+            len(self._engine.metadata.nodes_by_schema),
+        )
 
     def shutdown(self) -> None:
         if self._shutdown:
             return
+
+        logger.info("Shutting down Store instance=%s", self._instance_id)
 
         self._shutdown = True
         self._commit_listeners.clear()
@@ -106,26 +116,22 @@ class Store:
 
     def get_node_by_address(self, address: Address) -> Node:
         self._require_booted()
-
         return self._engine.get_node_by_address(address)
 
     def get_node_by_schema(self, schema: str) -> Node:
         self._require_booted()
-
         return self._engine.get_node_by_schema(schema)
 
     def snapshot_by_address(
         self, address: Address, id: str | None = None, key: str | None = None
     ) -> Any:
         self._require_booted()
-
         return self._engine.snapshot_by_address(address, id=id, key=key)
 
     def snapshot_by_schema(
         self, schema: str, id: str | None = None, key: str | None = None
     ) -> Any:
         self._require_booted()
-
         return self._engine.snapshot_by_schema(schema, id=id, key=key)
 
     def snapshot_if_changed(
@@ -138,7 +144,6 @@ class Store:
         self._require_booted()
 
         node = self._engine.get_node_by_schema(schema)
-
         current = node.revision
 
         if store_instance_id == self._instance_id and revision == current:
@@ -148,29 +153,29 @@ class Store:
 
     def query(self, query: Query[Any]) -> QueryResult:
         self._require_booted()
-
         return self._engine.query(query)
 
     def compile_query(self, query: Query[Any]) -> QueryPlan:
         self._require_booted()
-
         return self._engine.compile_query(query)
 
     def execute_query(self, plan: QueryPlan) -> QueryResult:
         self._require_booted()
-
         return self._engine.execute_query(plan)
 
     # -------------------------------------------------
-    # Mutations
+    # Transactions
     # -------------------------------------------------
 
     def execute(
         self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
     ) -> ExecutionResult:
         """Execute Store mutation actions as one atomic transaction."""
-
         self._require_booted()
+
+        logger.info(
+            "Transaction start id=%s actions=%d", transaction_id, len(actions)
+        )
 
         try:
             instructions = self._instructions.build(actions)
@@ -181,9 +186,21 @@ class Store:
                 stage=StoreErrorStage.RESOLVE,
             )
 
+            logger.warning(
+                "Transaction resolve failed id=%s error=%r",
+                transaction_id,
+                error,
+            )
+
             return ExecutionResult(
                 success=False, stage=StoreErrorStage.RESOLVE, error=error
             )
+
+        logger.debug(
+            "Transaction resolved id=%s instructions=%d",
+            transaction_id,
+            len(instructions),
+        )
 
         try:
             result = self._engine.execute(
@@ -191,13 +208,31 @@ class Store:
             )
 
             if not result.success:
+                logger.warning(
+                    "Transaction failed id=%s stage=%s error=%r",
+                    transaction_id,
+                    result.stage,
+                    result.error,
+                )
                 return result
 
             commit = self._record_commit(cast(StoreCommit, result.commit))
 
+            logger.info(
+                "Transaction committed id=%s events=%d revisions=%r",
+                transaction_id,
+                len(commit.events),
+                commit.schema_revisions,
+            )
+
             return replace(result, commit=commit)
 
         except Exception:
+            logger.exception(
+                "Transaction crashed id=%s; shutting down Store",
+                transaction_id,
+            )
+
             self.shutdown()
             raise
 
@@ -209,15 +244,22 @@ class Store:
         self, callback: Callable[[StoreCommit], None]
     ) -> Callable[[], None]:
         """Subscribe to future Store commits."""
-
         self._require_booted()
 
         token = object()
-
         self._commit_listeners[token] = callback
+
+        logger.debug(
+            "Commit listener added listeners=%d", len(self._commit_listeners)
+        )
 
         def unsubscribe() -> None:
             self._commit_listeners.pop(token, None)
+
+            logger.debug(
+                "Commit listener removed listeners=%d",
+                len(self._commit_listeners),
+            )
 
         return unsubscribe
 
@@ -233,6 +275,13 @@ class Store:
             while self._pending_commits:
                 current, tokens = self._pending_commits.popleft()
 
+                logger.debug(
+                    "Publishing commit transaction=%s listeners=%d events=%d",
+                    current.transaction_id,
+                    len(tokens),
+                    len(current.events),
+                )
+
                 for token in tokens:
                     callback = self._commit_listeners.get(token)
 
@@ -244,7 +293,9 @@ class Store:
 
                     except Exception:
                         logger.exception(
-                            "Store commit callback failed for schemas %s",
+                            "Store commit callback failed transaction=%s "
+                            "schemas=%r",
+                            current.transaction_id,
                             current.schema_revisions,
                         )
 
@@ -257,7 +308,6 @@ class Store:
 
     def _record_commit(self, commit: StoreCommit) -> StoreCommit:
         """Advance each changed schema once for this commit."""
-
         schemas = dict.fromkeys(event.schema for event in commit.events)
 
         nodes = {

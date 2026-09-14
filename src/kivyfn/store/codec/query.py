@@ -290,17 +290,10 @@ def _join_to_payload(join: JoinSpec) -> dict[str, Any]:
 
 def _join_from_payload(payload: Any) -> JoinSpec:
     data = _require_dict(payload, "query join")
+    alias = _query_string(data, "alias")
 
-    alias = data.get("alias")
-
-    if alias is not None:
-        if not isinstance(alias, str) or not alias:
-            raise ValueError(
-                "Serialized query join alias must be a non-empty string"
-            )
-
-        if "." in alias:
-            raise ValueError("Serialized query join alias cannot contain dots")
+    if "." in alias:
+        raise ValueError("Serialized query join alias cannot contain dots")
 
     return JoinSpec(
         path=FieldPath(_string_parts(data.get("path"), "query join path")),

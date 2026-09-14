@@ -34,6 +34,7 @@ from kivyfn.store.protocol.message.responses import (
     TransactionResponse,
 )
 from kivyfn.store.query import Query, QueryRow
+from kivyfn.store.query.shape import QueryFieldShape, QueryShape
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.data import StateData
@@ -120,13 +121,15 @@ class StateManager:
         )
 
     def request_transaction(self, transaction: StateTransaction) -> None:
+        actions = tuple(
+            request
+            for action in transaction.actions
+            for request in self._request_actions(action)
+        )
+
         context = self._context(transaction)
 
         self._begin_participants(context)
-
-        actions = tuple(
-            self._request_action(action) for action in transaction.actions
-        )
 
         future = self._client.transaction(
             transaction_id=transaction.id, actions=actions
@@ -462,51 +465,113 @@ class StateManager:
         for collection in context.collections:
             collection.fail_transaction(transaction, failure)
 
-    def _request_action(self, action: TransactionAction) -> RequestAction:
+    def _request_actions(
+        self, action: TransactionAction
+    ) -> tuple[RequestAction, ...]:
         if isinstance(action, SetAction):
-            return SetRequestAction(
-                schema=action.state.schema.name,
-                values=tuple(action.values.items()),
+            return (
+                SetRequestAction(
+                    schema=action.state.schema.name,
+                    values=tuple(action.values.items()),
+                ),
             )
 
         if isinstance(action, SetRowAction):
-            return SetRowRequestAction(
-                schema=action.state.schema.name,
-                row_id=_row_id(action.state),
-                values=tuple(action.values.items()),
-            )
+            return self._setrow_request_actions(action)
 
         if isinstance(action, InsertAction):
-            return InsertRequestAction(
-                schema=action.collection.schema.name,
-                row_id=_row_id(action.state),
-                values=tuple(action.values.items()),
+            return (
+                InsertRequestAction(
+                    schema=action.collection.schema.name,
+                    row_id=_row_id(action.state),
+                    values=tuple(action.values.items()),
+                ),
             )
 
         if isinstance(action, RemoveAction):
-            return RemoveRequestAction(
-                schema=action.collection.schema.name,
-                row_id=_row_id(action.state),
+            return (
+                RemoveRequestAction(
+                    schema=action.collection.schema.name,
+                    row_id=_row_id(action.state),
+                ),
             )
 
         if isinstance(action, SignalAction):
             row_id = action.state.row_id
 
             if row_id is None:
-                return SignalRequestAction(
-                    schema=action.state.schema.name,
-                    signal=action.signal,
-                    data=action.data,
+                return (
+                    SignalRequestAction(
+                        schema=action.state.schema.name,
+                        signal=action.signal,
+                        data=action.data,
+                    ),
                 )
 
-            return SignalRowRequestAction(
-                schema=action.state.schema.name,
-                row_id=row_id,
-                signal=action.signal,
-                data=action.data,
+            return (
+                SignalRowRequestAction(
+                    schema=action.state.schema.name,
+                    row_id=row_id,
+                    signal=action.signal,
+                    data=action.data,
+                ),
             )
 
         raise TypeError("Unsupported State transaction action")
+
+    def _setrow_request_actions(
+        self, action: SetRowAction
+    ) -> tuple[RequestAction, ...]:
+        target = self._query_target(action.state, tuple(action.values))
+
+        if target is None:
+            return (
+                SetRowRequestAction(
+                    schema=action.state.schema.name,
+                    row_id=_row_id(action.state),
+                    values=tuple(action.values.items()),
+                ),
+            )
+
+        grouped: dict[tuple[str, str], list[tuple[str, Any]]] = {}
+
+        for name, value in action.values.items():
+            field = target.shape.field(name)
+            row_id = _query_field_row_id(action.state, target.shape, field)
+            key = (field.schema, row_id)
+            grouped.setdefault(key, []).append((field.field, value))
+
+        return tuple(
+            SetRowRequestAction(
+                schema=schema, row_id=row_id, values=tuple(values)
+            )
+            for (schema, row_id), values in grouped.items()
+        )
+
+    def _query_target(
+        self, state: State[Any], fields: tuple[str, ...]
+    ) -> QueryCollectionState[Any] | None:
+        row_id = state.row_id
+
+        if row_id is None:
+            return None
+
+        for target in self._targets.values():
+            if not isinstance(target, QueryCollectionState):
+                continue
+
+            if target.get(row_id) is not state:
+                continue
+
+            try:
+                for field in fields:
+                    target.shape.field(field)
+            except KeyError:
+                continue
+
+            return target
+
+        return None
 
     def _complete_transaction(
         self,
@@ -727,15 +792,86 @@ class StateManager:
 
         target.publish_membership(delta)
 
+        if isinstance(target, CollectionState) and not isinstance(
+            target, QueryCollectionState
+        ):
+            target.publish_insert(action.row_id, state)
+
     def _apply_remove_event(
         self, target: ReactiveTarget, action: RemoveEventAction
     ) -> None:
         if isinstance(target, State):
             raise TypeError("Remove event requires a collection target")
 
+        if isinstance(target, CollectionState) and not isinstance(
+            target, QueryCollectionState
+        ):
+            state = self._registry.create_row(
+                type(target.schema), action.row_id
+            )
+        else:
+            state = target.get(action.row_id)
+
+            if state is None:
+                raise RuntimeError(
+                    f"Remove event references an unknown row: {action.row_id!r}"
+                )
+
         delta = target.leave(action.row_id)
 
         target.publish_membership(delta)
+
+        if isinstance(target, CollectionState) and not isinstance(
+            target, QueryCollectionState
+        ):
+            target.publish_remove(action.row_id, state)
+
+
+def _query_field_row_id(
+    state: State[Any], shape: QueryShape, field: QueryFieldShape
+) -> str:
+    if not field.relation_path:
+        return _row_id(state)
+
+    join = next(
+        (
+            join
+            for join in shape.joins
+            if join.relation_path == field.relation_path
+        ),
+        None,
+    )
+
+    if join is None:
+        raise RuntimeError(
+            f"Query field {field.name!r} has no matching join relationship"
+        )
+
+    owner_field = next(
+        (
+            candidate
+            for candidate in shape.fields
+            if candidate.relation_path == join.owner_path
+            and candidate.field == join.field_name
+        ),
+        None,
+    )
+
+    if owner_field is None:
+        raise RuntimeError(
+            f"Query join {'.'.join(join.relation_path)!r} has no owner "
+            "foreign-key field"
+        )
+
+    row_id = getattr(state, owner_field.name)
+
+    if row_id is None:
+        raise ValueError(
+            f"Cannot write query field {field.name!r}: relationship "
+            f"{'.'.join(field.relation_path)!r} has no target row"
+        )
+
+    return str(row_id)
 
 
 def _insert_values(
