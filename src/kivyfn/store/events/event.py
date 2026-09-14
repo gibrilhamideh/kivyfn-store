@@ -83,6 +83,6 @@ class StoreCommit:
     """
 
     events: tuple[StoreEvent, ...]
-    operation_id: str | None = None
+    transaction_id: str | None = None
     server_instance_id: str | None = None
     schema_revisions: dict[str, int] = field(default_factory=dict)

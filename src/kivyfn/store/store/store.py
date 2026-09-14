@@ -187,7 +187,7 @@ class Store:
 
         try:
             result = self._engine.execute(
-                instructions, operation_id=transaction_id
+                instructions, transaction_id=transaction_id
             )
 
             if not result.success:

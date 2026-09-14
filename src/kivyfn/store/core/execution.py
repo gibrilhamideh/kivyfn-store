@@ -39,11 +39,11 @@ class Execution:
         engine: Engine,
         instructions: tuple[Instruction, ...],
         *,
-        operation_id: str | None = None,
+        transaction_id: str | None = None,
     ) -> None:
         self.engine = engine
         self.instructions = instructions
-        self.operation_id = operation_id
+        self.transaction_id = transaction_id
 
     def execute(self) -> ExecutionResult:
         compiler = Compiler(self.engine, self.instructions)
@@ -89,7 +89,9 @@ class Execution:
             success=True,
             stage=StoreErrorStage.EXECUTE,
             compiled=tuple(compiled),
-            commit=StoreCommit(events=events, operation_id=self.operation_id),
+            commit=StoreCommit(
+                events=events, transaction_id=self.transaction_id
+            ),
             touched_nodes=delta.touched_nodes,
         )
 

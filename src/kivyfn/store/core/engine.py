@@ -135,7 +135,7 @@ class Engine:
         self,
         instructions: tuple[Instruction, ...],
         *,
-        operation_id: str | None = None,
+        transaction_id: str | None = None,
     ) -> ExecutionResult:
         """
         Compile, validate, and execute one atomic batch of instructions.
@@ -147,7 +147,7 @@ class Engine:
             self._require_booted()
 
             execution = Execution(
-                self, instructions, operation_id=operation_id
+                self, instructions, transaction_id=transaction_id
             )
             result = execution.execute()
 
