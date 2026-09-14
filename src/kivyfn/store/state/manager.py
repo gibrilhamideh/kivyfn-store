@@ -14,6 +14,8 @@ from kivyfn.store.protocol.message.event import (
     RemoveEventAction,
     SetEventAction,
     SetRowEventAction,
+    SignalEventAction,
+    SignalRowEventAction,
     SubscriptionEvent,
 )
 from kivyfn.store.protocol.message.requests import (
@@ -275,6 +277,16 @@ class StateManager:
 
             if isinstance(action, RemoveEventAction):
                 self._apply_remove_event(target, action)
+
+                continue
+
+            if isinstance(action, SignalEventAction):
+                self._apply_signal_event(target, action)
+
+                continue
+
+            if isinstance(action, SignalRowEventAction):
+                self._apply_signalrow_event(target, action)
 
                 continue
 
@@ -825,6 +837,30 @@ class StateManager:
             target, QueryCollectionState
         ):
             target.publish_remove(action.row_id, state)
+
+    def _apply_signal_event(
+        self, target: ReactiveTarget, action: SignalEventAction
+    ) -> None:
+        if not isinstance(target, State):
+            raise TypeError("Signal event requires a State target")
+
+        target.dispatch(f"on_{action.signal}", action.data)
+
+    def _apply_signalrow_event(
+        self, target: ReactiveTarget, action: SignalRowEventAction
+    ) -> None:
+        if isinstance(target, State):
+            raise TypeError("SignalRow event requires a collection target")
+
+        state = target.get(action.row_id)
+
+        if state is None:
+            raise RuntimeError(
+                f"SignalRow event references an unknown row: {action.row_id!r}"
+            )
+
+        state.dispatch(f"on_{action.signal}", action.data)
+        target.dispatch(f"on_{action.signal}", action.row_id, action.data)
 
 
 def _query_field_row_id(

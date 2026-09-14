@@ -257,6 +257,11 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def publish_remove(self, row_id: str, state: State[SchemaT]) -> None:
         self.dispatch("on_remove", row_id, state)
 
+    def publish_signal(
+        self, row_id: str, signal: str, data: Any = None
+    ) -> None:
+        self.dispatch(f"on_{signal}", row_id, data)
+
     def _prepare_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
         if not values:
             raise ValueError("Collection mutation requires at least one field")

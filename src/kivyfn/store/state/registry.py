@@ -48,6 +48,7 @@ class StateRegistry:
         ] = WeakValueDictionary()
 
         self._schemas: dict[type[Schema], Schema] = {}
+
         self._schema_types: dict[str, type[Schema]] = {}
 
     @overload
@@ -64,7 +65,7 @@ class StateRegistry:
     ) -> QueryCollectionState[ManySchemaT]: ...
 
     def create(
-        self, source: type[SingleSchema] | type[ManySchema] | Query[Any]
+        self, source: (type[SingleSchema] | type[ManySchema] | Query[Any])
     ) -> Any:
         existing = self._states.get(source)
 
@@ -73,10 +74,13 @@ class StateRegistry:
 
         if isinstance(source, Query):
             state = self._create_query(source)
+
         elif isinstance(source, type) and issubclass(source, SingleSchema):
             state = self._create_state(source)
+
         elif isinstance(source, type) and issubclass(source, ManySchema):
             state = self._create_collection(source)
+
         else:
             raise TypeError(
                 "State source must be a SingleSchema, ManySchema, or Query"
@@ -169,8 +173,9 @@ class StateRegistry:
         self, schema_type: type[ManySchemaT]
     ) -> CollectionState[ManySchemaT]:
         schema = self.schema(schema_type)
+        collection_type = self._factory.collection_type_for(schema_type)
 
-        return CollectionState(
+        return collection_type(
             manager=self._manager,
             schema=schema,
             row_factory=lambda row_id: self.create_row(schema_type, row_id),
@@ -189,7 +194,9 @@ class StateRegistry:
                 "Query does not preserve live root-row identity"
             )
 
-        return QueryCollectionState(
+        collection_type = self._factory.query_collection_type_for(schema_type)
+
+        return collection_type(
             schema=schema,
             query=query,
             shape=shape,

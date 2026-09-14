@@ -1,14 +1,17 @@
 # tests/store/test_transaction.py
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from kivyfn.logging import get_logger
+from kivyfn.store.builder.config import StoreConfig
 from kivyfn.store.core.execution import ExecutionResult
 from kivyfn.store.error import InvalidOperationError, StoreErrorStage
 from kivyfn.store.events import SetEvent, StoreCommit
+from kivyfn.store.events.event import StoreSignal
+from kivyfn.store.node import Node
 from kivyfn.store.operations import OperationSource
 from kivyfn.store.protocol.message.requests import SetRequestAction
 from kivyfn.store.store import store as store_module
@@ -29,9 +32,7 @@ class FakeNode:
 
 class FakeMetadata:
     def __init__(self) -> None:
-        self.nodes_by_schema = {
-            "DemoSchema": FakeNode(),
-        }
+        self.nodes_by_schema = {"DemoSchema": FakeNode()}
 
 
 class FakeInstructionBuilder:
@@ -39,10 +40,9 @@ class FakeInstructionBuilder:
         self.metadata = metadata
 
     def build(
-        self,
-        actions: tuple[SetRequestAction, ...],
-    ) -> tuple[SetRequestAction, ...]:
-        return actions
+        self, actions: tuple[SetRequestAction, ...]
+    ) -> tuple[tuple[SetRequestAction, ...], tuple[StoreSignal, ...]]:
+        return actions, ()
 
 
 class FakeEngine:
@@ -73,12 +73,13 @@ class FakeEngine:
 def store(monkeypatch: pytest.MonkeyPatch) -> Store:
     monkeypatch.setattr(store_module, "Engine", FakeEngine)
     monkeypatch.setattr(
-        store_module,
-        "InstructionBuilder",
-        FakeInstructionBuilder,
+        store_module, "InstructionBuilder", FakeInstructionBuilder
     )
 
-    instance = Store(root=object(), config=object())
+    root = cast(Node, object())
+    config = cast(StoreConfig, object())
+
+    instance = Store(root=root, config=config)
     instance.boot()
 
     return instance
@@ -104,12 +105,7 @@ def test_successful_transaction_publishes_commit(store: Store) -> None:
     store.subscribe_commits(commits.append)
 
     result = store.execute(
-        (
-            SetRequestAction(
-                schema="DemoSchema",
-                values=(("value", 10),),
-            ),
-        ),
+        (SetRequestAction(schema="DemoSchema", values=(("value", 10),)),),
         transaction_id=transaction_id,
     )
 
@@ -142,16 +138,14 @@ def test_schema_revision_advances_once_per_transaction(store: Store) -> None:
         success=True,
         stage=StoreErrorStage.EXECUTE,
         commit=StoreCommit(
-            events=events,
-            transaction_id="transaction-revision",
+            events=events, transaction_id="transaction-revision"
         ),
     )
 
     result = store.execute(
         (
             SetRequestAction(
-                schema="DemoSchema",
-                values=(("first", 1), ("second", 2)),
+                schema="DemoSchema", values=(("first", 1), ("second", 2))
             ),
         ),
         transaction_id="transaction-revision",
@@ -167,21 +161,14 @@ def test_failed_transaction_does_not_publish_commit(store: Store) -> None:
     error = InvalidOperationError("Transaction rejected")
 
     FakeEngine.result = ExecutionResult(
-        success=False,
-        stage=StoreErrorStage.VALIDATE,
-        error=error,
+        success=False, stage=StoreErrorStage.VALIDATE, error=error
     )
 
     commits: list[StoreCommit] = []
     store.subscribe_commits(commits.append)
 
     result = store.execute(
-        (
-            SetRequestAction(
-                schema="DemoSchema",
-                values=(("value", 10),),
-            ),
-        ),
+        (SetRequestAction(schema="DemoSchema", values=(("value", 10),)),),
         transaction_id="transaction-failure",
     )
 
@@ -205,8 +192,7 @@ def test_unsubscribed_commit_listener_is_not_called(store: Store) -> None:
         success=True,
         stage=StoreErrorStage.EXECUTE,
         commit=StoreCommit(
-            events=(event,),
-            transaction_id="transaction-unsubscribe",
+            events=(event,), transaction_id="transaction-unsubscribe"
         ),
     )
 
@@ -215,12 +201,7 @@ def test_unsubscribed_commit_listener_is_not_called(store: Store) -> None:
     unsubscribe()
 
     store.execute(
-        (
-            SetRequestAction(
-                schema="DemoSchema",
-                values=(("value", 10),),
-            ),
-        ),
+        (SetRequestAction(schema="DemoSchema", values=(("value", 10),)),),
         transaction_id="transaction-unsubscribe",
     )
 

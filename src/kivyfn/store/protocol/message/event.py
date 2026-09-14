@@ -27,8 +27,26 @@ class RemoveEventAction:
     row_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class SignalEventAction:
+    signal: str
+    data: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class SignalRowEventAction:
+    row_id: str
+    signal: str
+    data: Any = None
+
+
 EventAction: TypeAlias = (
-    SetEventAction | SetRowEventAction | InsertEventAction | RemoveEventAction
+    SetEventAction
+    | SetRowEventAction
+    | InsertEventAction
+    | RemoveEventAction
+    | SignalEventAction
+    | SignalRowEventAction
 )
 
 

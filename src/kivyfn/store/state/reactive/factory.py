@@ -11,26 +11,33 @@ from kivyfn.store.query.shape import (
     QueryShape,
     query_field_metadata,
 )
-from kivyfn.store.schema import Schema
+from kivyfn.store.schema import ManySchema, Schema
 from kivyfn.store.schema.fields import BaseField
+from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.property import state_property
 from kivyfn.store.state.reactive.state import State, StateManagerProtocol
 
 if TYPE_CHECKING:
+    from kivyfn.store.state.reactive.query import QueryCollectionState
     from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
 SchemaT = TypeVar("SchemaT", bound=Schema)
+ManySchemaT = TypeVar("ManySchemaT", bound=ManySchema)
 
 SchemaResolver = Callable[[str], Schema]
 
 
 class StateFactory:
-    """Build and cache reactive State types."""
+    """Build and cache reactive State and collection types."""
 
     _schema_types: dict[type[Schema], type[State[Any]]] = {}
 
     _query_types: dict[tuple[type[Schema], QueryShape], type[State[Any]]] = {}
+
+    _collection_types: dict[type[ManySchema], type[CollectionState[Any]]] = {}
+
+    _query_collection_types: dict[type[ManySchema], type[Any]] = {}
 
     def create(
         self,
@@ -106,6 +113,52 @@ class StateFactory:
 
         return cast(type[State[SchemaT]], generated)
 
+    def collection_type_for(
+        self, schema_type: type[ManySchemaT]
+    ) -> type[CollectionState[ManySchemaT]]:
+        key = cast(type[ManySchema], schema_type)
+        cached = self._collection_types.get(key)
+
+        if cached is not None:
+            return cast(type[CollectionState[ManySchemaT]], cached)
+
+        schema = schema_type()
+
+        generated = self._build_collection_type(
+            name=f"{_schema_stem(schema_type)}CollectionState",
+            schema=schema,
+            base_type=CollectionState,
+        )
+
+        self._collection_types[key] = cast(
+            type[CollectionState[Any]], generated
+        )
+
+        return cast(type[CollectionState[ManySchemaT]], generated)
+
+    def query_collection_type_for(
+        self, schema_type: type[ManySchemaT]
+    ) -> type[QueryCollectionState[ManySchemaT]]:
+        from kivyfn.store.state.reactive.query import QueryCollectionState
+
+        key = cast(type[ManySchema], schema_type)
+        cached = self._query_collection_types.get(key)
+
+        if cached is not None:
+            return cast(type[QueryCollectionState[ManySchemaT]], cached)
+
+        schema = schema_type()
+
+        generated = self._build_collection_type(
+            name=f"{_schema_stem(schema_type)}QueryCollectionState",
+            schema=schema,
+            base_type=QueryCollectionState,
+        )
+
+        self._query_collection_types[key] = generated
+
+        return cast(type[QueryCollectionState[ManySchemaT]], generated)
+
     def _build_type(
         self,
         *,
@@ -135,11 +188,11 @@ class StateFactory:
         used_names = set(fields)
 
         for field_name, field in fields.items():
-            _validate_name(schema, field_name)
+            _validate_state_name(schema, field_name)
 
             namespace[field_name] = state_property(field)
 
-        signal_names = schema.signal_names()
+        signal_names = _signal_names(schema)
 
         namespace["__events__"] = (
             *State.__events__,
@@ -149,21 +202,54 @@ class StateFactory:
         for signal_name in signal_names:
             event_name = f"on_{signal_name}"
 
-            _validate_name(schema, signal_name)
-            _validate_name(schema, event_name)
+            _validate_state_name(schema, signal_name)
+            _validate_state_name(schema, event_name)
 
             if signal_name in used_names:
                 raise StoreStateError(
-                    f"Signal {signal_name!r} conflicts with a State field "
+                    f"Signal {signal_name!r} conflicts with a State name "
                     f"in {schema.name}"
                 )
 
+            if event_name in used_names:
+                raise StoreStateError(
+                    f"Signal event {event_name!r} conflicts with a State "
+                    f"name in {schema.name}"
+                )
+
             used_names.add(signal_name)
+            used_names.add(event_name)
 
             namespace[signal_name] = _signal_method(signal_name)
             namespace[event_name] = _signal_event
 
         return cast(type[State[Any]], type(name, (State,), namespace))
+
+    def _build_collection_type(
+        self, *, name: str, schema: ManySchema, base_type: type[Any]
+    ) -> type[Any]:
+        signal_names = _signal_names(schema)
+        base_events = tuple(getattr(base_type, "__events__", ()))
+
+        namespace: dict[str, Any] = {
+            "__events__": (
+                *base_events,
+                *(f"on_{signal_name}" for signal_name in signal_names),
+            )
+        }
+
+        for signal_name in signal_names:
+            event_name = f"on_{signal_name}"
+
+            if hasattr(base_type, event_name):
+                raise StoreStateError(
+                    f"Signal event {event_name!r} conflicts with "
+                    f"{base_type.__name__} in {schema.name}"
+                )
+
+            namespace[event_name] = _collection_signal_event
+
+        return type(name, (base_type,), namespace)
 
 
 def query_field_source(state: State[Any], name: str) -> QueryFieldShape | None:
@@ -185,7 +271,19 @@ def _schema_stem(schema_type: type[Schema]) -> str:
     return name
 
 
-def _validate_name(schema: Schema, name: str) -> None:
+def _signal_names(schema: Schema) -> tuple[str, ...]:
+    signal_names = tuple(sorted(schema.signal_names()))
+
+    for signal_name in signal_names:
+        if signal_name.startswith("on_"):
+            raise StoreStateError(
+                f"Signal name {signal_name!r} is reserved in {schema.name}"
+            )
+
+    return signal_names
+
+
+def _validate_state_name(schema: Schema, name: str) -> None:
     if name.startswith("_") or hasattr(State, name):
         raise StoreStateError(
             f"State name {name!r} is reserved in {schema.name}"
@@ -203,5 +301,11 @@ def _signal_method(
     return emit
 
 
-def _signal_event(state: State[Any], data: Any = None) -> None:
+def _signal_event(_state: State[Any], data: Any = None) -> None:
+    pass
+
+
+def _collection_signal_event(
+    _collection: Any, row_id: str, data: Any = None
+) -> None:
     pass

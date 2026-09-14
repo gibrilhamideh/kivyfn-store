@@ -116,17 +116,15 @@ class ClientSubscription:
                 "Subscription received an event before synchronization"
             )
 
-        if set(event.revisions) != set(current):
-            raise StoreProtocolError("Subscription event dependencies changed")
+        if not set(event.revisions).issubset(current):
+            raise StoreProtocolError(
+                "Subscription event contains an unknown dependency"
+            )
 
         revisions = dict(current)
-        advanced = False
 
         for schema, revision in event.revisions.items():
             previous = current[schema]
-
-            if revision == previous:
-                continue
 
             if revision != previous + 1:
                 raise StoreProtocolError(
@@ -135,12 +133,6 @@ class ClientSubscription:
                 )
 
             revisions[schema] = revision
-            advanced = True
-
-        if not advanced:
-            raise StoreProtocolError(
-                "Subscription event did not advance a revision"
-            )
 
         return revisions
 

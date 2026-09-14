@@ -13,6 +13,7 @@ from kivyfn.store.events import (
     SetRowEvent,
     StoreCommit,
 )
+from kivyfn.store.events.event import SignalEvent, SignalRowEvent
 from kivyfn.store.host.query import HostQueries, HostQuery
 from kivyfn.store.protocol.message.event import (
     EventAction,
@@ -21,6 +22,8 @@ from kivyfn.store.protocol.message.event import (
     RemoveEventAction,
     SetEventAction,
     SetRowEventAction,
+    SignalEventAction,
+    SignalRowEventAction,
     SubscriptionEvent,
 )
 from kivyfn.store.protocol.message.requests import (
@@ -201,7 +204,6 @@ class HostSubscriptions:
         self, commit: StoreCommit
     ) -> tuple[tuple[str, EventMessage], ...]:
         """Convert one Store commit into per-client subscription messages."""
-
         self._require_commit(commit)
 
         subscriptions = self._affected(commit)
@@ -224,15 +226,26 @@ class HostSubscriptions:
                 actions = query_actions.get(source)
 
                 if actions is None:
-                    captured = source.capture(commit.schema_revisions)
+                    state_actions: tuple[EventAction, ...] = ()
 
-                    if captured is None:
-                        raise StoreStateError(
-                            "Query did not capture its changed dependency"
-                        )
+                    if revisions:
+                        captured = source.capture(commit.schema_revisions)
 
-                    actions = captured
+                        if captured is None:
+                            raise StoreStateError(
+                                "Query did not capture its changed dependency"
+                            )
+
+                        state_actions = captured
+
+                    signal_actions = _query_signal_actions(commit, source)
+
+                    actions = (*state_actions, *signal_actions)
+
                     query_actions[source] = actions
+
+            if not revisions and not actions:
+                continue
 
             event = SubscriptionEvent(
                 subscription_id=subscription.subscription_id,
@@ -257,7 +270,6 @@ class HostSubscriptions:
         self, client_id: str, message: EventMessage
     ) -> EventMessage | None:
         """Remove events for subscriptions released before delivery."""
-
         if message.store_instance_id != self._store.instance_id:
             raise StoreStateError(
                 "Subscription message belongs to another Store"
@@ -279,7 +291,10 @@ class HostSubscriptions:
     def _affected(self, commit: StoreCommit) -> tuple[HostSubscription, ...]:
         selected: dict[str, HostSubscription] = {}
 
-        for schema in commit.schema_revisions:
+        schemas = set(commit.schema_revisions)
+        schemas.update(signal.schema for signal in commit.signals)
+
+        for schema in schemas:
             selected.update(self._by_schema.get(schema, {}))
 
         return tuple(selected.values())
@@ -388,9 +403,58 @@ def _schema_actions(
             case RemoveEvent():
                 actions.append(RemoveEventAction(row_id=event.id))
 
+    for signal in commit.signals:
+        if signal.schema != schema:
+            continue
+
+        match signal:
+            case SignalEvent():
+                actions.append(
+                    SignalEventAction(signal=signal.signal, data=signal.data)
+                )
+
+            case SignalRowEvent():
+                actions.append(
+                    SignalRowEventAction(
+                        row_id=signal.id,
+                        signal=signal.signal,
+                        data=signal.data,
+                    )
+                )
+
     if not actions:
         raise StoreStateError(
-            f"Schema {schema!r} advanced without canonical events"
+            f"Schema {schema!r} was affected without canonical actions"
+        )
+
+    return tuple(actions)
+
+
+def _query_signal_actions(
+    commit: StoreCommit, query: HostQuery
+) -> tuple[EventAction, ...]:
+    root_schema = query.source.schema_name
+
+    if root_schema is None:
+        raise StoreStateError("Live Query does not have a root schema name")
+
+    row_ids = {row.id for row in query.rows}
+    actions: list[EventAction] = []
+
+    for signal in commit.signals:
+        if not isinstance(signal, SignalRowEvent):
+            continue
+
+        if signal.schema != root_schema:
+            continue
+
+        if signal.id not in row_ids:
+            continue
+
+        actions.append(
+            SignalRowEventAction(
+                row_id=signal.id, signal=signal.signal, data=signal.data
+            )
         )
 
     return tuple(actions)

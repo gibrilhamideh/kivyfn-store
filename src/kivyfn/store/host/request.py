@@ -131,13 +131,10 @@ class HostRequests:
                     | SetRowRequestAction()
                     | InsertRequestAction()
                     | RemoveRequestAction()
+                    | SignalRequestAction()
+                    | SignalRowRequestAction()
                 ):
                     actions.append(action)
-
-                case SignalRequestAction() | SignalRowRequestAction():
-                    raise InvalidOperationError(
-                        "Signals are not connected yet"
-                    )
 
                 case _:
                     assert_never(action)

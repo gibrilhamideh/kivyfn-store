@@ -170,7 +170,7 @@ class Store:
     def execute(
         self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
     ) -> ExecutionResult:
-        """Execute Store mutation actions as one atomic transaction."""
+        """Execute Store actions as one atomic transaction."""
         self._require_booted()
 
         logger.info(
@@ -178,7 +178,7 @@ class Store:
         )
 
         try:
-            instructions = self._instructions.build(actions)
+            instructions, signals = self._instructions.build(actions)
 
         except StoreOperationError as error:
             error.context = replace(
@@ -197,9 +197,10 @@ class Store:
             )
 
         logger.debug(
-            "Transaction resolved id=%s instructions=%d",
+            "Transaction resolved id=%s instructions=%d signals=%d",
             transaction_id,
             len(instructions),
+            len(signals),
         )
 
         try:
@@ -216,12 +217,16 @@ class Store:
                 )
                 return result
 
-            commit = self._record_commit(cast(StoreCommit, result.commit))
+            commit = replace(cast(StoreCommit, result.commit), signals=signals)
+
+            commit = self._record_commit(commit)
 
             logger.info(
-                "Transaction committed id=%s events=%d revisions=%r",
+                "Transaction committed id=%s events=%d signals=%d "
+                "revisions=%r",
                 transaction_id,
                 len(commit.events),
+                len(commit.signals),
                 commit.schema_revisions,
             )
 
@@ -276,10 +281,12 @@ class Store:
                 current, tokens = self._pending_commits.popleft()
 
                 logger.debug(
-                    "Publishing commit transaction=%s listeners=%d events=%d",
+                    "Publishing commit transaction=%s listeners=%d "
+                    "events=%d signals=%d",
                     current.transaction_id,
                     len(tokens),
                     len(current.events),
+                    len(current.signals),
                 )
 
                 for token in tokens:
@@ -307,7 +314,7 @@ class Store:
     # -------------------------------------------------
 
     def _record_commit(self, commit: StoreCommit) -> StoreCommit:
-        """Advance each changed schema once for this commit."""
+        """Stamp and publish one successful Store commit."""
         schemas = dict.fromkeys(event.schema for event in commit.events)
 
         nodes = {
@@ -325,7 +332,7 @@ class Store:
             schema_revisions=revisions,
         )
 
-        if stamped.events:
+        if stamped.events or stamped.signals:
             self._publish_commit(stamped)
 
         return stamped

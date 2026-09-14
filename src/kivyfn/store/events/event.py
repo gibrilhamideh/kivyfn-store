@@ -65,24 +65,50 @@ StoreEvent: TypeAlias = SetEvent | SetRowEvent | InsertEvent | RemoveEvent
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class StoreCommit:
-    """One atomic batch of canonical Store changes.
+class SignalEvent:
+    """One signal occurrence on a single schema."""
 
-    schema_revisions contains each changed schema's in-memory revision
-    after this commit. Each affected schema advances once, regardless of
-    how many events it contributes. Revisions are comparable only within
-    the same server_instance_id.
+    schema: str
+    source: OperationSource
+    signal: str
+    data: Any = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class SignalRowEvent:
+    """One signal occurrence on a row of a many schema."""
+
+    schema: str
+    source: OperationSource
+    id: str
+    signal: str
+    data: Any = None
+
+
+StoreSignal: TypeAlias = SignalEvent | SignalRowEvent
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StoreCommit:
+    """One atomic batch of canonical Store changes and signals.
+
+    events contains retained State changes. Each schema represented by
+    events advances its schema revision once for this commit.
+
+    signals contains ephemeral signal occurrences. Signals never advance
+    schema revisions and are not retained in Store State.
 
     Store assigns the instance ID and schema revisions after successful
     execution. Engine-created commits start with no instance ID and an
-    empty mapping. Successful no-op commits also have an empty mapping
-    and are not published. There is no global revision or replay history.
+    empty mapping. A signal-only commit therefore legitimately has an
+    empty schema_revisions mapping and must still be published.
 
     Subscription messages may filter events while keeping revisions for
     changed query dependencies whose raw events are not included.
     """
 
     events: tuple[StoreEvent, ...]
+    signals: tuple[StoreSignal, ...] = ()
     transaction_id: str | None = None
     server_instance_id: str | None = None
     schema_revisions: dict[str, int] = field(default_factory=dict)

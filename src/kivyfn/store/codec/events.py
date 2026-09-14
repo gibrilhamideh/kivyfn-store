@@ -10,6 +10,8 @@ from kivyfn.store.protocol.message.event import (
     RemoveEventAction,
     SetEventAction,
     SetRowEventAction,
+    SignalEventAction,
+    SignalRowEventAction,
     SubscriptionEvent,
 )
 
@@ -29,9 +31,7 @@ def encode_event_message(message: EventMessage) -> dict[str, Any]:
 def decode_event_message(payload: object) -> EventMessage:
     """Decode and validate one Store subscription event message."""
     envelope = _object(payload, "event message")
-
     data = _object(envelope.get("event"), "event")
-
     events = _list(data.get("events"), "subscription events")
 
     if not events:
@@ -86,13 +86,27 @@ def _encode_action(action: EventAction) -> dict[str, Any]:
         case RemoveEventAction():
             return {"type": "remove", "row_id": action.row_id}
 
+        case SignalEventAction():
+            return {
+                "type": "signal",
+                "signal": action.signal,
+                "data": action.data,
+            }
+
+        case SignalRowEventAction():
+            return {
+                "type": "signalrow",
+                "row_id": action.row_id,
+                "signal": action.signal,
+                "data": action.data,
+            }
+
         case _:
             assert_never(action)
 
 
 def _decode_action(payload: object) -> EventAction:
     data = _object(payload, "event action")
-
     kind = _string(data, "type")
 
     match kind:
@@ -113,16 +127,24 @@ def _decode_action(payload: object) -> EventAction:
         case "remove":
             return RemoveEventAction(row_id=_string(data, "row_id"))
 
+        case "signal":
+            return SignalEventAction(
+                signal=_string(data, "signal"), data=data.get("data")
+            )
+
+        case "signalrow":
+            return SignalRowEventAction(
+                row_id=_string(data, "row_id"),
+                signal=_string(data, "signal"),
+                data=data.get("data"),
+            )
+
         case _:
             raise ValueError(f"Unknown Store event action: {kind!r}")
 
 
 def _revisions(value: object) -> dict[str, int]:
     values = _object(value, "subscription revisions")
-
-    if not values:
-        raise ValueError("Subscription revisions cannot be empty")
-
     revisions: dict[str, int] = {}
 
     for schema, revision in values.items():
