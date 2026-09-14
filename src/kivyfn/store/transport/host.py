@@ -11,24 +11,9 @@ if TYPE_CHECKING:
 
 
 class HostTransport(ABC):
-    """Connect clients to a StoreHost and carry its typed messages."""
+    """Transport used by StoreHost to communicate with clients."""
 
     store_host: StoreHost
-
-    @abstractmethod
-    async def start(self, store_host: StoreHost) -> None:
-        """Bind the host before accepting clients."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def stop(self) -> None:
-        """Stop accepting clients and release transport resources."""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def emit(self, client_id: str, message: EventMessage) -> None:
-        """Deliver one typed event message to one client."""
-        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -38,5 +23,20 @@ class HostTransport(ABC):
     @property
     @abstractmethod
     def endpoint(self) -> dict[str, Any]:
-        """Describe the bound address and its StoreClient endpoint."""
+        """Describe the bound transport endpoint."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def start(self, store_host: StoreHost) -> None:
+        """Start the transport with its StoreHost."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def stop(self) -> None:
+        """Stop the transport."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def emit(self, client_id: str, message: EventMessage) -> None:
+        """Deliver one EventMessage to one client."""
         raise NotImplementedError

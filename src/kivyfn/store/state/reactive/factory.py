@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.query.shape import (
@@ -13,9 +13,11 @@ from kivyfn.store.query.shape import (
 )
 from kivyfn.store.schema import Schema
 from kivyfn.store.schema.fields import BaseField
-from kivyfn.store.state.mutation.operation import StateOperation
 from kivyfn.store.state.reactive.property import state_property
 from kivyfn.store.state.reactive.state import State, StateManagerProtocol
+
+if TYPE_CHECKING:
+    from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
 SchemaT = TypeVar("SchemaT", bound=Schema)
@@ -190,8 +192,10 @@ def _validate_name(schema: Schema, name: str) -> None:
         )
 
 
-def _signal_method(signal_name: str):
-    def emit(state: State[Any], data: Any = None) -> StateOperation:
+def _signal_method(
+    signal_name: str,
+) -> Callable[[State[Any], Any], StateTransaction]:
+    def emit(state: State[Any], data: Any = None) -> StateTransaction:
         return state._emit_signal(signal_name, data)
 
     emit.__name__ = signal_name

@@ -2,17 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 
 from kivyfn.store.error import FieldError, FieldErrorDetail, FieldNotFoundError
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 from kivyfn.store.schema.signal import Signal
 from kivyfn.store.schema.trigger import Trigger
-
-
-if TYPE_CHECKING:
-    from kivyfn.store.address import Address
-    from kivyfn.store.state.operation import StateOperation
 
 
 IndexKey = tuple[str, ...]
@@ -23,36 +18,6 @@ class Schema:
 
     indexes: ClassVar[list[IndexKey]] = []
     uniques: ClassVar[list[IndexKey]] = []
-
-    # -------------------------------------------------
-    # Live-state typing interface
-    # -------------------------------------------------
-
-    if TYPE_CHECKING:
-        pending: bool
-        synced: bool
-        row_id: str | None
-        address: Address | None
-
-        def set(self, **values: Any) -> StateOperation: ...
-
-        def bind(self, **kwargs: Any) -> Any: ...
-
-        def unbind(self, **kwargs: Any) -> Any: ...
-
-        def fbind(
-            self, name: str, callback: Any, *args: Any, **kwargs: Any
-        ) -> Any: ...
-
-        def funbind(
-            self, name: str, callback: Any, *args: Any, **kwargs: Any
-        ) -> Any: ...
-
-        def dispatch(self, event_type: str, *args: Any) -> bool: ...
-
-        def property(self, name: str, quiet: bool = False) -> Any: ...
-
-        def setter(self, name: str) -> Any: ...
 
     def __init__(self) -> None:
         self.name = self.__class__.__name__
@@ -137,6 +102,7 @@ class Schema:
     def get_field(self, name: str) -> BaseField[Any]:
         try:
             return self._fields[name]
+
         except KeyError:
             raise FieldNotFoundError(
                 f"Field {name!r} does not exist in schema {self.name}",
@@ -156,6 +122,7 @@ class Schema:
     def get_signal(self, name: str) -> Signal[Any]:
         try:
             return self._signals[name]
+
         except KeyError:
             raise ValueError(
                 f"Unknown signal {name!r} in {self.name}"
@@ -220,11 +187,12 @@ class Schema:
 
         try:
             field.challenge(value)
-        except FieldError as exc:
-            detail = exc.detail
+
+        except FieldError as error:
+            detail = error.detail
 
             if isinstance(detail, FieldErrorDetail):
-                exc.detail = replace(
+                error.detail = replace(
                     detail, schema=self.name, field=detail.field or name
                 )
 

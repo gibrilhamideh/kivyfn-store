@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Generic, TypeVar
 
@@ -14,6 +13,7 @@ from kivyfn.store.error import StoreStateError
 from kivyfn.store.query import Query
 from kivyfn.store.query.shape import QueryShape
 from kivyfn.store.schema import ManySchema
+from kivyfn.store.state.reactive.collection import MembershipDelta
 from kivyfn.store.state.reactive.state import State
 
 
@@ -22,18 +22,6 @@ logger = get_logger(__name__)
 SchemaT = TypeVar("SchemaT", bound=ManySchema)
 
 QueryRowFactory = Callable[[str], State[SchemaT]]
-
-
-@dataclass(frozen=True, slots=True)
-class QueryMembershipDelta(Generic[SchemaT]):
-    """Staged membership changes for one QueryCollectionState."""
-
-    entered: tuple[tuple[str, State[SchemaT]], ...] = ()
-    left: tuple[tuple[str, State[SchemaT]], ...] = ()
-
-    @property
-    def changed(self) -> bool:
-        return bool(self.entered or self.left)
 
 
 class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
@@ -110,30 +98,30 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
     def items(self) -> tuple[tuple[str, State[SchemaT]], ...]:
         return tuple(self._rows.items())
 
-    def stage_enter(self, row_id: str) -> QueryMembershipDelta[SchemaT]:
+    def enter(self, row_id: str) -> MembershipDelta[SchemaT]:
         self._validate_row_id(row_id)
 
         existing = self._rows.get(row_id)
 
         if existing is not None:
-            return QueryMembershipDelta()
+            return MembershipDelta()
 
         state = self._create_row(row_id)
         self._rows[row_id] = state
 
-        return QueryMembershipDelta(entered=((row_id, state),))
+        return MembershipDelta(entered=((row_id, state),))
 
-    def stage_leave(self, row_id: str) -> QueryMembershipDelta[SchemaT]:
+    def leave(self, row_id: str) -> MembershipDelta[SchemaT]:
         state = self._rows.pop(row_id, None)
 
         if state is None:
-            return QueryMembershipDelta()
+            return MembershipDelta()
 
-        return QueryMembershipDelta(left=((row_id, state),))
+        return MembershipDelta(left=((row_id, state),))
 
-    def stage_membership(
+    def set_membership(
         self, row_ids: Iterable[str]
-    ) -> QueryMembershipDelta[SchemaT]:
+    ) -> MembershipDelta[SchemaT]:
         ordered_ids = tuple(row_ids)
 
         for row_id in ordered_ids:
@@ -165,9 +153,9 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
 
             entered.append((row_id, state))
 
-        return QueryMembershipDelta(entered=tuple(entered), left=tuple(left))
+        return MembershipDelta(entered=tuple(entered), left=tuple(left))
 
-    def publish_membership(self, delta: QueryMembershipDelta[SchemaT]) -> None:
+    def publish_membership(self, delta: MembershipDelta[SchemaT]) -> None:
         if not delta.changed:
             return
 
@@ -180,6 +168,8 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
             self._dispatch_membership("on_enter", row_id, state)
 
     def _create_row(self, row_id: str) -> State[SchemaT]:
+        self._validate_row_id(row_id)
+
         state = self._row_factory(row_id)
 
         if state.row_id != row_id:
@@ -190,7 +180,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
         return state
 
     def _validate_row_id(self, row_id: str) -> None:
-        if not isinstance(row_id, str) or not row_id:
+        if not row_id:
             raise ValueError("Query row ID must be a non-empty string")
 
     def _dispatch_membership(

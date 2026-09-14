@@ -41,14 +41,11 @@ class StateData:
         return self._visible_changes(before, fields)
 
     def set_overlay(
-        self, operation_id: str, values: Mapping[str, Any]
+        self, transaction_id: str, values: Mapping[str, Any]
     ) -> frozenset[str]:
-        self._validate_operation_id(operation_id)
-
         fields = frozenset(values)
         before = self._visible_snapshot(fields)
-
-        overlay = self._overlays.setdefault(operation_id, {})
+        overlay = self._overlays.setdefault(transaction_id, {})
 
         for key, value in values.items():
             overlay[key] = self.copy(value)
@@ -57,12 +54,10 @@ class StateData:
 
     def remove_overlay(
         self,
-        operation_id: str,
+        transaction_id: str,
         fields: set[str] | frozenset[str] | None = None,
     ) -> frozenset[str]:
-        self._validate_operation_id(operation_id)
-
-        overlay = self._overlays.get(operation_id)
+        overlay = self._overlays.get(transaction_id)
 
         if overlay is None:
             return frozenset()
@@ -79,13 +74,13 @@ class StateData:
         before = self._visible_snapshot(selected)
 
         if fields is None:
-            del self._overlays[operation_id]
+            del self._overlays[transaction_id]
         else:
             for key in selected:
-                overlay.pop(key, None)
+                del overlay[key]
 
             if not overlay:
-                del self._overlays[operation_id]
+                del self._overlays[transaction_id]
 
         return self._visible_changes(before, selected)
 
@@ -115,8 +110,3 @@ class StateData:
         return frozenset(
             key for key in fields if before.get(key) != self._visible(key)
         )
-
-    @staticmethod
-    def _validate_operation_id(operation_id: str) -> None:
-        if not isinstance(operation_id, str) or not operation_id:
-            raise ValueError("Operation ID must be a non-empty string")

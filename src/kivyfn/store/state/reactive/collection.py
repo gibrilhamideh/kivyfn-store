@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from kivy.event import EventDispatcher
 from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
@@ -12,10 +12,12 @@ from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
 from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.schema import ManySchema
-from kivyfn.store.state.mutation.failure import StateFailure
-from kivyfn.store.state.mutation.operation import StateOperation
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.reactive.state import State
+
+if TYPE_CHECKING:
+    from kivyfn.store.state.transaction.failure import TransactionFailure
+    from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
 logger = get_logger(__name__)
@@ -33,7 +35,7 @@ class CollectionManagerProtocol(Protocol):
         values: dict[str, Any],
         *,
         optimistic: bool,
-    ) -> StateOperation: ...
+    ) -> StateTransaction: ...
 
     def request_remove(
         self,
@@ -41,12 +43,12 @@ class CollectionManagerProtocol(Protocol):
         row_id: str,
         *,
         optimistic: bool,
-    ) -> StateOperation: ...
+    ) -> StateTransaction: ...
 
 
 @dataclass(frozen=True, slots=True)
 class MembershipDelta(Generic[SchemaT]):
-    """Staged membership changes for one CollectionState."""
+    """Membership changes for one CollectionState."""
 
     entered: tuple[tuple[str, State[SchemaT]], ...] = ()
     left: tuple[tuple[str, State[SchemaT]], ...] = ()
@@ -60,7 +62,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     """Editable reactive keyed collection of State objects."""
 
     synced = BooleanProperty(False)
-    pending = BooleanProperty(False)
+    is_pending = BooleanProperty(False)
     pending_count = NumericProperty(0)
     _rows_version = NumericProperty(0)
 
@@ -92,7 +94,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
             self._rows
         )
 
-        self._pending_operations: set[str] = set()
+        self._pending_transactions: set[str] = set()
 
     @property
     def schema(self) -> SchemaT:
@@ -141,7 +143,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def items(self) -> tuple[tuple[str, State[SchemaT]], ...]:
         return tuple(self._rows.items())
 
-    def insert(self, row_id: str, **values: Any) -> StateOperation:
+    def insert(self, row_id: str, **values: Any) -> StateTransaction:
         if row_id in self._rows:
             raise ValueError(f"Collection row already exists: {row_id!r}")
 
@@ -149,13 +151,13 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
             self, row_id, self._prepare_values(values), optimistic=False
         )
 
-    def remove(self, row_id: str) -> StateOperation:
+    def remove(self, row_id: str) -> StateTransaction:
         if row_id not in self._rows:
             raise KeyError(row_id)
 
         return self._manager.request_remove(self, row_id, optimistic=False)
 
-    def stage_enter(self, row_id: str) -> MembershipDelta[SchemaT]:
+    def enter(self, row_id: str) -> MembershipDelta[SchemaT]:
         self._validate_row_id(row_id)
 
         existing = self._rows.get(row_id)
@@ -168,7 +170,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
 
         return MembershipDelta(entered=((row_id, state),))
 
-    def stage_leave(self, row_id: str) -> MembershipDelta[SchemaT]:
+    def leave(self, row_id: str) -> MembershipDelta[SchemaT]:
         state = self._rows.pop(row_id, None)
 
         if state is None:
@@ -176,7 +178,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
 
         return MembershipDelta(left=((row_id, state),))
 
-    def stage_membership(
+    def set_membership(
         self, row_ids: Iterable[str]
     ) -> MembershipDelta[SchemaT]:
         ordered_ids = tuple(row_ids)
@@ -224,35 +226,30 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         for row_id, state in delta.entered:
             self._dispatch_membership("on_enter", row_id, state)
 
-    def begin_operation(
-        self, operation: StateOperation, row_id: str, old: Any, new: Any
+    def begin_transaction(self, transaction: StateTransaction) -> None:
+        if transaction.id in self._pending_transactions:
+            return
+
+        self._pending_transactions.add(transaction.id)
+        self._sync_pending()
+
+        self.dispatch("on_pending", transaction)
+
+    def succeed_transaction(self, transaction: StateTransaction) -> None:
+        if not self._finish_transaction(transaction.id):
+            return
+
+        self.dispatch("on_success", transaction)
+        self.dispatch("on_done", transaction, None)
+
+    def fail_transaction(
+        self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
-        if operation.id not in self._pending_operations:
-            self._pending_operations.add(operation.id)
-            self._sync_pending()
+        if not self._finish_transaction(transaction.id):
+            return
 
-        self.dispatch("on_pending", operation, row_id, old, new)
-
-    def succeed_operation(
-        self, operation: StateOperation, row_id: str, old: Any, new: Any
-    ) -> None:
-        self._finish_operation(operation)
-
-        self.dispatch("on_success", operation, row_id, old, new)
-        self.dispatch("on_done", operation, row_id, old, new, None)
-
-    def fail_operation(
-        self,
-        operation: StateOperation,
-        row_id: str,
-        old: Any,
-        new: Any,
-        failure: StateFailure,
-    ) -> None:
-        self._finish_operation(operation)
-
-        self.dispatch("on_failed", operation, row_id, old, new, failure)
-        self.dispatch("on_done", operation, row_id, old, new, failure)
+        self.dispatch("on_failed", transaction, failure)
+        self.dispatch("on_done", transaction, failure)
 
     def publish_insert(self, row_id: str, state: State[SchemaT]) -> None:
         self.dispatch("on_insert", row_id, state)
@@ -284,7 +281,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         return state
 
     def _validate_row_id(self, row_id: str) -> None:
-        if not isinstance(row_id, str) or not row_id:
+        if not row_id:
             raise ValueError("Collection row ID must be a non-empty string")
 
     def _dispatch_membership(
@@ -301,43 +298,34 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
                 row_id,
             )
 
-    def _finish_operation(self, operation: StateOperation) -> None:
-        self._pending_operations.discard(operation.id)
+    def _finish_transaction(self, transaction_id: str) -> bool:
+        if transaction_id not in self._pending_transactions:
+            return False
+
+        self._pending_transactions.remove(transaction_id)
         self._sync_pending()
 
+        return True
+
     def _sync_pending(self) -> None:
-        count = len(self._pending_operations)
+        count = len(self._pending_transactions)
 
         self.pending_count = count
-        self.pending = count > 0
+        self.is_pending = count > 0
 
-    def on_pending(
-        self, operation: StateOperation, row_id: str, old: Any, new: Any
-    ) -> None:
+    def on_pending(self, transaction: StateTransaction) -> None:
         pass
 
-    def on_success(
-        self, operation: StateOperation, row_id: str, old: Any, new: Any
-    ) -> None:
+    def on_success(self, transaction: StateTransaction) -> None:
         pass
 
     def on_failed(
-        self,
-        operation: StateOperation,
-        row_id: str,
-        old: Any,
-        new: Any,
-        failure: StateFailure,
+        self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
         pass
 
     def on_done(
-        self,
-        operation: StateOperation,
-        row_id: str,
-        old: Any,
-        new: Any,
-        failure: StateFailure | None,
+        self, transaction: StateTransaction, failure: TransactionFailure | None
     ) -> None:
         pass
 

@@ -1,8 +1,9 @@
 # src/kivyfn/store/store/instructions.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, assert_never
+from typing import TYPE_CHECKING, TypeAlias, assert_never
 
+from kivyfn.store.address import Address
 from kivyfn.store.core.instruction import (
     InsertInstruction,
     Instruction,
@@ -13,46 +14,41 @@ from kivyfn.store.core.instruction import (
 from kivyfn.store.error import NodeErrorDetail, NodeNotFoundError
 from kivyfn.store.operations import OperationSource
 from kivyfn.store.protocol.message.requests import (
-    InsertRequest,
-    RemoveRequest,
-    SetRequest,
-    SetRowRequest,
+    InsertRequestAction,
+    RemoveRequestAction,
+    SetRequestAction,
+    SetRowRequestAction,
 )
+
 
 if TYPE_CHECKING:
     from kivyfn.store.core.metadata import EngineMetadata
 
 
-class InstructionBuilder:
-    """Translate one ordered mutation group without changing Store data.
+StoreRequestAction: TypeAlias = (
+    SetRequestAction
+    | SetRowRequestAction
+    | InsertRequestAction
+    | RemoveRequestAction
+)
 
-    Schema lookup belongs to translation. The compiler owns field validation,
-    defaults, triggers, and schema-kind checks. Store owns synchronization and
-    submits the complete instruction tuple to Engine as one transaction.
-    """
+
+class InstructionBuilder:
+    """Translate Store request actions into Engine instructions."""
 
     def __init__(self, metadata: EngineMetadata) -> None:
-        self.metadata = metadata
+        self._metadata = metadata
 
     def build(
-        self,
-        requests: tuple[
-            SetRequest | SetRowRequest | InsertRequest | RemoveRequest, ...
-        ],
+        self, actions: tuple[StoreRequestAction, ...]
     ) -> tuple[Instruction, ...]:
         instructions: list[Instruction] = []
 
-        for request in requests:
-            try:
-                address = self.metadata.nodes_by_schema[request.schema].address
-            except KeyError:
-                raise NodeNotFoundError(
-                    f"No node found for schema {request.schema!r}",
-                    detail=NodeErrorDetail(schema=request.schema),
-                ) from None
+        for action in actions:
+            address = self._address(action.schema)
 
-            match request:
-                case SetRequest():
+            match action:
+                case SetRequestAction():
                     instructions.extend(
                         SetInstruction(
                             address=address,
@@ -60,37 +56,51 @@ class InstructionBuilder:
                             value=value,
                             source=OperationSource.COMMAND,
                         )
-                        for key, value in request.values
+                        for key, value in action.values
                     )
-                case SetRowRequest():
+
+                case SetRowRequestAction():
                     instructions.extend(
                         SetRowInstruction(
                             address=address,
-                            id=request.row_id,
+                            id=action.row_id,
                             key=key,
                             value=value,
                             source=OperationSource.COMMAND,
                         )
-                        for key, value in request.values
+                        for key, value in action.values
                     )
-                case InsertRequest():
+
+                case InsertRequestAction():
                     instructions.append(
                         InsertInstruction(
                             address=address,
-                            id=request.row_id,
-                            value=dict(request.values),
+                            id=action.row_id,
+                            value=dict(action.values),
                             source=OperationSource.COMMAND,
                         )
                     )
-                case RemoveRequest():
+
+                case RemoveRequestAction():
                     instructions.append(
                         RemoveInstruction(
                             address=address,
-                            id=request.row_id,
+                            id=action.row_id,
                             source=OperationSource.COMMAND,
                         )
                     )
+
                 case _:
-                    assert_never(request)
+                    assert_never(action)
 
         return tuple(instructions)
+
+    def _address(self, schema: str) -> Address:
+        try:
+            return self._metadata.nodes_by_schema[schema].address
+
+        except KeyError:
+            raise NodeNotFoundError(
+                f"No node found for schema {schema!r}",
+                detail=NodeErrorDetail(schema=schema),
+            ) from None

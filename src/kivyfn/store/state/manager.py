@@ -4,62 +4,78 @@ from __future__ import annotations
 import asyncio
 
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
 from typing import Any, TypeVar, cast, overload
 
 from kivyfn.store.client.client import StoreClient
+from kivyfn.store.client.subscription import SubscriptionSource
 from kivyfn.store.error import StoreErrorCode, StoreErrorStatus, StoreFailure
+from kivyfn.store.protocol.message.event import (
+    InsertEventAction,
+    RemoveEventAction,
+    SetEventAction,
+    SetRowEventAction,
+    SubscriptionEvent,
+)
+from kivyfn.store.protocol.message.requests import (
+    InsertRequestAction,
+    RemoveRequestAction,
+    RequestAction,
+    SetRequestAction,
+    SetRowRequestAction,
+    SignalRequestAction,
+    SignalRowRequestAction,
+)
 from kivyfn.store.protocol.message.responses import (
-    FailureResponse,
-    ResponseItem,
-    SetResponse,
-    SetRowResponse,
+    CollectionSubscriptionResponse,
+    QuerySubscriptionResponse,
+    SingleSubscriptionResponse,
+    SubscriptionResponse,
+    TransactionFailureResponse,
+    TransactionResponse,
 )
-from kivyfn.store.query import Query
+from kivyfn.store.query import Query, QueryRow
 from kivyfn.store.schema import ManySchema, SingleSchema
-from kivyfn.store.state.mutation.failure import StateFailure
-from kivyfn.store.state.mutation.operation import StateOperation
-from kivyfn.store.state.mutation.transaction import (
-    InsertAction,
-    RemoveAction,
-    SetAction,
-    SetRowAction,
-    SignalAction,
-    StateAction,
-    StateTransaction,
-)
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State
 from kivyfn.store.state.registry import StateRegistry
+from kivyfn.store.state.transaction.action import (
+    InsertAction,
+    RemoveAction,
+    SetAction,
+    SetRowAction,
+    SignalAction,
+    TransactionAction,
+)
+from kivyfn.store.state.transaction.context import TransactionContext
+from kivyfn.store.state.transaction.failure import TransactionFailure
+from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
 SingleSchemaT = TypeVar("SingleSchemaT", bound=SingleSchema)
 
 ManySchemaT = TypeVar("ManySchemaT", bound=ManySchema)
 
+ReactiveTarget = State[Any] | CollectionState[Any] | QueryCollectionState[Any]
 
-@dataclass(slots=True)
-class _SetContext:
-    state: State[Any]
-    operation: StateOperation
-    values: dict[str, Any]
-    old: dict[str, Any]
+_active_transaction: ContextVar[
+    tuple["StateManager", StateTransaction] | None
+] = ContextVar("kivyfn_store_active_transaction", default=None)
 
 
 class StateManager:
-    """Application-facing coordinator for reactive Store State."""
+    """Coordinate reactive State with one StoreClient."""
 
     def __init__(self, client: StoreClient) -> None:
         self._client = client
         self._registry = StateRegistry(self)
 
-        self._sets: dict[str, _SetContext] = {}
+        self._targets: dict[SubscriptionSource, ReactiveTarget] = {}
 
-        self._transaction: ContextVar[StateTransaction | None] = ContextVar(
-            f"kivyfn_state_transaction_{id(self)}", default=None
-        )
+        self._subscription_targets: dict[str, ReactiveTarget] = {}
+
+        self._transactions: dict[str, TransactionContext] = {}
 
     @property
     def client(self) -> StoreClient:
@@ -78,67 +94,86 @@ class StateManager:
         self, source: Query[ManySchemaT]
     ) -> QueryCollectionState[ManySchemaT]: ...
 
-    def create(
-        self, source: (type[SingleSchema] | type[ManySchema] | Query[Any])
-    ) -> Any:
-        return self._registry.create(source)
+    def create(self, source: SubscriptionSource) -> ReactiveTarget:
+        target = self._registry.create(source)
+
+        self._targets[source] = target
+
+        self._client.subscribe(source, self)
+
+        return target
 
     def transaction(self) -> StateTransaction:
         return StateTransaction(self)
 
     def enter_transaction(self, transaction: StateTransaction) -> object:
-        if self._transaction.get() is not None:
+        active = _active_transaction.get()
+
+        if active is not None:
             raise RuntimeError("Nested State transactions are not supported")
 
-        return self._transaction.set(transaction)
+        return _active_transaction.set((self, transaction))
 
     def leave_transaction(self, token: object) -> None:
-        self._transaction.reset(cast(Token[StateTransaction | None], token))
+        _active_transaction.reset(
+            cast(Token[tuple[StateManager, StateTransaction] | None], token)
+        )
 
     def request_transaction(self, transaction: StateTransaction) -> None:
-        raise NotImplementedError(
-            "StoreClient transaction request is the next branch"
+        context = self._context(transaction)
+
+        self._begin_participants(context)
+
+        actions = tuple(
+            self._request_action(action) for action in transaction.actions
+        )
+
+        future = self._client.transaction(
+            transaction_id=transaction.id, actions=actions
+        )
+
+        future.add_done_callback(
+            lambda completed: self._complete_transaction(
+                transaction.id, completed
+            )
         )
 
     def abort_transaction(
         self, transaction: StateTransaction, error: BaseException
     ) -> None:
+        context = self._transactions.pop(transaction.id, None)
+
         self._rollback_transaction(transaction)
 
         failure = _failure_from_exception(error)
 
-        self._fail_transaction_participants(transaction, failure)
+        if context is not None:
+            self._fail_participants(context, failure)
 
-        transaction.operation.fail(failure)
+        transaction._fail(failure)
 
     def request_set(
         self, state: State[Any], values: dict[str, Any], *, optimistic: bool
-    ) -> StateOperation:
+    ) -> StateTransaction:
         if state.row_id is not None:
             raise ValueError("request_set() requires a State without a row ID")
 
-        transaction = self._transaction.get()
-
-        if transaction is not None:
-            return self._transaction_set(transaction, state, values)
-
-        return self._request_set(
-            state, values, optimistic=optimistic, row=False
+        return self._request(
+            lambda transaction: self._set(
+                transaction, state, values, optimistic=optimistic, row=False
+            )
         )
 
     def request_setrow(
         self, state: State[Any], values: dict[str, Any], *, optimistic: bool
-    ) -> StateOperation:
+    ) -> StateTransaction:
         if state.row_id is None:
-            raise ValueError("request_setrow() requires a State row ID")
+            raise ValueError("request_setrow() requires a State row")
 
-        transaction = self._transaction.get()
-
-        if transaction is not None:
-            return self._transaction_setrow(transaction, state, values)
-
-        return self._request_set(
-            state, values, optimistic=optimistic, row=True
+        return self._request(
+            lambda transaction: self._set(
+                transaction, state, values, optimistic=optimistic, row=True
+            )
         )
 
     def request_insert(
@@ -148,16 +183,11 @@ class StateManager:
         values: dict[str, Any],
         *,
         optimistic: bool,
-    ) -> StateOperation:
-        transaction = self._transaction.get()
-
-        if transaction is not None:
-            return self._transaction_insert(
-                transaction, collection, row_id, values
+    ) -> StateTransaction:
+        return self._request(
+            lambda transaction: self._insert(
+                transaction, collection, row_id, values, optimistic=optimistic
             )
-
-        raise NotImplementedError(
-            "StoreClient insert request is the next collection branch"
         )
 
     def request_remove(
@@ -166,216 +196,432 @@ class StateManager:
         row_id: str,
         *,
         optimistic: bool,
-    ) -> StateOperation:
-        transaction = self._transaction.get()
-
-        if transaction is not None:
-            return self._transaction_remove(transaction, collection, row_id)
-
-        raise NotImplementedError(
-            "StoreClient remove request is the next collection branch"
+    ) -> StateTransaction:
+        return self._request(
+            lambda transaction: self._remove(
+                transaction, collection, row_id, optimistic=optimistic
+            )
         )
 
     def request_signal(
         self, state: State[Any], signal: str, data: Any
-    ) -> StateOperation:
-        transaction = self._transaction.get()
-
-        if transaction is not None:
-            return self._transaction_signal(transaction, state, signal, data)
-
-        raise NotImplementedError(
-            "StoreClient signal request is the next signal branch"
+    ) -> StateTransaction:
+        return self._request(
+            lambda transaction: self._signal(transaction, state, signal, data)
         )
 
-    def _request_set(
+    def bind_subscription(
+        self, source: SubscriptionSource, subscription_id: str
+    ) -> None:
+        target = self._targets.get(source)
+
+        if target is None:
+            raise RuntimeError("Subscription has no reactive target")
+
+        self._subscription_targets[subscription_id] = target
+
+    def unbind_subscription(self, subscription_id: str) -> None:
+        self._subscription_targets.pop(subscription_id, None)
+
+    def on_subscription_snapshot(
+        self, source: SubscriptionSource, response: SubscriptionResponse
+    ) -> None:
+        target = self._targets.get(source)
+
+        if target is None:
+            raise RuntimeError("Subscription has no reactive target")
+
+        if isinstance(response, SingleSubscriptionResponse):
+            self._single_snapshot(target, response)
+
+            return
+
+        if isinstance(response, CollectionSubscriptionResponse):
+            self._collection_snapshot(target, response)
+
+            return
+
+        if isinstance(response, QuerySubscriptionResponse):
+            self._query_snapshot(target, response)
+
+            return
+
+        raise TypeError("Unsupported subscription response")
+
+    def on_subscription_event(self, event: SubscriptionEvent) -> None:
+        target = self._subscription_targets.get(event.subscription_id)
+
+        if target is None:
+            return
+
+        for action in event.actions:
+            if isinstance(action, SetEventAction):
+                self._apply_set_event(target, action)
+
+                continue
+
+            if isinstance(action, SetRowEventAction):
+                self._apply_setrow_event(target, action)
+
+                continue
+
+            if isinstance(action, InsertEventAction):
+                self._apply_insert_event(target, action)
+
+                continue
+
+            if isinstance(action, RemoveEventAction):
+                self._apply_remove_event(target, action)
+
+                continue
+
+            raise TypeError("Unsupported subscription event action")
+
+    def on_subscription_status(
+        self, source: SubscriptionSource, synced: bool
+    ) -> None:
+        target = self._targets.get(source)
+
+        if target is None:
+            return
+
+        target.synced = synced
+
+    def _request(self, callback: Any) -> StateTransaction:
+        active = _active_transaction.get()
+
+        if active is not None:
+            manager, transaction = active
+
+            if manager is not self:
+                raise RuntimeError(
+                    "A State transaction cannot span StateManagers"
+                )
+
+            callback(transaction)
+
+            return transaction
+
+        transaction = StateTransaction(self)
+
+        with transaction:
+            callback(transaction)
+
+        return transaction
+
+    def _set(
         self,
+        transaction: StateTransaction,
         state: State[Any],
         values: dict[str, Any],
         *,
         optimistic: bool,
         row: bool,
-    ) -> StateOperation:
-        if not values:
+    ) -> None:
+        copied = StateData.copy_values(values)
+
+        if not copied:
             raise ValueError("State set requires at least one field")
 
-        copied = StateData.copy_values(values)
+        if row:
+            transaction.add_setrow(state, copied)
+        else:
+            transaction.add_set(state, copied)
+
         fields = frozenset(copied)
-        old = state.visible_snapshot(fields)
-
-        operation = StateOperation("set", optimistic=optimistic)
-        context = _SetContext(
-            state=state, operation=operation, values=copied, old=old
-        )
-
-        self._sets[operation.id] = context
 
         if optimistic:
-            changed = state.stage_overlay(operation, copied)
-            state.publish(changed)
+            changed = state.set_overlay(transaction.id, copied)
+        else:
+            changed = state.discard_overlay(transaction.id, fields)
 
-        for key, value in copied.items():
-            state.begin_operation(operation, key, old.get(key), value)
-
-        try:
-            if row:
-                future = self._client.setrow(
-                    operation_id=operation.id,
-                    schema=state.schema.name,
-                    row_id=cast(str, state.row_id),
-                    values=copied,
-                )
-            else:
-                future = self._client.set(
-                    operation_id=operation.id,
-                    schema=state.schema.name,
-                    values=copied,
-                )
-        except BaseException as error:
-            self._sets.pop(operation.id, None)
-            self._fail_set(context, _failure_from_exception(error))
-            return operation
-
-        future.add_done_callback(
-            lambda completed: self._complete_set(
-                operation.id, completed, row=row
-            )
-        )
-
-        return operation
-
-    def _transaction_set(
-        self,
-        transaction: StateTransaction,
-        state: State[Any],
-        values: dict[str, Any],
-    ) -> StateOperation:
-        copied, old = _set_values(state, values)
-
-        transaction.add_set(state, old, copied)
-        self._stage_transaction_set(transaction, state, old, copied)
-
-        return transaction.operation
-
-    def _transaction_setrow(
-        self,
-        transaction: StateTransaction,
-        state: State[Any],
-        values: dict[str, Any],
-    ) -> StateOperation:
-        copied, old = _set_values(state, values)
-
-        transaction.add_setrow(state, old, copied)
-        self._stage_transaction_set(transaction, state, old, copied)
-
-        return transaction.operation
-
-    def _stage_transaction_set(
-        self,
-        transaction: StateTransaction,
-        state: State[Any],
-        old: dict[str, Any],
-        new: dict[str, Any],
-    ) -> None:
-        changed = state.stage_overlay(transaction.operation, new)
         state.publish(changed)
 
-        for key, value in new.items():
-            state.begin_operation(
-                transaction.operation, key, old.get(key), value
-            )
-
-    def _transaction_insert(
+    def _insert(
         self,
         transaction: StateTransaction,
         collection: CollectionState[Any],
         row_id: str,
         values: dict[str, Any],
-    ) -> StateOperation:
-        prepared = _record_values(collection, values)
+        *,
+        optimistic: bool,
+    ) -> None:
+        prepared = _insert_values(collection, values)
 
-        delta = collection.stage_enter(row_id)
-        state = collection[row_id]
+        state = self._registry.create_row(type(collection.schema), row_id)
 
         transaction.add_insert(collection, state, prepared)
 
-        changed = state.stage_overlay(transaction.operation, prepared)
+        if not optimistic:
+            return
+
+        delta = collection.enter(row_id)
+
+        changed = state.set_overlay(transaction.id, prepared)
+
         state.publish(changed)
 
         collection.publish_membership(delta)
-        collection.begin_operation(
-            transaction.operation, row_id, None, prepared
-        )
 
-        return transaction.operation
-
-    def _transaction_remove(
+    def _remove(
         self,
         transaction: StateTransaction,
         collection: CollectionState[Any],
         row_id: str,
-    ) -> StateOperation:
+        *,
+        optimistic: bool,
+    ) -> None:
         state = collection[row_id]
-        fields = frozenset(state.fields)
-        old = state.visible_snapshot(fields)
 
-        cancelled_insert = transaction.add_remove(collection, state, old)
+        cancelled_insert = transaction.add_remove(collection, state)
 
-        changed = state.discard_overlay(transaction.operation)
+        changed = state.discard_overlay(transaction.id)
+
         state.publish(changed)
 
-        delta = collection.stage_leave(row_id)
+        if cancelled_insert:
+            delta = collection.leave(row_id)
+
+            collection.publish_membership(delta)
+
+            return
+
+        if not optimistic:
+            return
+
+        delta = collection.leave(row_id)
+
         collection.publish_membership(delta)
 
-        if not cancelled_insert:
-            collection.begin_operation(
-                transaction.operation, row_id, old, None
-            )
-
-        return transaction.operation
-
-    def _transaction_signal(
+    def _signal(
         self,
         transaction: StateTransaction,
         state: State[Any],
         signal: str,
         data: Any,
-    ) -> StateOperation:
-        copied = StateData.copy(data)
+    ) -> None:
+        transaction.add_signal(state, signal, data)
 
-        transaction.add_signal(state, signal, copied)
-        state.begin_operation(transaction.operation, signal, None, copied)
+    def _context(self, transaction: StateTransaction) -> TransactionContext:
+        context = self._transactions.get(transaction.id)
 
-        return transaction.operation
+        if context is not None:
+            return context
+
+        states: set[State[Any]] = set()
+
+        collections: set[CollectionState[Any]] = set()
+
+        for action in transaction.actions:
+            if isinstance(action, (SetAction, SetRowAction, SignalAction)):
+                states.add(action.state)
+
+                continue
+
+            if isinstance(action, (InsertAction, RemoveAction)):
+                collections.add(action.collection)
+
+                continue
+
+            raise TypeError("Unsupported State transaction action")
+
+        context = TransactionContext(
+            transaction=transaction, states=states, collections=collections
+        )
+
+        self._transactions[transaction.id] = context
+
+        return context
+
+    def _begin_participants(self, context: TransactionContext) -> None:
+        transaction = context.transaction
+
+        for state in context.states:
+            state.begin_transaction(transaction)
+
+        for collection in context.collections:
+            collection.begin_transaction(transaction)
+
+    def _succeed_participants(self, context: TransactionContext) -> None:
+        transaction = context.transaction
+
+        for state in context.states:
+            state.succeed_transaction(transaction)
+
+        for collection in context.collections:
+            collection.succeed_transaction(transaction)
+
+    def _fail_participants(
+        self, context: TransactionContext, failure: TransactionFailure
+    ) -> None:
+        transaction = context.transaction
+
+        for state in context.states:
+            state.fail_transaction(transaction, failure)
+
+        for collection in context.collections:
+            collection.fail_transaction(transaction, failure)
+
+    def _request_action(self, action: TransactionAction) -> RequestAction:
+        if isinstance(action, SetAction):
+            return SetRequestAction(
+                schema=action.state.schema.name,
+                values=tuple(action.values.items()),
+            )
+
+        if isinstance(action, SetRowAction):
+            return SetRowRequestAction(
+                schema=action.state.schema.name,
+                row_id=_row_id(action.state),
+                values=tuple(action.values.items()),
+            )
+
+        if isinstance(action, InsertAction):
+            return InsertRequestAction(
+                schema=action.collection.schema.name,
+                row_id=_row_id(action.state),
+                values=tuple(action.values.items()),
+            )
+
+        if isinstance(action, RemoveAction):
+            return RemoveRequestAction(
+                schema=action.collection.schema.name,
+                row_id=_row_id(action.state),
+            )
+
+        if isinstance(action, SignalAction):
+            row_id = action.state.row_id
+
+            if row_id is None:
+                return SignalRequestAction(
+                    schema=action.state.schema.name,
+                    signal=action.signal,
+                    data=action.data,
+                )
+
+            return SignalRowRequestAction(
+                schema=action.state.schema.name,
+                row_id=row_id,
+                signal=action.signal,
+                data=action.data,
+            )
+
+        raise TypeError("Unsupported State transaction action")
+
+    def _complete_transaction(
+        self,
+        transaction_id: str,
+        future: asyncio.Future[
+            TransactionResponse | TransactionFailureResponse
+        ],
+    ) -> None:
+        context = self._transactions.pop(transaction_id, None)
+
+        if context is None:
+            return
+
+        transaction = context.transaction
+
+        if future.cancelled():
+            self._fail_transaction(
+                context,
+                TransactionFailure(
+                    type="network", message="Store transaction was cancelled"
+                ),
+            )
+
+            return
+
+        try:
+            response = future.result()
+        except BaseException as error:
+            self._fail_transaction(context, _failure_from_exception(error))
+
+            return
+
+        if isinstance(response, TransactionFailureResponse):
+            self._fail_transaction(
+                context, _transaction_failure(response.failure)
+            )
+
+            return
+
+        if not isinstance(response, TransactionResponse):
+            self._fail_transaction(
+                context,
+                TransactionFailure(
+                    type="internal",
+                    message="Store returned an invalid transaction response",
+                ),
+            )
+
+            return
+
+        if response.transaction_id != transaction.id:
+            self._fail_transaction(
+                context,
+                TransactionFailure(
+                    type="internal",
+                    message="Store transaction ID does not match",
+                ),
+            )
+
+            return
+
+        self._succeed_transaction(context)
+
+    def _succeed_transaction(self, context: TransactionContext) -> None:
+        transaction = context.transaction
+
+        for action in transaction.actions:
+            if isinstance(action, (SetAction, SetRowAction, InsertAction)):
+                changed = action.state.discard_overlay(transaction.id)
+
+                action.state.publish(changed)
+
+        self._succeed_participants(context)
+
+        transaction._succeed()
+
+    def _fail_transaction(
+        self, context: TransactionContext, failure: TransactionFailure
+    ) -> None:
+        self._rollback_transaction(context.transaction)
+
+        self._fail_participants(context, failure)
+
+        context.transaction._fail(failure)
 
     def _rollback_transaction(self, transaction: StateTransaction) -> None:
         for action in reversed(transaction.actions):
             self._rollback_action(transaction, action)
 
     def _rollback_action(
-        self, transaction: StateTransaction, action: StateAction
+        self, transaction: StateTransaction, action: TransactionAction
     ) -> None:
-        operation = transaction.operation
-
         if isinstance(action, (SetAction, SetRowAction)):
-            changed = action.state.discard_overlay(operation)
+            changed = action.state.discard_overlay(transaction.id)
+
             action.state.publish(changed)
+
             return
 
         if isinstance(action, InsertAction):
-            changed = action.state.discard_overlay(operation)
+            changed = action.state.discard_overlay(transaction.id)
+
             action.state.publish(changed)
 
-            delta = action.collection.stage_leave(
-                cast(str, action.state.row_id)
-            )
+            delta = action.collection.leave(_row_id(action.state))
+
             action.collection.publish_membership(delta)
+
             return
 
         if isinstance(action, RemoveAction):
-            row_id = cast(str, action.state.row_id)
-            delta = action.collection.stage_enter(row_id)
+            delta = action.collection.enter(_row_id(action.state))
+
             action.collection.publish_membership(delta)
+
             return
 
         if isinstance(action, SignalAction):
@@ -383,210 +629,180 @@ class StateManager:
 
         raise TypeError("Unsupported State transaction action")
 
-    def _fail_transaction_participants(
-        self, transaction: StateTransaction, failure: StateFailure
+    def _single_snapshot(
+        self, target: ReactiveTarget, response: SingleSubscriptionResponse
     ) -> None:
-        operation = transaction.operation
+        if not isinstance(target, State):
+            raise TypeError("Single subscription target must be State")
 
-        states: set[State[Any]] = set()
-        collections: set[CollectionState[Any]] = set()
+        if response.values is None:
+            return
 
-        for action in transaction.actions:
-            if isinstance(action, (SetAction, SetRowAction, SignalAction)):
-                states.add(action.state)
-                continue
+        changed = target.set_canonical(dict(response.values))
 
-            collections.add(action.collection)
+        target.publish(changed)
 
-        for state in states:
-            state.fail_operation(operation, None, None, None, failure)
+    def _collection_snapshot(
+        self, target: ReactiveTarget, response: CollectionSubscriptionResponse
+    ) -> None:
+        if not isinstance(target, CollectionState):
+            raise TypeError(
+                "Collection subscription target must be CollectionState"
+            )
 
-        for collection in collections:
-            collection.fail_operation(operation, "", None, None, failure)
+        if response.rows is None:
+            return
 
-    def _complete_set(
+        self._rows_snapshot(target, response.rows)
+
+    def _query_snapshot(
+        self, target: ReactiveTarget, response: QuerySubscriptionResponse
+    ) -> None:
+        if not isinstance(target, QueryCollectionState):
+            raise TypeError(
+                "Query subscription target must be QueryCollectionState"
+            )
+
+        if response.rows is None:
+            return
+
+        self._rows_snapshot(target, response.rows)
+
+    def _rows_snapshot(
         self,
-        operation_id: str,
-        future: asyncio.Future[ResponseItem],
-        *,
-        row: bool,
+        target: CollectionState[Any] | QueryCollectionState[Any],
+        rows: tuple[QueryRow, ...],
     ) -> None:
-        context = self._sets.pop(operation_id, None)
+        delta = target.set_membership(tuple(row.id for row in rows))
 
-        if context is None:
-            return
+        for row in rows:
+            state = target[row.id]
 
-        if future.cancelled():
-            self._fail_set(
-                context,
-                StateFailure(
-                    type="network", message="Store set was cancelled"
-                ),
-            )
-            return
+            changed = state.set_canonical(row.to_dict())
 
-        try:
-            response = future.result()
-        except BaseException as error:
-            self._fail_set(context, _failure_from_exception(error))
-            return
+            state.publish(changed)
 
-        if isinstance(response, FailureResponse):
-            self._fail_set(
-                context,
-                _state_failure(response.failure),
-                key=_failure_key(response.failure, context),
-            )
-            return
+        target.publish_membership(delta)
 
-        expected = SetRowResponse if row else SetResponse
-
-        if not isinstance(response, expected):
-            self._fail_set(
-                context,
-                StateFailure(
-                    type="internal",
-                    message="Store returned an invalid set response",
-                ),
-            )
-            return
-
-        if response.operation_id != context.operation.id:
-            self._fail_set(
-                context,
-                StateFailure(
-                    type="internal",
-                    message="Store set operation ID does not match",
-                ),
-            )
-            return
-
-        canonical = dict(response.values)
-        missing = set(context.values) - set(canonical)
-
-        if missing:
-            self._fail_set(
-                context,
-                StateFailure(
-                    type="internal",
-                    message="Store set response is missing fields",
-                ),
-            )
-            return
-
-        self._succeed_set(context, canonical)
-
-    def _succeed_set(
-        self, context: _SetContext, canonical: dict[str, Any]
+    def _apply_set_event(
+        self, target: ReactiveTarget, action: SetEventAction
     ) -> None:
-        state = context.state
-        operation = context.operation
+        if not isinstance(target, State):
+            raise TypeError("Set event requires a State target")
 
-        changed = set(state.stage_canonical(canonical))
-        changed.update(state.discard_overlay(operation))
+        changed = target.set_canonical(dict(action.values))
+
+        target.publish(changed)
+
+    def _apply_setrow_event(
+        self, target: ReactiveTarget, action: SetRowEventAction
+    ) -> None:
+        if isinstance(target, State):
+            raise TypeError("SetRow event requires a collection target")
+
+        state = target.get(action.row_id)
+
+        if state is None:
+            raise RuntimeError(
+                f"SetRow event references an unknown row: {action.row_id!r}"
+            )
+
+        changed = state.set_canonical(dict(action.values))
 
         state.publish(changed)
 
-        for key in context.values:
-            state.succeed_operation(
-                operation, key, context.old.get(key), canonical.get(key)
-            )
-
-        operation.succeed()
-
-    def _fail_set(
-        self,
-        context: _SetContext,
-        failure: StateFailure,
-        *,
-        key: str | None = None,
+    def _apply_insert_event(
+        self, target: ReactiveTarget, action: InsertEventAction
     ) -> None:
-        state = context.state
-        operation = context.operation
+        if isinstance(target, State):
+            raise TypeError("Insert event requires a collection target")
 
-        changed = state.discard_overlay(operation)
+        delta = target.enter(action.row_id)
+
+        state = target[action.row_id]
+
+        changed = state.set_canonical(dict(action.values))
+
         state.publish(changed)
 
-        if key is None and len(context.values) == 1:
-            key = next(iter(context.values))
+        target.publish_membership(delta)
 
-        old = context.old.get(key) if key is not None else None
-        new = context.values.get(key) if key is not None else None
+    def _apply_remove_event(
+        self, target: ReactiveTarget, action: RemoveEventAction
+    ) -> None:
+        if isinstance(target, State):
+            raise TypeError("Remove event requires a collection target")
 
-        state.fail_operation(operation, key, old, new, failure)
-        operation.fail(failure)
+        delta = target.leave(action.row_id)
 
-
-def _set_values(
-    state: State[Any], values: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not values:
-        raise ValueError("State set requires at least one field")
-
-    copied = StateData.copy_values(values)
-    old = state.visible_snapshot(frozenset(copied))
-
-    return copied, old
+        target.publish_membership(delta)
 
 
-def _record_values(
+def _insert_values(
     collection: CollectionState[Any], values: dict[str, Any]
 ) -> dict[str, Any]:
     prepared = collection.schema.defaults()
+
     prepared.update(StateData.copy_values(values))
-    collection.schema.challenge_fields(prepared)
 
     return StateData.copy_values(prepared)
 
 
-def _failure_key(failure: StoreFailure, context: _SetContext) -> str | None:
-    store_context = failure.context
+def _row_id(state: State[Any]) -> str:
+    row_id = state.row_id
 
-    if store_context is not None:
-        field = store_context.field
+    if row_id is None:
+        raise RuntimeError("State row ID is required")
 
-        if field in context.values:
-            return field
-
-    return None
+    return row_id
 
 
-def _state_failure(failure: StoreFailure) -> StateFailure:
+def _transaction_failure(failure: StoreFailure) -> TransactionFailure:
     source = failure.context.source if failure.context is not None else None
 
     if source == "trigger":
         failure_type = "trigger"
+
     elif source == "policy":
         failure_type = "policy"
+
     elif failure.code in {
         StoreErrorCode.FIELD_NOT_FOUND,
         StoreErrorCode.FIELD_VALIDATION_FAILED,
     }:
         failure_type = "field"
+
     elif failure.code in {
         StoreErrorCode.FOREIGN_KEY_NOT_FOUND,
         StoreErrorCode.FOREIGN_KEY_RESTRICTED,
     }:
         failure_type = "foreign_key"
+
     elif failure.status == StoreErrorStatus.NOT_FOUND:
         failure_type = "not_found"
+
     elif failure.status == StoreErrorStatus.CONFLICT:
         failure_type = "conflict"
+
     elif failure.status == StoreErrorStatus.TIMEOUT:
         failure_type = "timeout"
+
     elif failure.status == StoreErrorStatus.UNAVAILABLE:
         failure_type = "network"
+
     else:
         failure_type = "internal"
 
-    return StateFailure(type=failure_type, message=failure.message)
+    return TransactionFailure(type=failure_type, message=failure.message)
 
 
-def _failure_from_exception(error: BaseException) -> StateFailure:
+def _failure_from_exception(error: BaseException) -> TransactionFailure:
     if isinstance(error, asyncio.TimeoutError):
         failure_type = "timeout"
+
     elif isinstance(error, ConnectionError):
         failure_type = "network"
+
     else:
         failure_type = "internal"
 
@@ -595,4 +811,4 @@ def _failure_from_exception(error: BaseException) -> StateFailure:
     if not message:
         message = type(error).__name__
 
-    return StateFailure(type=failure_type, message=message)
+    return TransactionFailure(type=failure_type, message=message)

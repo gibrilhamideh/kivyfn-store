@@ -1,30 +1,37 @@
 # src/kivyfn/store/state/registry.py
 from __future__ import annotations
 
-from typing import Any, TypeVar, cast, overload
+from typing import Any, Protocol, TypeVar, cast, overload
 from weakref import WeakValueDictionary
 
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.query import Query
 from kivyfn.store.query.shape import QueryShape
 from kivyfn.store.schema import ManySchema, Schema, SingleSchema
-from kivyfn.store.state.reactive.collection import CollectionState
+from kivyfn.store.state.reactive.collection import (
+    CollectionManagerProtocol,
+    CollectionState,
+)
 from kivyfn.store.state.reactive.factory import StateFactory
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State, StateManagerProtocol
 
 
 SchemaT = TypeVar("SchemaT", bound=Schema)
-
 SingleSchemaT = TypeVar("SingleSchemaT", bound=SingleSchema)
-
 ManySchemaT = TypeVar("ManySchemaT", bound=ManySchema)
+
+
+class RegistryManagerProtocol(
+    StateManagerProtocol, CollectionManagerProtocol, Protocol
+):
+    pass
 
 
 class StateRegistry:
     """Own reactive State identity within one StateManager."""
 
-    def __init__(self, manager: Any) -> None:
+    def __init__(self, manager: RegistryManagerProtocol) -> None:
         self._manager = manager
         self._factory = StateFactory()
 
@@ -41,7 +48,6 @@ class StateRegistry:
         ] = WeakValueDictionary()
 
         self._schemas: dict[type[Schema], Schema] = {}
-
         self._schema_types: dict[str, type[Schema]] = {}
 
     @overload
@@ -58,7 +64,7 @@ class StateRegistry:
     ) -> QueryCollectionState[ManySchemaT]: ...
 
     def create(
-        self, source: (type[SingleSchema] | type[ManySchema] | Query[Any])
+        self, source: type[SingleSchema] | type[ManySchema] | Query[Any]
     ) -> Any:
         existing = self._states.get(source)
 
@@ -108,16 +114,16 @@ class StateRegistry:
         _validate_row_id(row_id)
 
         key = (cast(type[Schema], schema_type), row_id)
+
         existing = self._rows.get(key)
 
         if existing is not None:
             return cast(State[SchemaT], existing)
 
         schema = self.schema(schema_type)
+
         state = self._factory.create(
-            manager=cast(StateManagerProtocol, self._manager),
-            schema=schema,
-            row_id=row_id,
+            manager=self._manager, schema=schema, row_id=row_id
         )
 
         self._rows[key] = cast(State[Any], state)
@@ -130,14 +136,16 @@ class StateRegistry:
         _validate_row_id(row_id)
 
         key = (shape, row_id)
+
         existing = self._query_rows.get(key)
 
         if existing is not None:
             return cast(State[SchemaT], existing)
 
         schema = self.schema(schema_type)
+
         state = self._factory.create_query(
-            manager=cast(StateManagerProtocol, self._manager),
+            manager=self._manager,
             schema=schema,
             row_id=row_id,
             shape=shape,
@@ -154,9 +162,7 @@ class StateRegistry:
         schema = self.schema(schema_type)
 
         return self._factory.create(
-            manager=cast(StateManagerProtocol, self._manager),
-            schema=schema,
-            row_id=None,
+            manager=self._manager, schema=schema, row_id=None
         )
 
     def _create_collection(
@@ -175,6 +181,7 @@ class StateRegistry:
     ) -> QueryCollectionState[ManySchemaT]:
         schema_type = self._query_schema_type(query)
         schema = self.schema(schema_type)
+
         shape = QueryShape.build(query, schema, self.resolve_schema)
 
         if not shape.live_compatible:
@@ -212,7 +219,7 @@ class StateRegistry:
 
 
 def _validate_row_id(row_id: str) -> None:
-    if not isinstance(row_id, str) or not row_id:
+    if not row_id:
         raise ValueError("State row ID must be a non-empty string")
 
 

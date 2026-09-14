@@ -1,11 +1,11 @@
-# src/kivyfn/store/state/mutation/failure.py
+# src/kivyfn/store/state/transaction/failure.py
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 
-StateFailureType = Literal[
+TransactionFailureType: TypeAlias = Literal[
     "network",
     "field",
     "foreign_key",
@@ -19,14 +19,14 @@ StateFailureType = Literal[
 
 
 @dataclass(frozen=True, slots=True)
-class StateFailure:
-    """Normalized failure exposed through State mutations."""
+class TransactionFailure:
+    """Normalized failure for one State transaction."""
 
-    type: StateFailureType
+    type: TransactionFailureType
     message: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.message, str) or not self.message:
+        if not self.message:
             raise ValueError(
-                "State failure message must be a non-empty string"
+                "Transaction failure message must be a non-empty string"
             )

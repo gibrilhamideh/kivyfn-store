@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Generic, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from kivy.event import EventDispatcher
 from kivy.properties import BooleanProperty, NumericProperty
@@ -11,9 +11,11 @@ from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.schema import Schema
 from kivyfn.store.schema.fields import BaseField
-from kivyfn.store.state.mutation.failure import StateFailure
-from kivyfn.store.state.mutation.operation import StateOperation
 from kivyfn.store.state.reactive.data import StateData
+
+if TYPE_CHECKING:
+    from kivyfn.store.state.transaction.failure import TransactionFailure
+    from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
 logger = get_logger(__name__)
@@ -24,22 +26,22 @@ SchemaT = TypeVar("SchemaT", bound=Schema)
 class StateManagerProtocol(Protocol):
     def request_set(
         self, state: State[Any], values: dict[str, Any], *, optimistic: bool
-    ) -> StateOperation: ...
+    ) -> StateTransaction: ...
 
     def request_setrow(
         self, state: State[Any], values: dict[str, Any], *, optimistic: bool
-    ) -> StateOperation: ...
+    ) -> StateTransaction: ...
 
     def request_signal(
         self, state: State[Any], signal: str, data: Any
-    ) -> StateOperation: ...
+    ) -> StateTransaction: ...
 
 
 class State(EventDispatcher, Generic[SchemaT]):
     """Reactive representation of one Store record."""
 
     synced = BooleanProperty(False)
-    pending = BooleanProperty(False)
+    is_pending = BooleanProperty(False)
     pending_count = NumericProperty(0)
 
     __events__ = ("on_pending", "on_success", "on_failed", "on_done")
@@ -59,7 +61,7 @@ class State(EventDispatcher, Generic[SchemaT]):
         self._schema = schema
         self._row_id = row_id
         self._data = StateData(schema.defaults())
-        self._pending_operations: set[str] = set()
+        self._pending_transactions: set[str] = set()
 
         self.publish(self._state_field_names)
 
@@ -95,8 +97,8 @@ class State(EventDispatcher, Generic[SchemaT]):
     def row_id(self) -> str | None:
         return self._row_id
 
-    def set(self, **values: Any) -> StateOperation:
-        """Start one strict field set."""
+    def set(self, **values: Any) -> StateTransaction:
+        """Start one non-optimistic State transaction."""
         if not values:
             raise ValueError("set() requires at least one field")
 
@@ -113,24 +115,22 @@ class State(EventDispatcher, Generic[SchemaT]):
         for key, value in values.items():
             fields[key].challenge(value)
 
-    def stage_canonical(self, values: Mapping[str, Any]) -> frozenset[str]:
+    def set_canonical(self, values: Mapping[str, Any]) -> frozenset[str]:
         self._require_fields(values)
-
         return self._data.set_canonical(values)
 
-    def stage_overlay(
-        self, operation: StateOperation, values: Mapping[str, Any]
+    def set_overlay(
+        self, transaction_id: str, values: Mapping[str, Any]
     ) -> frozenset[str]:
         self._require_fields(values)
-
-        return self._data.set_overlay(operation.id, values)
+        return self._data.set_overlay(transaction_id, values)
 
     def discard_overlay(
         self,
-        operation: StateOperation,
+        transaction_id: str,
         fields: set[str] | frozenset[str] | None = None,
     ) -> frozenset[str]:
-        return self._data.remove_overlay(operation.id, fields)
+        return self._data.remove_overlay(transaction_id, fields)
 
     def publish(self, fields: set[str] | frozenset[str]) -> None:
         for key in fields:
@@ -146,39 +146,34 @@ class State(EventDispatcher, Generic[SchemaT]):
     ) -> dict[str, Any]:
         return self._data.canonical_snapshot(fields)
 
-    def begin_operation(
-        self, operation: StateOperation, key: str | None, old: Any, new: Any
+    def begin_transaction(self, transaction: StateTransaction) -> None:
+        if transaction.id in self._pending_transactions:
+            return
+
+        self._pending_transactions.add(transaction.id)
+        self._sync_pending()
+
+        self.dispatch("on_pending", transaction)
+
+    def succeed_transaction(self, transaction: StateTransaction) -> None:
+        if not self._finish_transaction(transaction.id):
+            return
+
+        self.dispatch("on_success", transaction)
+        self.dispatch("on_done", transaction, None)
+
+    def fail_transaction(
+        self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
-        if operation.id not in self._pending_operations:
-            self._pending_operations.add(operation.id)
-            self._sync_pending()
+        if not self._finish_transaction(transaction.id):
+            return
 
-        self.dispatch("on_pending", operation, key, old, new)
-
-    def succeed_operation(
-        self, operation: StateOperation, key: str | None, old: Any, new: Any
-    ) -> None:
-        self._finish_operation(operation)
-
-        self.dispatch("on_success", operation, key, old, new)
-        self.dispatch("on_done", operation, key, old, new, None)
-
-    def fail_operation(
-        self,
-        operation: StateOperation,
-        key: str | None,
-        old: Any,
-        new: Any,
-        failure: StateFailure,
-    ) -> None:
-        self._finish_operation(operation)
-
-        self.dispatch("on_failed", operation, key, old, new, failure)
-        self.dispatch("on_done", operation, key, old, new, failure)
+        self.dispatch("on_failed", transaction, failure)
+        self.dispatch("on_done", transaction, failure)
 
     def _request_set(
         self, values: dict[str, Any], *, optimistic: bool
-    ) -> StateOperation:
+    ) -> StateTransaction:
         if self._row_id is None:
             return self._manager.request_set(
                 self, values, optimistic=optimistic
@@ -188,7 +183,7 @@ class State(EventDispatcher, Generic[SchemaT]):
             self, values, optimistic=optimistic
         )
 
-    def _emit_signal(self, signal: str, data: Any = None) -> StateOperation:
+    def _emit_signal(self, signal: str, data: Any = None) -> StateTransaction:
         return self._manager.request_signal(
             self, signal, self._data.copy(data)
         )
@@ -210,15 +205,20 @@ class State(EventDispatcher, Generic[SchemaT]):
                 key,
             )
 
-    def _finish_operation(self, operation: StateOperation) -> None:
-        self._pending_operations.discard(operation.id)
+    def _finish_transaction(self, transaction_id: str) -> bool:
+        if transaction_id not in self._pending_transactions:
+            return False
+
+        self._pending_transactions.remove(transaction_id)
         self._sync_pending()
 
+        return True
+
     def _sync_pending(self) -> None:
-        count = len(self._pending_operations)
+        count = len(self._pending_transactions)
 
         self.pending_count = count
-        self.pending = count > 0
+        self.is_pending = count > 0
 
     def _require_fields(self, values: Mapping[str, Any]) -> None:
         for name in values:
@@ -227,33 +227,19 @@ class State(EventDispatcher, Generic[SchemaT]):
                     f"Unknown State field {name!r} for {self._schema.name}"
                 )
 
-    def on_pending(
-        self, operation: StateOperation, key: str | None, old: Any, new: Any
-    ) -> None:
+    def on_pending(self, transaction: StateTransaction) -> None:
         pass
 
-    def on_success(
-        self, operation: StateOperation, key: str | None, old: Any, new: Any
-    ) -> None:
+    def on_success(self, transaction: StateTransaction) -> None:
         pass
 
     def on_failed(
-        self,
-        operation: StateOperation,
-        key: str | None,
-        old: Any,
-        new: Any,
-        failure: StateFailure,
+        self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
         pass
 
     def on_done(
-        self,
-        operation: StateOperation,
-        key: str | None,
-        old: Any,
-        new: Any,
-        failure: StateFailure | None,
+        self, transaction: StateTransaction, failure: TransactionFailure | None
     ) -> None:
         pass
 
