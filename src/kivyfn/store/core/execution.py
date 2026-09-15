@@ -49,9 +49,11 @@ class Execution:
         self.transaction_id = transaction_id
         self.validate = validate
         self.prepared: dict[Node, NodeState] = {}
+        self.delta = Delta()
 
     def execute(self) -> ExecutionResult:
         compiler = Compiler(self.engine, self.instructions)
+        self.delta = compiler.delta
 
         try:
             compiled = compiler.compile()
@@ -65,8 +67,12 @@ class Execution:
                 error=exc,
             )
 
-        delta = compiler.delta
+        return self.prepare(compiler.delta, tuple(compiled))
 
+    def prepare(
+        self, delta: Delta, compiled: tuple[Operation, ...] = ()
+    ) -> ExecutionResult:
+        """Shared final constraints and index preparation for trusted Delta."""
         try:
             ConstraintGuard(self.engine).validate(delta)
             if self.validate is not None:
@@ -76,22 +82,18 @@ class Execution:
             }
         except StoreOperationError as exc:
             self._attach_stage(exc, StoreErrorStage.VALIDATE)
-
             return ExecutionResult(
                 success=False,
                 stage=StoreErrorStage.VALIDATE,
-                compiled=tuple(compiled),
+                compiled=compiled,
                 error=exc,
             )
-
-        events = tuple(delta.events)
-
         return ExecutionResult(
             success=True,
             stage=StoreErrorStage.EXECUTE,
-            compiled=tuple(compiled),
+            compiled=compiled,
             commit=StoreCommit(
-                events=events, transaction_id=self.transaction_id
+                events=tuple(delta.events), transaction_id=self.transaction_id
             ),
             touched_nodes=delta.touched_nodes,
         )

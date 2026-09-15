@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias
 
 from kivyfn.store.operations import OpCode, OperationSource
 
@@ -111,3 +111,9 @@ class StoreCommit:
     transaction_id: str | None = None
     server_instance_id: str | None = None
     schema_revisions: dict[str, int] = field(default_factory=dict)
+
+    kind: Literal["transaction", "undo", "redo"] = "transaction"
+    origin_client_id: str | None = None
+    history_entry_id: str | None = None
+    history_group: str | None = None
+    history_label: str | None = None

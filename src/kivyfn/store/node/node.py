@@ -150,7 +150,11 @@ class Node:
 
             try:
                 self.insert(row_id, row)
-            except (ConstraintError, RowAlreadyExistsError) as exc:
+            except (
+                ConstraintError,
+                InvalidOperationError,
+                RowAlreadyExistsError,
+            ) as exc:
                 if not recover:
                     raise
 
@@ -266,6 +270,9 @@ class Node:
 
     def insert(self, row_id: str, row: Mapping[str, Any]) -> None:
         indexes = self._many_indexes(operation="insert", row_id=row_id)
+
+        if not isinstance(row_id, str) or not row_id:
+            raise InvalidOperationError("Row ID must be a non-empty string")
 
         if row_id in self.value:
             raise RowAlreadyExistsError(

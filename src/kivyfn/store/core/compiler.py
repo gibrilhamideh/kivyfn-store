@@ -63,11 +63,6 @@ class Compiler:
 
     def compile(self) -> list[Operation]:
         while self.pending:
-            if len(self.operations) >= self.MAX_OPERATIONS:
-                raise InvalidOperationError(
-                    f"Transaction exceeds the {self.MAX_OPERATIONS}-operation "
-                    "expansion limit"
-                )
             instruction = self.pending.popleft()
             if isinstance(instruction, _CascadeBoundary):
                 policies = self._collect_policies(
@@ -95,6 +90,11 @@ class Compiler:
                 if self._is_noop(operation):
                     continue
 
+                if len(self.operations) >= self.MAX_OPERATIONS:
+                    raise InvalidOperationError(
+                        "Transaction exceeds the "
+                        f"{self.MAX_OPERATIONS}-operation expansion limit"
+                    )
                 self.delta.add(operation)
                 self.operations.append(operation)
 

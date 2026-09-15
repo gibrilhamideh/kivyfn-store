@@ -71,7 +71,7 @@ def engine(
         .child("links", Branch(Links))
         .child("selection", Branch(Selection))
     )
-    root, config = (
+    config = (
         Builder()
         .tree(tree)
         .storage_path(path)
@@ -80,7 +80,7 @@ def engine(
         .migrations(migrations or [])
         .build()
     )
-    return Engine(root, config)
+    return Engine(config.root._build_node(), config)
 
 
 def legacy(path: Path, name: str, data: Any, version: Any = 1) -> None:
@@ -507,7 +507,7 @@ def test_invalid_defaults_fail_even_erase_policy(tmp_path: Path) -> None:
         persistent = True
         value = NumericField(default="invalid")
 
-    root, config = (
+    config = (
         Builder()
         .tree(Branch(InvalidDefaults))
         .storage_path(tmp_path)
@@ -515,7 +515,7 @@ def test_invalid_defaults_fail_even_erase_policy(tmp_path: Path) -> None:
         .build()
     )
     with pytest.raises(FieldValidationError):
-        Engine(root, config).boot()
+        Engine(config.root._build_node(), config).boot()
     assert FileStorage(tmp_path)._manifest_name() is None
 
 

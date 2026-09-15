@@ -152,8 +152,15 @@ class StateManager:
         for source in tuple(self._targets):
             self.release(source)
 
-    def transaction(self) -> StateTransaction:
-        return StateTransaction(self)
+    def transaction(
+        self,
+        *,
+        history_group: str | None = None,
+        history_label: str | None = None,
+    ) -> StateTransaction:
+        return StateTransaction(
+            self, history_group=history_group, history_label=history_label
+        )
 
     def enter_transaction(self, transaction: StateTransaction) -> object:
         active = _active_transaction.get()
@@ -180,7 +187,10 @@ class StateManager:
         self._begin_participants(context)
 
         future = self._client.transaction(
-            transaction_id=transaction.id, actions=actions
+            transaction_id=transaction.id,
+            actions=actions,
+            history_group=transaction.history_group,
+            history_label=transaction.history_label,
         )
 
         future.add_done_callback(

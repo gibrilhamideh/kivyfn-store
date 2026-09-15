@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
 from kivyfn.store.state.manager import StateManager
 from tests.schemas import create_builder
 
@@ -67,11 +67,11 @@ async def running_state_stack(
     if clean:
         shutil.rmtree(path, ignore_errors=True)
 
-    root, config = create_builder().storage_path(path).build()
+    config = create_builder().storage_path(path).build()
 
-    store = Store(root=root, config=config)
+    store = Store(config)
     endpoint = _host_endpoint(transport)
-    host = StoreHost(store, endpoint)
+    host = StoreHost(store, HostConfig(endpoint))
     client: StoreClient | None = None
 
     try:

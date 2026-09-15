@@ -18,17 +18,20 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
+    HistoryRequest,
     QueryRequest,
     QuerySubscriptionRequest,
-    RequestAction,
+    RedoRequest,
     RequestBatch,
     RequestItem,
     SingleSubscriptionRequest,
     TransactionRequest,
+    UndoRequest,
     UnsubscribeRequest,
 )
 from kivyfn.store.protocol.message.responses import (
     FailureResponse,
+    HistoryResponse,
     QueryResponse,
     ResponseBatch,
     ResponseItem,
@@ -58,9 +61,9 @@ class HostRequests:
         if max_completed < 1:
             raise ValueError("max_completed must be positive")
         self._max_completed = max_completed
-        self._completed: OrderedDict[
-            str, tuple[tuple[RequestAction, ...], ResponseItem]
-        ] = OrderedDict()
+        self._completed: OrderedDict[str, tuple[RequestItem, ResponseItem]] = (
+            OrderedDict()
+        )
         self._store = store
         self._subscriptions = subscriptions
 
@@ -72,14 +75,16 @@ class HostRequests:
         )
 
     def _handle(self, client_id: str, request: RequestItem) -> ResponseItem:
-        if not isinstance(request, TransactionRequest):
+        if not isinstance(
+            request, (TransactionRequest, UndoRequest, RedoRequest)
+        ):
             return self._execute_request(client_id, request)
         cached = self._completed.get(request.transaction_id)
         if cached is not None:
-            actions, response = cached
-            if actions != request.actions:
+            previous, response = cached
+            if previous != request:
                 error = InvalidOperationError(
-                    "Transaction ID was already used with different actions"
+                    "Transaction ID was already used with different work"
                 )
                 return TransactionFailureResponse(
                     request.transaction_id, error.failure()
@@ -88,7 +93,7 @@ class HostRequests:
             return deepcopy(response)
         response = self._execute_request(client_id, request)
         self._completed[request.transaction_id] = (
-            deepcopy(request.actions),
+            deepcopy(request),
             deepcopy(response),
         )
         while len(self._completed) > self._max_completed:
@@ -101,7 +106,30 @@ class HostRequests:
         try:
             match request:
                 case TransactionRequest():
-                    return self._transaction(request)
+                    return self._transaction(client_id, request)
+
+                case HistoryRequest():
+                    return HistoryResponse(
+                        self._store.history(
+                            limit=request.limit, offset=request.offset
+                        )
+                    )
+
+                case UndoRequest() | RedoRequest():
+                    navigate = (
+                        self._store.undo
+                        if isinstance(request, UndoRequest)
+                        else self._store.redo
+                    )
+                    result = navigate(
+                        transaction_id=request.transaction_id,
+                        expected_position=request.expected_position,
+                        origin_client_id=client_id,
+                    )
+                    if not result.success:
+                        assert result.error is not None
+                        raise result.error
+                    return TransactionResponse(request.transaction_id)
 
                 case QueryRequest():
                     return QueryResponse(rows=self._store.query(request.query))
@@ -133,16 +161,26 @@ class HostRequests:
         except Exception as error:
             failure = self._failure(request, error)
 
-            if isinstance(request, TransactionRequest):
+            if isinstance(
+                request, (TransactionRequest, UndoRequest, RedoRequest)
+            ):
                 return TransactionFailureResponse(
                     transaction_id=request.transaction_id, failure=failure
                 )
 
             return FailureResponse(failure=failure)
 
-    def _transaction(self, request: TransactionRequest) -> TransactionResponse:
+    def _transaction(
+        self, client_id: str, request: TransactionRequest
+    ) -> TransactionResponse:
         result = self._store.execute(
-            request.actions, transaction_id=request.transaction_id
+            request.actions,
+            transaction_id=request.transaction_id,
+            origin_client_id=client_id,
+            history_group=request.history_group,
+            history_label=request.history_label,
+            expected_store_instance_id=request.expected_store_instance_id,
+            expected_revisions=request.expected_revisions,
         )
 
         if not result.success:

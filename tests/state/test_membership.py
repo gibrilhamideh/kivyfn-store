@@ -141,7 +141,7 @@ async def test_defaults_only_insert_is_valid_and_owned() -> None:
     assert rows["x"].get("payload") == {}
 
 
-def test_membership_overlay_precedence_and_order() -> None:
+def test_membership_overlay_precedence_and_read_only_mapping() -> None:
     _, _, rows = rows_pair()
     rows.set_membership(("a", "b"))
     first = rows["a"]

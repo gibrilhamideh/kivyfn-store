@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from kivyfn.store import StoreClient
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.devtools.config import DevToolsConfig
 from kivyfn.store.process import ProcessHandle, StoreProcess
 from tests.schemas import create_builder
 
@@ -73,13 +75,16 @@ class Context:
 def test_process_registers_once_and_preserves_manager_controls(
     tmp_path: Path,
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0"))
+        .build()
+    )
     manager = Manager()
     process = StoreProcess(
         manager,
-        root,
         config,
-        "http://127.0.0.1:0",
         name="  store  ",
         startup_timeout=7,
         shutdown_timeout=4,
@@ -97,9 +102,7 @@ def test_process_registers_once_and_preserves_manager_controls(
     handle = process.start()
     assert process.start() is handle
     assert manager.targets == {"store": StoreProcess.entry}
-    assert manager.starts == [
-        ("store", (root, config, "http://127.0.0.1:0"), True, 7, False)
-    ]
+    assert manager.starts == [("store", (config,), True, 7, False)]
     assert process.registered
     assert process.running
 
@@ -126,9 +129,14 @@ def test_process_registers_once_and_preserves_manager_controls(
 def test_process_ignores_missing_bound_endpoint(
     tmp_path: Path, payload: dict[str, Any]
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0"))
+        .build()
+    )
     manager = Manager()
-    process = StoreProcess(manager, root, config, "http://127.0.0.1:0")
+    process = StoreProcess(manager, config)
     process.start()
     manager.handles[process.name].ready_payload = payload
     assert process.client_endpoint is None
@@ -145,20 +153,36 @@ def test_process_ignores_missing_bound_endpoint(
 def test_process_rejects_unusable_configuration(
     tmp_path: Path, endpoint: str, name: str, message: str
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig(endpoint))
+        .build()
+    )
     with pytest.raises(ValueError, match=message):
-        StoreProcess(Manager(), root, config, endpoint, name=name)
+        StoreProcess(Manager(), config, name=name)
+
+
+def test_process_requires_host_configuration(tmp_path: Path) -> None:
+    config = create_builder().storage_path(tmp_path).build()
+    manager = Manager()
+    with pytest.raises(ValueError, match="requires a HostConfig"):
+        StoreProcess(manager, config)
+    assert manager.handles == {}
 
 
 @pytest.mark.asyncio
 async def test_child_runner_reports_bound_port_and_stops_cleanly(
     tmp_path: Path,
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
-    context = Context()
-    task = asyncio.create_task(
-        StoreProcess._run(context, root, config, "http://127.0.0.1:0")
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0"))
+        .build()
     )
+    context = Context()
+    task = asyncio.create_task(StoreProcess._run(context, config))
     client: StoreClient | None = None
     try:
         await asyncio.wait_for(context.started.wait(), 5)
@@ -179,11 +203,14 @@ async def test_child_runner_reports_bound_port_and_stops_cleanly(
 async def test_child_runner_cancellation_releases_bound_listener(
     tmp_path: Path,
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
-    context = Context()
-    task = asyncio.create_task(
-        StoreProcess._run(context, root, config, "http://127.0.0.1:0")
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0"))
+        .build()
     )
+    context = Context()
+    task = asyncio.create_task(StoreProcess._run(context, config))
     try:
         await asyncio.wait_for(context.started.wait(), 5)
     finally:
@@ -195,3 +222,57 @@ async def test_child_runner_cancellation_releases_bound_listener(
     server = await asyncio.start_server(lambda *_: None, "127.0.0.1", port)
     server.close()
     await server.wait_closed()
+
+
+def test_process_forwards_explicit_devtools_configuration(tmp_path: Path):
+    diagnostics = DevToolsConfig(port=8766)
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0", devtools=diagnostics))
+        .build()
+    )
+    manager = Manager()
+    process = StoreProcess(manager, config)
+    process.start()
+    assert manager.starts[0][1] == (config,)
+
+
+@pytest.mark.asyncio
+async def test_child_devtools_readiness_and_both_listener_cleanup(
+    tmp_path: Path,
+):
+    from urllib.parse import urlsplit
+
+    from aiohttp import ClientSession
+
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(
+            HostConfig("http://127.0.0.1:0", devtools=DevToolsConfig(port=0))
+        )
+        .build()
+    )
+    context = Context()
+    task = asyncio.create_task(StoreProcess._run(context, config))
+    try:
+        await asyncio.wait_for(context.started.wait(), 5)
+        assert context.payload is not None
+        url = context.payload["devtools_url"]
+        assert isinstance(url, str)
+        async with ClientSession() as http:
+            async with http.get(url) as response:
+                assert response.status == 200
+                assert 'id="root"' in await response.text()
+    finally:
+        context.stop()
+        await asyncio.wait_for(task, 5)
+    assert context.payload is not None
+    for port in (
+        context.payload["port"],
+        urlsplit(context.payload["devtools_url"]).port,
+    ):
+        server = await asyncio.start_server(lambda *_: None, "127.0.0.1", port)
+        server.close()
+        await server.wait_closed()

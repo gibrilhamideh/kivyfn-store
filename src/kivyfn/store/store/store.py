@@ -1,27 +1,40 @@
 # src/kivyfn/store/store/store.py
 from __future__ import annotations
 
-from collections import deque
+from asyncio import AbstractEventLoop, get_running_loop
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
 from threading import RLock
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 from kivyfn.logging import get_logger
 
 from kivyfn.store.address import Address
+from kivyfn.store.core.delta import Delta
 from kivyfn.store.core.engine import Engine
 from kivyfn.store.core.execution import ExecutionResult
+from kivyfn.store.core.operations import Operation
 from kivyfn.store.error import (
+    HistoryError,
+    HistoryErrorDetail,
+    StoreErrorCode,
     StoreErrorContext,
     StoreErrorStage,
     StoreOperationError,
     StoreStateError,
 )
 from kivyfn.store.events import StoreCommit
+from kivyfn.store.events.event import SignalRowEvent
 from kivyfn.store.query import Query, QueryResult
+from kivyfn.store.schema import ManySchema
+from kivyfn.store.store.history import (
+    History,
+    HistoryPage,
+    HistoryPosition,
+    HistoryStatus,
+)
 from kivyfn.store.store.instructions import (
     InstructionBuilder,
     StoreRequestAction,
@@ -45,7 +58,8 @@ class Store:
     schema snapshot and its revision must be returned together.
     """
 
-    def __init__(self, root: Node, config: StoreConfig) -> None:
+    def __init__(self, config: StoreConfig) -> None:
+        root = config.root._build_node()
         self._engine = Engine(root=root, config=config)
         self._instructions = InstructionBuilder(self._engine.metadata)
 
@@ -57,18 +71,26 @@ class Store:
             object, Callable[[StoreCommit], None]
         ] = {}
 
-        self._pending_commits: deque[
-            tuple[StoreCommit, tuple[object, ...]]
-        ] = deque()
-
+        self._history = History(self._instance_id, config.history)
+        self._history_listeners: dict[
+            object, Callable[[HistoryStatus], None]
+        ] = {}
         self._publishing_commits = False
+        self._host_owner: object | None = None
+        self._host_loop: AbstractEventLoop | None = None
 
     # -------------------------------------------------
     # Lifecycle
     # -------------------------------------------------
 
+    @property
+    def config(self) -> StoreConfig:
+        """Configuration used to construct this Store."""
+        return self._engine.config
+
     def boot(self) -> None:
         with self._lock:
+            self._require_mutation_owner()
             if self._shutdown:
                 raise StoreStateError("A shut-down Store cannot be booted")
 
@@ -84,6 +106,7 @@ class Store:
 
     def shutdown(self) -> None:
         with self._lock:
+            self._require_host_loop()
             if self._shutdown:
                 return
 
@@ -91,7 +114,7 @@ class Store:
 
             self._shutdown = True
             self._commit_listeners.clear()
-            self._pending_commits.clear()
+            self._history_listeners.clear()
 
     @property
     def booted(self) -> bool:
@@ -192,97 +215,284 @@ class Store:
     # -------------------------------------------------
 
     def execute(
-        self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
+        self,
+        actions: tuple[StoreRequestAction, ...],
+        *,
+        transaction_id: str,
+        origin_client_id: str | None = None,
+        history_group: str | None = None,
+        history_label: str | None = None,
+        expected_store_instance_id: str | None = None,
+        expected_revisions: dict[str, int] | None = None,
     ) -> ExecutionResult:
-        """Execute atomically with synchronous, read-only commit listeners.
-
-        A listener may read final data, subscribe or unsubscribe. It must
-        schedule subsequent mutations after delivery returns, so every
-        listener observes the same canonical data and revision pair.
-        """
+        """Execute on the owning loop, with read-only synchronous observers."""
         with self._lock:
-            if self._publishing_commits:
-                raise StoreStateError(
-                    "Store mutations are not allowed during commit delivery"
-                )
-            return self._execute(actions, transaction_id=transaction_id)
+            self._require_mutation_owner()
+            self._require_booted()
+            try:
+                if expected_store_instance_id is not None and (
+                    expected_store_instance_id != self.instance_id
+                ):
+                    raise HistoryError(
+                        "Store instance changed",
+                        code=StoreErrorCode.HISTORY_STALE,
+                    )
+                for schema, revision in (expected_revisions or {}).items():
+                    if (
+                        self._engine.get_node_by_schema(schema).revision
+                        != revision
+                    ):
+                        raise HistoryError(
+                            "Displayed schema revision is stale",
+                            code=StoreErrorCode.HISTORY_STALE,
+                            detail=HistoryErrorDetail(schema=schema),
+                        )
+                instructions, signals = self._instructions.build(actions)
+            except StoreOperationError as error:
+                return self._failure(error, StoreErrorStage.RESOLVE)
 
-    def _execute(
-        self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
+            prepared_history = self._history.state
+            entry_id: str | None = None
+
+            def prepare(delta: Delta, result: ExecutionResult) -> None:
+                nonlocal prepared_history, entry_id
+                prepared_history, entry_id = self._history.prepare(
+                    self._engine,
+                    delta,
+                    result,
+                    signals,
+                    transaction_id=transaction_id,
+                    origin_client_id=origin_client_id,
+                    group=history_group,
+                    label=history_label,
+                )
+
+            try:
+                result = self._engine.execute(
+                    instructions,
+                    transaction_id=transaction_id,
+                    validate=lambda delta: self._instructions.validate_signals(
+                        signals, delta
+                    ),
+                    prepare=prepare,
+                )
+                if not result.success:
+                    return result
+                changed = (
+                    prepared_history.revision != self._history.state.revision
+                )
+                self._history.state = prepared_history
+                commit = replace(
+                    cast(StoreCommit, result.commit),
+                    signals=signals,
+                    origin_client_id=origin_client_id,
+                    history_entry_id=entry_id,
+                    history_group=history_group,
+                    history_label=history_label,
+                )
+                return replace(
+                    result, commit=self._publish_transaction(commit, changed)
+                )
+            except Exception:
+                logger.exception("Transaction crashed id=%s", transaction_id)
+                self.shutdown()
+                raise
+
+    @staticmethod
+    def _failure(
+        error: StoreOperationError, stage: StoreErrorStage
     ) -> ExecutionResult:
-        self._require_booted()
-
-        logger.info(
-            "Transaction start id=%s actions=%d", transaction_id, len(actions)
+        error.context = replace(
+            error.context or StoreErrorContext(), stage=stage
         )
+        return ExecutionResult(success=False, stage=stage, error=error)
 
-        try:
-            instructions, signals = self._instructions.build(actions)
-
-        except StoreOperationError as error:
-            error.context = replace(
-                error.context or StoreErrorContext(),
-                stage=StoreErrorStage.RESOLVE,
-            )
-
-            logger.warning(
-                "Transaction resolve failed id=%s error=%r",
-                transaction_id,
-                error,
-            )
-
-            return ExecutionResult(
-                success=False, stage=StoreErrorStage.RESOLVE, error=error
-            )
-
-        logger.debug(
-            "Transaction resolved id=%s instructions=%d signals=%d",
-            transaction_id,
-            len(instructions),
-            len(signals),
-        )
-
-        try:
-            result = self._engine.execute(
-                instructions,
-                transaction_id=transaction_id,
-                validate=lambda delta: self._instructions.validate_signals(
-                    signals, delta
-                ),
-            )
-
-            if not result.success:
-                logger.warning(
-                    "Transaction failed id=%s stage=%s error=%r",
-                    transaction_id,
-                    result.stage,
-                    result.error,
+    def claim_host(self, owner: object, loop: AbstractEventLoop) -> None:
+        """Bind all hosted mutations to the Host's actual running loop."""
+        with self._lock:
+            self._require_mutation_owner()
+            if self._host_owner is not None and self._host_owner is not owner:
+                raise StoreStateError(
+                    "Store already belongs to an active Host"
                 )
-                return result
+            if get_running_loop() is not loop:
+                raise StoreStateError(
+                    "Host must claim Store on its event loop"
+                )
+            self._host_owner, self._host_loop = owner, loop
 
-            commit = replace(cast(StoreCommit, result.commit), signals=signals)
+    def release_host(self, owner: object) -> None:
+        with self._lock:
+            if self._host_owner is not owner:
+                return
+            self._require_mutation_owner()
+            self._host_owner = self._host_loop = None
 
-            commit = self._record_commit(commit)
+    def _require_mutation_owner(self) -> None:
+        if self._publishing_commits:
+            raise StoreStateError(
+                "Store mutations are not allowed during commit delivery "
+                "or history publication"
+            )
+        self._require_host_loop()
 
-            logger.info(
-                "Transaction committed id=%s events=%d signals=%d "
-                "revisions=%r",
-                transaction_id,
-                len(commit.events),
-                len(commit.signals),
-                commit.schema_revisions,
+    def _require_host_loop(self) -> None:
+        if self._host_loop is None:
+            return
+        try:
+            loop = get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not self._host_loop:
+            raise StoreStateError(
+                "Hosted Store mutations must execute on the Host event loop; "
+                "schedule the complete operation on that loop"
             )
 
-            return replace(result, commit=commit)
+    def history(self, limit: int = 100, offset: int = 0) -> HistoryPage:
+        with self._lock:
+            self._require_booted()
+            if type(limit) is not int or not 1 <= limit <= 1000:
+                raise ValueError("History limit must be between 1 and 1000")
+            if type(offset) is not int or offset < 0:
+                raise ValueError("History offset must be nonnegative")
+            return self._history.page(limit, offset)
 
-        except Exception:
-            logger.exception(
-                "Transaction crashed id=%s; shutting down Store",
-                transaction_id,
-            )
+    def close_history_group(self, origin_client_id: str | None = None) -> None:
+        with self._lock:
+            self._require_mutation_owner()
+            revision = self._history.state.revision
+            self._history.close_group(origin_client_id)
+            if self._history.state.revision != revision:
+                self._publishing_commits = True
+                try:
+                    self._publish_history()
+                finally:
+                    self._publishing_commits = False
 
-            self.shutdown()
-            raise
+    def undo(
+        self,
+        *,
+        transaction_id: str,
+        expected_position: HistoryPosition,
+        origin_client_id: str | None = None,
+    ) -> ExecutionResult:
+        return self._navigate(
+            "undo", transaction_id, expected_position, origin_client_id
+        )
+
+    def redo(
+        self,
+        *,
+        transaction_id: str,
+        expected_position: HistoryPosition,
+        origin_client_id: str | None = None,
+    ) -> ExecutionResult:
+        return self._navigate(
+            "redo", transaction_id, expected_position, origin_client_id
+        )
+
+    def _navigate(
+        self,
+        kind: Literal["undo", "redo"],
+        transaction_id: str,
+        expected_position: HistoryPosition,
+        origin_client_id: str | None,
+    ) -> ExecutionResult:
+        with self._lock:
+            self._require_mutation_owner()
+            self._require_booted()
+            status = self._history.status()
+            undo = kind == "undo"
+            position = status.undo_position if undo else status.redo_position
+            try:
+                if not status.enabled:
+                    raise HistoryError(
+                        "History is disabled",
+                        code=StoreErrorCode.HISTORY_DISABLED,
+                    )
+                if expected_position != position:
+                    raise HistoryError(
+                        "History position is stale",
+                        code=StoreErrorCode.HISTORY_STALE,
+                    )
+                if position.entry_id is None:
+                    raise HistoryError(
+                        status.barrier or "No history entry is available",
+                        code=(
+                            StoreErrorCode.HISTORY_BLOCKED
+                            if status.barrier
+                            else StoreErrorCode.HISTORY_EMPTY
+                        ),
+                    )
+                state = self._history.state
+                index = state.cursor - 1 if undo else state.cursor
+                entry = state.entries[index]
+                for record in entry.records:
+                    record.guard(self._engine, undo=undo)
+                # A separately deleted signal target conflicts even if the
+                # recorded restoration would happen to recreate that ID.
+                for occurrence in entry.signals:
+                    signal = occurrence.forward
+                    if isinstance(
+                        signal, SignalRowEvent
+                    ) and signal.id not in (
+                        self._engine.get_node_by_schema(signal.schema).value
+                    ):
+                        raise HistoryError(
+                            "Recorded signal target was removed"
+                        )
+                delta = Delta()
+                records = reversed(entry.records) if undo else entry.records
+                for record in records:
+                    if undo:
+                        Operation.undo(record, self._engine, delta)
+                    else:
+                        Operation.redo(record, self._engine, delta)
+                signals = (
+                    tuple(item.inverse for item in reversed(entry.signals))
+                    if undo
+                    else tuple(item.forward for item in entry.signals)
+                )
+                signals = deepcopy(signals)
+                next_state = replace(
+                    state,
+                    cursor=state.cursor + (-1 if undo else 1),
+                    revision=state.revision + 1,
+                    open_entry=None,
+                    intervening=frozenset(),
+                )
+            except StoreOperationError as error:
+                return self._failure(error, StoreErrorStage.VALIDATE)
+            try:
+                result = self._engine.restore(
+                    delta,
+                    transaction_id=transaction_id,
+                    validate=lambda delta: self._instructions.validate_signals(
+                        signals, delta
+                    ),
+                )
+                if not result.success:
+                    return result
+                self._history.state = next_state
+                commit = replace(
+                    cast(StoreCommit, result.commit),
+                    signals=signals,
+                    kind=kind,
+                    origin_client_id=origin_client_id,
+                    history_entry_id=entry.id,
+                    history_group=entry.group,
+                    history_label=entry.label,
+                )
+                return replace(
+                    result, commit=self._publish_transaction(commit, True)
+                )
+            except Exception:
+                logger.exception(
+                    "History navigation crashed id=%s", transaction_id
+                )
+                self.shutdown()
+                raise
 
     # -------------------------------------------------
     # Commit feed
@@ -312,46 +522,121 @@ class Store:
 
         return unsubscribe
 
-    def _publish_commit(self, commit: StoreCommit) -> None:
-        self._pending_commits.append((commit, tuple(self._commit_listeners)))
+    def subscribe_history(
+        self, callback: Callable[[HistoryStatus], None]
+    ) -> Callable[[], None]:
+        with self._lock:
+            self._require_booted()
+            token = object()
+            self._history_listeners[token] = callback
 
-        if self._publishing_commits:
-            return
+        def unsubscribe() -> None:
+            with self._lock:
+                self._history_listeners.pop(token, None)
 
+        return unsubscribe
+
+    def _publish_transaction(
+        self, commit: StoreCommit, history_changed: bool
+    ) -> StoreCommit:
         self._publishing_commits = True
-
         try:
-            while self._pending_commits:
-                current, tokens = self._pending_commits.popleft()
-
-                logger.debug(
-                    "Publishing commit transaction=%s listeners=%d "
-                    "events=%d signals=%d",
-                    current.transaction_id,
-                    len(tokens),
-                    len(current.events),
-                    len(current.signals),
-                )
-
-                for token in tokens:
-                    callback = self._commit_listeners.get(token)
-
-                    if callback is None:
-                        continue
-
-                    try:
-                        callback(deepcopy(current))
-
-                    except Exception:
-                        logger.exception(
-                            "Store commit callback failed transaction=%s "
-                            "schemas=%r",
-                            current.transaction_id,
-                            current.schema_revisions,
-                        )
-
+            stamped = self._record_commit(commit)
+            if history_changed:
+                self._publish_history()
+            return stamped
         finally:
             self._publishing_commits = False
+
+    def _publish_history(self) -> None:
+        status = self._history.status()
+        for token in tuple(self._history_listeners):
+            callback = self._history_listeners.get(token)
+            if callback is not None:
+                try:
+                    callback(deepcopy(status))
+                except Exception:
+                    logger.exception("Store history callback failed")
+
+    def _publish_commit(self, commit: StoreCommit) -> None:
+        for token in tuple(self._commit_listeners):
+            callback = self._commit_listeners.get(token)
+            if callback is not None:
+                try:
+                    callback(deepcopy(commit))
+                except Exception:
+                    logger.exception(
+                        "Store commit callback failed transaction=%s",
+                        commit.transaction_id,
+                    )
+
+    def schema_catalog(self) -> dict[str, Any]:
+        """Detached declarative metadata for diagnostics."""
+        with self._lock:
+            self._require_booted()
+            result: dict[str, Any] = {}
+            for name, node in self._engine.metadata.nodes_by_schema.items():
+                schema = node.schema
+                result[name] = {
+                    "name": name,
+                    "kind": "many"
+                    if isinstance(schema, ManySchema)
+                    else "single",
+                    "address": node.address.parts,
+                    "persistent": schema.persistent,
+                    "track_history": schema.track_history,
+                    "fields": {
+                        key: {
+                            "name": key,
+                            "type": type(value).__name__,
+                            **deepcopy(value.metadata),
+                        }
+                        for key, value in schema.fields().items()
+                    },
+                    "signals": {
+                        key: {"name": key, "undo": value.undo}
+                        for key, value in schema.signals().items()
+                    },
+                    "indexes": tuple(sorted(schema.index_keys())),
+                    "uniques": tuple(sorted(schema.unique_keys())),
+                }
+            return result
+
+    def checkpoint(
+        self, schemas: tuple[str, ...] | None = None
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._require_booted()
+            selected = (
+                schemas
+                if schemas is not None
+                else tuple(self._engine.metadata.nodes_by_schema)
+            )
+            nodes = {
+                name: self._engine.get_node_by_schema(name)
+                for name in selected
+            }
+            return {
+                "store_instance_id": self.instance_id,
+                "schema_revisions": {
+                    name: node.revision for name, node in nodes.items()
+                },
+                "schemas": {
+                    name: node.snapshot() for name, node in nodes.items()
+                },
+                "history": self._history.status(),
+            }
+
+    def observe_checkpoint(
+        self,
+        callback: Callable[[StoreCommit], None],
+        schemas: tuple[str, ...] | None = None,
+    ) -> tuple[dict[str, Any], Callable[[], None]]:
+        """Atomically take a baseline and subscribe to later commits."""
+        with self._lock:
+            checkpoint = self.checkpoint(schemas)
+            unsubscribe = self.subscribe_commits(callback)
+            return checkpoint, unsubscribe
 
     # -------------------------------------------------
     # Revisions

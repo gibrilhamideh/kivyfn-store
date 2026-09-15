@@ -153,7 +153,9 @@ async def test_custom_membership_events_and_query_reentry(
     query_stack: QueryStack,
 ):
     articles = query_stack.state.create(articles_template)
-    published_source = joined_source.where(field("published") == True)  # noqa: E712
+    published_source = joined_source.where(
+        field("published") == True  # noqa: E712
+    )
     published = query_stack.state.create(
         state_template(
             published_source,

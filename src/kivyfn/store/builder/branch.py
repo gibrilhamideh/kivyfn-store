@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from kivyfn.store.address import Address
+from kivyfn.store.node import Node
 from kivyfn.store.schema import Schema
 
 
@@ -63,6 +65,13 @@ class Branch:
         Internal access without copy (Builder only).
         """
         return self._children
+
+    def _build_node(self, path: tuple[str, ...] = ()) -> Node:
+        """Construct fresh canonical Nodes from this validated definition."""
+        node = Node(self.schema(), Address(*path))
+        for name, branch in self._children.items():
+            node.add_child(name, branch._build_node(path + (name,)))
+        return node
 
     # ------------------------------------------------------------------
     # Debug Representation

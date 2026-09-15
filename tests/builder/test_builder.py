@@ -10,6 +10,7 @@ from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.builder.migration import Migration
 from kivyfn.store.builder.policy import BootPolicy
 from kivyfn.store.schema import ManySchema, SingleSchema
+from kivyfn.store.store import Store
 
 
 class Root(SingleSchema):
@@ -33,7 +34,9 @@ def test_builder_tree_addresses_config_and_single_build(
         .boot_policy("recover")
         .migrations(migrations)
     )
-    root, config = builder.build()
+    config = builder.build()
+    store = Store(config)
+    root = store._engine.get_node_by_address(Address())
     assert root.address == Address()
     assert root.children["children"].address == Address("children")
     assert isinstance(root.schema, Root)
@@ -52,13 +55,13 @@ def test_builder_tree_addresses_config_and_single_build(
 @pytest.mark.parametrize("version", [True, False, 1.5, "1", None])
 def test_builder_rejects_noninteger_versions(version: Any) -> None:
     with pytest.raises(TypeError, match="int"):
-        Builder().store_version(version)
+        Builder().tree(Branch(Root)).store_version(version).build()
 
 
 @pytest.mark.parametrize("version", [-1, 0])
 def test_builder_rejects_nonpositive_version(version: int) -> None:
     with pytest.raises(ValueError, match=">= 1"):
-        Builder().store_version(version)
+        Builder().tree(Branch(Root)).store_version(version).build()
 
 
 def test_builder_requires_tree_and_rejects_redefinition() -> None:

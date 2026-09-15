@@ -3,19 +3,33 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from kivyfn.logging import get_logger
 
-from kivyfn.store.error import StoreInternalError, StoreStateError
+from kivyfn.store.error import (
+    StoreInternalError,
+    StoreProtocolError,
+    StoreStateError,
+)
 from kivyfn.store.events import StoreCommit
-from kivyfn.store.host.client import HostClients
+from kivyfn.store.host.client import (
+    HostClients,
+    HostCloseHandler,
+    HostEventSender,
+)
 from kivyfn.store.host.query import HostQueries
 from kivyfn.store.host.request import HostRequests
 from kivyfn.store.host.subscription import HostSubscriptions
 from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
+from kivyfn.store.protocol.version import PROTOCOL_VERSION
 from kivyfn.store.store import Store
 from kivyfn.store.transport.endpoint import create_host_transport
+
+if TYPE_CHECKING:
+    from kivyfn.store.builder.config import HostConfig
+    from kivyfn.store.devtools import DevTools
 
 logger = get_logger(__name__)
 
@@ -23,11 +37,16 @@ logger = get_logger(__name__)
 class StoreHost:
     """Expose one Store through a transport."""
 
-    def __init__(self, store: Store, endpoint: str) -> None:
+    def __init__(self, store: Store, config: HostConfig | None = None) -> None:
+        config = store.config.host if config is None else config
+        if config is None:
+            raise ValueError("StoreHost requires a HostConfig")
         self.store = store
-        self.endpoint = endpoint
+        self.config = config
+        self.endpoint = config.endpoint
+        self.devtools: DevTools | None = None
 
-        self.transport = create_host_transport(endpoint)
+        self.transport = create_host_transport(config.endpoint)
 
         self.queries = HostQueries(store)
         self.subscriptions = HostSubscriptions(store, self.queries)
@@ -52,7 +71,12 @@ class StoreHost:
     def running(self) -> bool:
         return self._running
 
+    @property
+    def devtools_url(self) -> str | None:
+        return None if self.devtools is None else self.devtools.url
+
     async def start(self) -> None:
+        self._require_loop()
         closing = self._close_task
         if closing is not None:
             await asyncio.shield(closing)
@@ -65,11 +89,23 @@ class StoreHost:
             self._failure = None
             self._close_task = None
             try:
+                self.store.claim_host(self, asyncio.get_running_loop())
                 self._unsubscribe = self.store.subscribe_commits(
                     self._on_commit
                 )
                 await self.transport.start(self)
                 self._running = True
+                if self.config.devtools is not False:
+                    from kivyfn.store.devtools import DevTools
+                    from kivyfn.store.devtools.config import DevToolsConfig
+
+                    config = (
+                        DevToolsConfig()
+                        if self.config.devtools is True
+                        else self.config.devtools
+                    )
+                    self.devtools = DevTools(self, config)
+                    await self.devtools.start()
             except BaseException as error:
                 self._failure = error
                 try:
@@ -79,6 +115,7 @@ class StoreHost:
                 raise
 
     async def stop(self) -> None:
+        self._require_loop()
         await asyncio.shield(self._begin_close())
 
     def _begin_close(self) -> asyncio.Task[None]:
@@ -119,9 +156,31 @@ class StoreHost:
                 "StoreHost stopped after an internal failure"
             ) from failure
 
-    async def connect(self, client_id: str) -> None:
+    async def connect(
+        self,
+        client_id: str,
+        *,
+        send: HostEventSender | None = None,
+        close: HostCloseHandler | None = None,
+        protocol_version: int | None = None,
+    ) -> None:
         self._require_running()
-        self.clients.add(client_id)
+        if (
+            type(protocol_version) is not int
+            or protocol_version != PROTOCOL_VERSION
+        ):
+            raise StoreProtocolError(
+                f"Incompatible Store protocol: expected {PROTOCOL_VERSION}, "
+                f"received {protocol_version!r}; use matching releases"
+            )
+        if self.clients.get(client_id) is not None:
+            raise StoreStateError("Store client ID is already registered")
+        self.clients.add(
+            client_id,
+            send=self.transport.emit if send is None else send,
+            close=self.transport.disconnect if close is None else close,
+        )
+        self._capture("lifecycle", client_id, "connected")
 
     async def request(
         self, client_id: str, request: RequestBatch
@@ -129,17 +188,52 @@ class StoreHost:
         self._require_running()
         if self.clients.get(client_id) is None:
             raise StoreStateError("Store client is not registered")
-        response = self.requests.handle(client_id, request)
-        await self.clients.flush(client_id)
-        return response
+        capture = self._capture("request", client_id, request)
+        try:
+            response = self.requests.handle(client_id, request)
+            self._capture("response", capture, response)
+            await self.clients.flush(client_id)
+            return response
+        except BaseException as error:
+            self._capture(
+                "failure",
+                capture,
+                error,
+                cancelled=isinstance(error, asyncio.CancelledError),
+            )
+            raise
 
     async def disconnect(self, client_id: str) -> None:
+        self._require_loop()
         self.subscriptions.remove_client(client_id)
-        await self.clients.remove(client_id)
+        removed = await self.clients.remove(client_id)
+        if removed is not None:
+            self.store.close_history_group(client_id)
+            self._capture("lifecycle", client_id, "disconnected")
+
+    def rejected(self, client_id: str, error: Exception) -> None:
+        self._capture("rejected", client_id, error)
+
+    def _capture(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        if self.devtools is None:
+            return None
+        try:
+            return getattr(self.devtools, method)(*args, **kwargs)
+        except Exception:
+            logger.exception("Store diagnostic capture failed")
+            return None
 
     def _require_running(self) -> None:
         if not self._running:
             raise StoreStateError("StoreHost is stopped")
+        self._require_loop()
+
+    def _require_loop(self) -> None:
+        closed = self._closed
+        if closed is not None and closed.get_loop() is not (
+            asyncio.get_running_loop()
+        ):
+            raise StoreStateError("StoreHost belongs to another event loop")
 
     async def _close(self) -> None:
         self._running = False
@@ -151,15 +245,22 @@ class StoreHost:
         self.subscriptions.clear()
 
         try:
-            await self.clients.clear()
-
+            if self.devtools is not None:
+                try:
+                    await self.devtools.stop()
+                finally:
+                    self.devtools = None
         finally:
             try:
-                await self.transport.stop()
+                await self.clients.clear()
             finally:
-                pending = tuple(self._client_closures)
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
+                try:
+                    await self.transport.stop()
+                finally:
+                    pending = tuple(self._client_closures)
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                    self.store.release_host(self)
 
     def _finish_close(self) -> None:
         closed = self._closed
@@ -192,8 +293,10 @@ class StoreHost:
         task.add_done_callback(self._client_closures.discard)
 
     async def _disconnect_failed_client(self, client_id: str) -> None:
+        client = self.clients.get(client_id)
         try:
-            await self.transport.disconnect(client_id)
+            if client is not None and client.close_connection is not None:
+                await client.close_connection(client_id)
         except Exception:
             logger.exception("Failed to disconnect Store client %s", client_id)
         finally:

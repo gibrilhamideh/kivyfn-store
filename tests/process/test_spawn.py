@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from kivyfn.store import StoreClient
-from kivyfn.store.builder.config import StoreConfig
-from kivyfn.store.node import Node
+from kivyfn.store.builder.config import HostConfig, StoreConfig
+from kivyfn.store.builder.initializer import Initializer
 from kivyfn.store.process import StoreProcess
 from kivyfn.store.state.manager import StateManager
 from tests.schemas import create_builder
@@ -20,14 +20,30 @@ from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
 
 
+class SeedUser(Initializer):
+    def __init__(self, row_id: str) -> None:
+        self.row_id = row_id
+
+    def run(self, data: dict[str, Any]) -> dict[str, Any]:
+        self._seed_user(data)
+        return data
+
+    def _seed_user(self, data: dict[str, Any]) -> None:
+        data["UserSchema"] = {
+            self.row_id: {
+                "username": "initial",
+                "email": "initial@example.com",
+            }
+        }
+        data["UserSettingsSchema"] = {self.row_id: {"user_id": self.row_id}}
+
+
 class PipeContext:
     """A minimal real child supervisor exercising the public adapter hooks."""
 
-    def __init__(
-        self, connection: Connection, root: Node, config: StoreConfig
-    ) -> None:
+    def __init__(self, connection: Connection, config: StoreConfig) -> None:
         self.connection = connection
-        self.args = (root, config, "http://127.0.0.1:0")
+        self.args = (config,)
 
     def listen(self, callback: Callable[[], None]) -> None:
         def wait_for_stop() -> None:
@@ -40,22 +56,28 @@ class PipeContext:
         self.connection.send(payload)
 
 
-def run_child(connection: Connection, root: Node, config: StoreConfig) -> None:
+def run_child(connection: Connection, config: StoreConfig) -> None:
     try:
-        StoreProcess.entry(PipeContext(connection, root, config))
+        StoreProcess.entry(PipeContext(connection, config))
     finally:
         connection.close()
 
 
 @pytest.mark.asyncio
-async def test_spawned_store_supports_state_and_supervised_shutdown(
+async def test_spawned_initializer_state_and_supervised_shutdown(
     tmp_path: Path,
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig("http://127.0.0.1:0"))
+        .initializer(SeedUser("initial-user"))
+        .build()
+    )
     processes = multiprocessing.get_context("spawn")
     parent_connection, child_connection = processes.Pipe()
     process = processes.Process(
-        target=run_child, args=(child_connection, root, config)
+        target=run_child, args=(child_connection, config)
     )
     process.start()
     child_connection.close()
@@ -70,6 +92,9 @@ async def test_spawned_store_supports_state_and_supervised_shutdown(
         users = manager.create(UserSchema)
         settings = manager.create(UserSettingsSchema)
         await client.connect(payload["endpoint"])
+        assert users["initial-user"].username == "initial"
+        assert "initial-user" in settings
+        assert users["initial-user"].email == "initial@example.com"
         transaction = users.insert(
             "spawned-user", username="spawned", email="spawned@example.com"
         )

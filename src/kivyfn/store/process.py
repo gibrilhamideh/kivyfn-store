@@ -12,7 +12,6 @@ from kivyfn.store.store import Store
 
 if TYPE_CHECKING:
     from kivyfn.store.builder.config import StoreConfig
-    from kivyfn.store.node import Node
 
 
 class ProcessContext(Protocol):
@@ -69,9 +68,9 @@ class StoreProcess:
     """
     Run a Store and its host in a managed child process.
 
-    The child constructs the Store, host, and transport from the root,
-    configuration, and endpoint. Readiness includes the bound transport
-    address. Direct transport is limited to callers in the same process.
+    The child constructs the Store, host, and transport from one
+    configuration. Readiness includes the bound transport address. Direct
+    transport is limited to callers in the same process.
     """
 
     _counter: ClassVar[Iterator[int]] = count(1)
@@ -80,23 +79,21 @@ class StoreProcess:
     def __init__(
         self,
         processes: ProcessManager,
-        root: Node,
         config: StoreConfig,
-        endpoint: str,
         *,
         name: str | None = None,
         startup_timeout: float | None = 10.0,
         shutdown_timeout: float | None = 5.0,
     ) -> None:
-        if urlsplit(endpoint).scheme == "direct":
+        if config.host is None:
+            raise ValueError("StoreProcess requires a HostConfig")
+        if urlsplit(config.host.endpoint).scheme == "direct":
             raise ValueError(
                 "Direct transport cannot connect clients across processes"
             )
 
         self._processes = processes
-        self._root = root
         self._config = config
-        self._endpoint = endpoint
         self._name = (
             f"{self._name_prefix}.{next(self._counter):03d}"
             if name is None
@@ -119,7 +116,7 @@ class StoreProcess:
         if not process.running:
             self._processes.start(
                 process.name,
-                args=(self._root, self._config, self._endpoint),
+                args=(self._config,),
                 wait=True,
                 timeout=self._startup_timeout,
                 daemon=False,
@@ -138,20 +135,11 @@ class StoreProcess:
     @staticmethod
     def entry(context: ProcessContext) -> None:
         """Entry point called by the supplied manager in the child process."""
-        root, config, endpoint = context.args
-        asyncio.run(
-            StoreProcess._run(
-                context,
-                cast("Node", root),
-                cast("StoreConfig", config),
-                cast(str, endpoint),
-            )
-        )
+        (config,) = context.args
+        asyncio.run(StoreProcess._run(context, cast("StoreConfig", config)))
 
     @staticmethod
-    async def _run(
-        context: ProcessContext, root: Node, config: StoreConfig, endpoint: str
-    ) -> None:
+    async def _run(context: ProcessContext, config: StoreConfig) -> None:
         loop = asyncio.get_running_loop()
         stopped = asyncio.Event()
 
@@ -160,13 +148,15 @@ class StoreProcess:
 
         context.listen(stop)
 
-        store = Store(root, config)
+        store = Store(config)
         try:
             store.boot()
-            host = StoreHost(store, endpoint)
+            host = StoreHost(store)
             try:
                 await host.start()
-                context.ready(host.transport.endpoint)
+                payload = dict(host.transport.endpoint)
+                payload["devtools_url"] = host.devtools_url
+                context.ready(payload)
                 stop_waiter = asyncio.create_task(stopped.wait())
                 host_waiter = asyncio.create_task(host.wait_closed())
                 try:
@@ -194,11 +184,13 @@ class StoreProcess:
     @property
     def endpoint(self) -> str:
         """Bound client endpoint, or the configured endpoint before ready."""
-        return self.client_endpoint or self._endpoint
+        return self.client_endpoint or self.configured_endpoint
 
     @property
     def configured_endpoint(self) -> str:
-        return self._endpoint
+        host = self._config.host
+        assert host is not None
+        return host.endpoint
 
     @property
     def client_endpoint(self) -> str | None:

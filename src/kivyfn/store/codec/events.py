@@ -46,11 +46,12 @@ def decode_event_message(payload: object) -> EventMessage:
 
 
 def _encode_subscription_event(event: SubscriptionEvent) -> dict[str, Any]:
-    return {
+    payload = {
         "subscription_id": event.subscription_id,
         "revisions": dict(event.revisions),
         "actions": [_encode_action(action) for action in event.actions],
     }
+    return payload
 
 
 def _decode_subscription_event(payload: object) -> SubscriptionEvent:

@@ -11,6 +11,7 @@ from kivyfn.store.error import StoreConnectionError
 from kivyfn.store.protocol.message.event import EventMessage
 
 HostEventSender: TypeAlias = Callable[[str, EventMessage], Awaitable[None]]
+HostCloseHandler: TypeAlias = Callable[[str], Awaitable[None]]
 HostEventFilter: TypeAlias = Callable[[str, EventMessage], EventMessage | None]
 HostClientFailureHandler: TypeAlias = Callable[[str, Exception], None]
 Delivery: TypeAlias = EventMessage | asyncio.Future[None]
@@ -27,7 +28,9 @@ class HostClient:
         prepare: HostEventFilter,
         on_error: HostClientFailureHandler,
         max_pending: int = 1000,
+        close: HostCloseHandler | None = None,
     ) -> None:
+        self.close_connection = close
         self._client_id = client_id
         self._send = send
         self._prepare = prepare
@@ -138,15 +141,22 @@ class HostClients:
         self._max_pending = max_pending
         self._clients: dict[str, HostClient] = {}
 
-    def add(self, client_id: str) -> HostClient:
+    def add(
+        self,
+        client_id: str,
+        *,
+        send: HostEventSender | None = None,
+        close: HostCloseHandler | None = None,
+    ) -> HostClient:
         client = self._clients.get(client_id)
         if client is None or client.closed:
             client = HostClient(
                 client_id,
-                self._send,
+                self._send if send is None else send,
                 self._prepare,
                 self._on_error,
                 self._max_pending,
+                close,
             )
             self._clients[client_id] = client
         return client
@@ -177,6 +187,11 @@ class HostClients:
             client.stop()
         for client in clients:
             await client.close()
+            if client.close_connection is not None:
+                try:
+                    await client.close_connection(client.client_id)
+                except Exception:
+                    logger.exception("Store connection close failed")
 
     def __len__(self) -> int:
         return len(self._clients)

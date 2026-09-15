@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from kivyfn.store.query import Query
+
+if TYPE_CHECKING:
+    from kivyfn.store.store.history import HistoryPosition
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +67,28 @@ class TransactionRequest:
 
     transaction_id: str
     actions: tuple[RequestAction, ...]
+    history_group: str | None = None
+    history_label: str | None = None
+    expected_store_instance_id: str | None = None
+    expected_revisions: dict[str, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryRequest:
+    limit: int = 100
+    offset: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class UndoRequest:
+    transaction_id: str
+    expected_position: HistoryPosition
+
+
+@dataclass(frozen=True, slots=True)
+class RedoRequest:
+    transaction_id: str
+    expected_position: HistoryPosition
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +141,9 @@ SubscriptionRequest: TypeAlias = (
 
 RequestItem: TypeAlias = (
     TransactionRequest
+    | UndoRequest
+    | RedoRequest
+    | HistoryRequest
     | QueryRequest
     | SubscriptionRequest
     | UnsubscribeRequest

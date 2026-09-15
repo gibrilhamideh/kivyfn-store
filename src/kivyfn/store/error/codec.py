@@ -13,6 +13,7 @@ from kivyfn.store.error.detail import (
     AddressErrorDetail,
     ConstraintErrorDetail,
     FieldErrorDetail,
+    HistoryErrorDetail,
     IndexErrorDetail,
     InstructionErrorDetail,
     NodeErrorDetail,
@@ -39,6 +40,7 @@ _DETAIL_TYPES: dict[str, type[StoreErrorDetail]] = {
     "index": IndexErrorDetail,
     "constraint": ConstraintErrorDetail,
     "runtime": RuntimeErrorDetail,
+    "history": HistoryErrorDetail,
 }
 
 

@@ -66,10 +66,13 @@ skip-magic-trailing-comma = true
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
 namespaces = true
+exclude = ["kivyfn.store.devtools.static*"]
 
 [tool.setuptools.package-data]
 "kivyfn.store" = ["py.typed"]
+"kivyfn.store.devtools" = ["static/*", "static/assets/*"]

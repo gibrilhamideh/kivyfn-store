@@ -9,16 +9,25 @@ class BootPolicy(Enum):
     per-schema JSON snapshots are imported at their highest valid saved Store
     version.
     Lower-version snapshots are excluded. Missing or excluded schemas use
-    their current defaults, and nonpersistent nodes always start at defaults.
+    their current defaults. Nonpersistent nodes also start at defaults unless
+    the configured initializer supplies their initial data.
 
     Migration classes declare their target version. Boot checks the complete
     forward chain before running any step, then migrates a working copy.
     Missing, invalid, or duplicate migration declarations, an unsupported
     downgrade, or a failed migration are logged. Boot then applies this
     policy to the original selected data. A successful migration passes its
-    result to the same validation and recovery process.
+    result to the same initialization, validation and recovery process.
 
     Migration being skipped or failing does not itself make boot fail.
+
+    An optional Initializer prepares a detached raw data dictionary after
+    migration and before defaults, fields, indexes and relationships are
+    checked. Its output may seed persistent and nonpersistent schemas. Its
+    exceptions and non-dictionary results fail startup under every policy;
+    they are application faults, not reasons to discard saved data. Invalid
+    schema data in its result follows the policy below. Incremental recovery
+    does not rerun the initializer or recalculate its derived values.
 
     -------------------------------------------------------------------------
     Problem                         RAISE          RECOVER        ERASE
@@ -34,6 +43,7 @@ class BootPolicy(Enum):
     Invalid saved version metadata  Raise          Reset node     Reset node
     Unreadable schema JSON          Raise          Reset node     Reset node
     Unrecoverable build/validation   Raise          Raise          Reset store
+    Initializer callback failure    Raise          Raise          Raise
     Filesystem I/O failure          Raise          Raise          Raise
     -------------------------------------------------------------------------
 
@@ -64,9 +74,11 @@ class BootPolicy(Enum):
         Selective recovery with a full Store reset as the final fallback.
 
         First perform the same recovery as RECOVER. If building or validating
-        the Store still fails, rebuild every node from its current defaults.
-        The rebuilt Store must pass field and foreign-key validation before
-        it can be saved. Invalid defaults still cause boot to fail.
+        the Store still fails, prepare a fresh candidate by running the
+        initializer on empty data, then build every node with defaults for
+        missing fields. This one fallback must pass strict field validation
+        and existing foreign-key recovery before it can be saved. Invalid
+        defaults or fallback initializer failures still cause boot to fail.
 
     After successful validation, save all persistent schemas in one complete
     generation and atomically switch the manifest at the target Store version.

@@ -3,6 +3,7 @@
 Run the complete project checks from the repository root:
 
 ```bash
+python scripts/build_release.py --assets-only
 uv sync --locked
 uv run pytest
 uv run pyright
@@ -10,8 +11,9 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-The lockfile includes runtime dependencies and all development tools. Separate
-sibling KivyFN or Kivy stub repositories are not required. Python 3.11 is the
+The lockfile includes runtime dependencies and development tools. The actual
+`kivyfn` and `kivy-stubs` sibling checkouts are required by the editable sources
+in `pyproject.toml`; substitutes do not satisfy the release checks. Python 3.11 is the
 minimum supported interpreter; CI runs the same checks on 3.11 and 3.12. The
 minimum dependency job also uses Kivy 2.3.0, Socket.IO 5.11.0 and aiohttp 3.11.0.
 The process runner accepts a supplied process manager through structural protocols.
@@ -77,3 +79,9 @@ shorter per-operation deadlines improve failure diagnostics where appropriate.
 Persistence failure tests inject faults at concrete write, replace or durability
 boundaries and reopen the same path. They assert complete old/new generations
 and preserved evidence according to the selected boot policy.
+
+## Complete browser and distribution checks
+
+See [release verification](../docs/release.md) for the frontend checks,
+real-backend browser tests, asset freshness checks, and isolated wheel/sdist
+installation checks. These complement the Python suite.

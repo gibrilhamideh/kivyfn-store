@@ -44,7 +44,13 @@ class StateTransaction(EventDispatcher):
 
     __events__ = ("on_success", "on_failed", "on_done")
 
-    def __init__(self, manager: TransactionManager) -> None:
+    def __init__(
+        self,
+        manager: TransactionManager,
+        *,
+        history_group: str | None = None,
+        history_label: str | None = None,
+    ) -> None:
         super().__init__()
 
         try:
@@ -55,6 +61,8 @@ class StateTransaction(EventDispatcher):
             ) from exc
 
         self.id = generate_uuid()
+        self._history_group = history_group
+        self._history_label = history_label
 
         self._owner_task = asyncio.current_task()
         self._manager = manager
@@ -135,6 +143,14 @@ class StateTransaction(EventDispatcher):
         await asyncio.shield(self._completion)
 
         return self
+
+    @property
+    def history_group(self) -> str | None:
+        return self._history_group
+
+    @property
+    def history_label(self) -> str | None:
+        return self._history_label
 
     @property
     def owner_task(self) -> asyncio.Task[Any] | None:
@@ -266,33 +282,24 @@ class StateTransaction(EventDispatcher):
 
         inserted = self._inserts.pop(state, None)
 
-        if inserted is not None:
-            self._actions.remove(inserted)
-            self._drop_row_sets(state)
+        if inserted is not None and self._actions[-1] is inserted:
+            self._actions.pop()
             return True
 
-        if state in self._removes:
+        if state in self._removes and inserted is None:
             raise RuntimeError(
                 "A State row cannot be removed twice in one transaction"
             )
 
-        self._drop_row_sets(state)
-
+        # Earlier actions may have been observed by intervening triggers.
+        # Removing the row cannot erase those instructions.
+        self._setrows.pop(state, None)
         action = RemoveAction(collection=collection, state=state)
 
         self._removes[state] = action
         self._actions.append(action)
 
         return False
-
-    def _drop_row_sets(self, state: State[Any]) -> None:
-        self._setrows.pop(state, None)
-        self._actions[:] = [
-            action
-            for action in self._actions
-            if not isinstance(action, SetRowAction)
-            or action.state is not state
-        ]
 
     def add_signal(self, state: State[Any], signal: str, data: Any) -> None:
         self._require_open()

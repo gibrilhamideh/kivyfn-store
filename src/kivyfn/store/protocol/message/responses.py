@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from kivyfn.store.error import StoreFailure
 from kivyfn.store.query import QueryResult
+
+if TYPE_CHECKING:
+    from kivyfn.store.store.history import HistoryPage
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +24,11 @@ class TransactionFailureResponse:
 
     transaction_id: str
     failure: StoreFailure
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryResponse:
+    page: HistoryPage
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +93,7 @@ ResponseItem: TypeAlias = (
     TransactionResponse
     | TransactionFailureResponse
     | QueryResponse
+    | HistoryResponse
     | SubscriptionResponse
     | UnsubscribeResponse
     | FailureResponse

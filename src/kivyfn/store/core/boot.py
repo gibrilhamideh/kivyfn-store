@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 
 
 class StoreBoot:
-    """Migrate one saved Store version, then apply the boot policy.
+    """Migrate and initialize raw data, then apply the boot policy.
 
     Only snapshots at the highest saved version enter migration. Missing or
     failed migrations leave that selected data available for boot recovery.
@@ -38,23 +38,23 @@ class StoreBoot:
 
     def boot(self) -> None:
         self._raw_store = self._load_store()
-
         try:
             data, current_version = self._select_data(self._raw_store)
             data = self._migrate(data, current_version)
-
-            self._build_nodes(data)
-            self._validate_foreign_keys()
-
         except Exception:
             if self.engine.config.boot_policy is not BootPolicy.ERASE:
                 raise
-
-            logger.exception(
-                "Store boot could not be recovered; resetting Store defaults"
-            )
-
             self._erase_and_boot_empty()
+        else:
+            # Application preparation faults are not corrupt saved data.
+            data = self._initialize(data)
+            try:
+                self._build_nodes(data)
+                self._validate_foreign_keys()
+            except Exception:
+                if self.engine.config.boot_policy is not BootPolicy.ERASE:
+                    raise
+                self._erase_and_boot_empty()
 
         # Disk failures must not trigger an ERASE fallback or cleanup.
         self._save_nodes()
@@ -213,6 +213,20 @@ class StoreBoot:
         return working_data
 
     # -------------------------------------------------
+    # Initialization
+    # -------------------------------------------------
+
+    def _initialize(self, data: dict[str, Any]) -> dict[str, Any]:
+        initializer = self.engine.config.initializer
+        if initializer is None:
+            return data
+
+        prepared = initializer.run(deepcopy(data))
+        if not isinstance(prepared, dict):
+            raise TypeError("Initializer.run() must return a dictionary")
+        return prepared
+
+    # -------------------------------------------------
     # Build
     # -------------------------------------------------
 
@@ -220,7 +234,10 @@ class StoreBoot:
         for node in self.engine.metadata.nodes_by_schema.values():
             saved_data = None
 
-            if self.engine.metadata.is_persistent(node):
+            if (
+                self.engine.config.initializer is not None
+                or self.engine.metadata.is_persistent(node)
+            ):
                 saved_data = data.get(node.schema.name)
 
             node.build(saved_data, recover=self._recovering)
@@ -347,7 +364,7 @@ class StoreBoot:
             for name, value in values.items()
         }
         storage = self.engine._storage
-        # Preserve row order and distinguish recovered bool/int values.
+        # Detect serialized changes, including recovered bool/int values.
         unchanged = json.dumps(self._raw_store) == json.dumps(expected)
         try:
             committed = storage._manifest_name() is not None
@@ -366,7 +383,11 @@ class StoreBoot:
     # -------------------------------------------------
 
     def _erase_and_boot_empty(self) -> None:
+        logger.exception(
+            "Store boot could not be recovered; resetting Store defaults"
+        )
+        data = self._initialize({})
         for node in self.engine.metadata.nodes_by_schema.values():
-            node.build(None, recover=False)
+            node.build(data.get(node.schema.name), recover=False)
 
         self._validate_foreign_keys()

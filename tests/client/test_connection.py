@@ -9,6 +9,7 @@ import pytest
 
 from kivyfn.store import Store, StoreClient, StoreHost
 from kivyfn.store.builder import Branch, Builder
+from kivyfn.store.builder.config import HostConfig
 from kivyfn.store.error import StoreConnectionError
 from kivyfn.store.protocol.message.requests import (
     RequestBatch,
@@ -251,19 +252,20 @@ async def test_endpoint_switch_refreshes_same_revision_from_different_store(
     old_revisions = dict(stack.store.schema_revisions)
     await stack.client.disconnect()
 
-    root, config = (
-        Builder()
-        .tree(Branch(BoundaryFirst))
-        .storage_path(tmp_path / "second")
-        .build()
-    )
-    store = Store(root, config)
     endpoint = (
         f"direct://second-{uuid4().hex}"
         if next_transport == "direct"
         else "http://127.0.0.1:0"
     )
-    host = StoreHost(store, endpoint)
+    config = (
+        Builder()
+        .tree(Branch(BoundaryFirst))
+        .storage_path(tmp_path / "second")
+        .host(HostConfig(endpoint))
+        .build()
+    )
+    store = Store(config)
+    host = StoreHost(store)
     try:
         store.boot()
         result = store.execute(

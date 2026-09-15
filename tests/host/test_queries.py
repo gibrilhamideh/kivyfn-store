@@ -303,7 +303,9 @@ def test_query_signal_filters_final_transaction_membership(
     query_store: Store, enter: bool
 ) -> None:
     subscriptions = HostSubscriptions(query_store, HostQueries(query_store))
-    query = Query(QueryArticleSchema).where(field("published") == True)  # noqa: E712
+    query = Query(QueryArticleSchema).where(
+        field("published") == True  # noqa: E712
+    )
     subscriptions.subscribe_query("a", QuerySubscriptionRequest(query))
     row_id = "article-two" if enter else "article-one"
     signal = SignalRowRequestAction(

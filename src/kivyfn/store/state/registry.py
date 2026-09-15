@@ -128,49 +128,69 @@ class StateRegistry:
                 schema_type, shape, self.resolve_schema, row_base
             )
 
-        if isinstance(schema, SingleSchema):
-            target = existing
-            if target is None:
-                target = row_type(self._manager, schema, None)
-        else:
-            if isinstance(source, Query):
-                default = QueryStateType
-            else:
-                default = CollectionStateType
-            collection_base = _select_type(
-                self._collection_types.get(source),
-                requested_collection,
-                default,
-                "collection_type",
-            )
-            target = existing
-            if isinstance(source, Query):
-                assert shape is not None
-                query_type = self._factory.query_collection_type_for(
-                    type(schema), collection_base
-                )
+        # A custom container can create rows before its constructor fails.
+        # Roll back only that identity family, preserving established rows.
+        row_registry = cast(
+            WeakValueDictionary[
+                tuple[type[Schema] | QueryShape, str], State[Any]
+            ],
+            self._rows if shape is None else self._query_rows,
+        )
+        previous_rows = {
+            row_key for row_key in row_registry if row_key[0] == key
+        }
+        previous_row_type = self._state_types.get(key)
+        try:
+            if isinstance(schema, SingleSchema):
+                target = existing
                 if target is None:
-                    target = query_type(
-                        schema=schema,
-                        query=source,
-                        shape=shape,
-                        row_factory=lambda row_id: self.create_query_row(
-                            type(schema), row_id, shape, base_type=row_base
-                        ),
-                    )
+                    target = row_type(self._manager, schema, None)
             else:
-                collection_type = self._factory.collection_type_for(
-                    type(schema), collection_base
+                if isinstance(source, Query):
+                    default = QueryStateType
+                else:
+                    default = CollectionStateType
+                collection_base = _select_type(
+                    self._collection_types.get(source),
+                    requested_collection,
+                    default,
+                    "collection_type",
                 )
-                if target is None:
-                    target = collection_type(
-                        manager=self._manager,
-                        schema=schema,
-                        row_factory=lambda row_id: self.create_row(
-                            type(schema), row_id, base_type=row_base
-                        ),
+                target = existing
+                if isinstance(source, Query):
+                    assert shape is not None
+                    query_type = self._factory.query_collection_type_for(
+                        type(schema), collection_base
                     )
-            self._collection_types[source] = collection_base
+                    if target is None:
+                        target = query_type(
+                            schema=schema,
+                            query=source,
+                            shape=shape,
+                            row_factory=lambda row_id: self.create_query_row(
+                                type(schema), row_id, shape, base_type=row_base
+                            ),
+                        )
+                else:
+                    collection_type = self._factory.collection_type_for(
+                        type(schema), collection_base
+                    )
+                    if target is None:
+                        target = collection_type(
+                            manager=self._manager,
+                            schema=schema,
+                            row_factory=lambda row_id: self.create_row(
+                                type(schema), row_id, base_type=row_base
+                            ),
+                        )
+                self._collection_types[source] = collection_base
+        except BaseException:
+            if previous_row_type is None:
+                self._state_types.pop(key, None)
+            for row_key in tuple(row_registry):
+                if row_key[0] == key and row_key not in previous_rows:
+                    del row_registry[row_key]
+            raise
         self._state_types[key] = row_base
         self._states[source] = target
         return target

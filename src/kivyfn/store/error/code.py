@@ -73,6 +73,13 @@ class StoreErrorCode(StrEnum):
 
     PROTOCOL_ERROR = "protocol_error"
 
+    HISTORY_DISABLED = "history_disabled"
+    HISTORY_EMPTY = "history_empty"
+    HISTORY_STALE = "history_stale"
+    HISTORY_BLOCKED = "history_blocked"
+    HISTORY_EXPIRED = "history_expired"
+    HISTORY_CONFLICT = "history_conflict"
+
     # -------------------------------------------------
     # Internal failures
     # -------------------------------------------------

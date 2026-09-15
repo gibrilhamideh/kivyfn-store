@@ -37,6 +37,7 @@ class ControlledClient:
         self.requests: dict[str, tuple[RequestAction, ...]] = {}
         self.futures: dict[str, asyncio.Future[Any]] = {}
         self.sources: set[Any] = set()
+        self.metadata: dict[str, tuple[str | None, str | None]] = {}
 
     def subscribe(self, source: Any, manager: Any) -> None:
         self.sources.add(source)
@@ -45,9 +46,15 @@ class ControlledClient:
         self.sources.discard(source)
 
     def transaction(
-        self, *, transaction_id: str, actions: tuple[RequestAction, ...]
+        self,
+        *,
+        transaction_id: str,
+        actions: tuple[RequestAction, ...],
+        history_group: str | None = None,
+        history_label: str | None = None,
     ) -> asyncio.Future[Any]:
         self.requests[transaction_id] = actions
+        self.metadata[transaction_id] = (history_group, history_label)
         future = asyncio.get_running_loop().create_future()
         self.futures[transaction_id] = future
         return future

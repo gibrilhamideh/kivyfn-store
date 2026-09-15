@@ -35,6 +35,15 @@ class ForeignKeyField(BaseField[str | None]):
         self.relation = relation
         self.on_delete = ForeignKeyPolicy(on_delete)
 
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "relation": self.relation_name(),
+            "on_delete": self.on_delete.value,
+            "allow_none": True,
+        }
+
     def relation_name(self, field_name: str | None = None) -> str:
         if self.relation is not None:
             return self.relation

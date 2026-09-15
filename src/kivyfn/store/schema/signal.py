@@ -9,8 +9,11 @@ PayloadT = TypeVar("PayloadT")
 class Signal(Generic[PayloadT]):
     """Declarative signal metadata; StateFactory creates callable emitters."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, undo: str | None = None) -> None:
+        if undo is not None and (not isinstance(undo, str) or not undo):
+            raise ValueError("Signal undo must be a non-empty signal name")
         self.name = ""
+        self.undo = undo
 
     def __set_name__(self, owner: type[Any], name: str) -> None:
         if self.name and self.name != name:

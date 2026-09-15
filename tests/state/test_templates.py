@@ -734,3 +734,62 @@ def test_reentrant_query_constructor_cannot_choose_conflicting_shared_rows():
     result = manager.create(state_template(inner_source, state_type=OtherRow))
     result.enter("one")
     assert isinstance(result["one"], OtherRow)
+
+
+@pytest.mark.parametrize("query", [False, True])
+@pytest.mark.parametrize("preexisting", [False, True])
+def test_failed_container_releases_only_rows_created_by_its_constructor(
+    query: bool, preexisting: bool
+) -> None:
+    manager, client = manager_pair()
+    base = QueryStateType if query else CollectionStateType
+    source = Query(StateUnitRows) if query else StateUnitRows
+    retained = []
+    existing = None
+    if preexisting:
+        if query:
+            sibling = manager.create(
+                state_template(
+                    Query(StateUnitRows).where(field("value") > 5),
+                    state_type=TemplateRow,
+                )
+            )
+            sibling.enter("existing")
+            existing = sibling["existing"]
+        else:
+            existing = manager._registry.create_row(
+                StateUnitRows, "existing", base_type=TemplateRow
+            )
+        existing.selected = True
+    original_sources = set(client.sources)
+
+    def initialize(self: Any, *args: Any, **kwargs: Any) -> None:
+        base.__init__(self, *args, **kwargs)
+        self.enter("new")
+        retained.append(self["new"])
+        if existing is not None:
+            self.enter("existing")
+            assert self["existing"] is existing
+        raise RuntimeError("failed after creating rows")
+
+    broken: Any = type("BrokenAfterEnter", (base,), {"__init__": initialize})
+    with pytest.raises(RuntimeError, match="failed after creating rows"):
+        manager.create(
+            state_template(
+                source, state_type=TemplateRow, collection_type=broken
+            )
+        )
+    assert client.sources == original_sources
+    target = manager.create(
+        state_template(
+            source, state_type=TemplateRow if preexisting else OtherRow
+        )
+    )
+    target.enter("new")
+    assert target["new"] is not retained[0]
+    if preexisting:
+        target.enter("existing")
+        assert target["existing"] is existing
+        assert existing is not None and existing.selected
+    else:
+        assert isinstance(target["new"], OtherRow)

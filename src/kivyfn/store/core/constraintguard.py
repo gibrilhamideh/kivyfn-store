@@ -9,7 +9,6 @@ from kivyfn.store.error import (
     ForeignKeyRestrictedError,
 )
 from kivyfn.store.schema import SingleSchema
-from kivyfn.store.schema.policy import ForeignKeyPolicy
 
 if TYPE_CHECKING:
     from kivyfn.store.core.delta import Delta
@@ -68,8 +67,6 @@ class ConstraintGuard:
             for foreign_key in self.engine.metadata.referenced_by(
                 target.schema.name
             ):
-                if foreign_key.on_delete is not ForeignKeyPolicy.RESTRICT:
-                    continue
                 node = self.engine.get_node_by_schema(foreign_key.schema)
                 data = delta.data(node)
                 rows = (

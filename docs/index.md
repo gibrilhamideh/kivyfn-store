@@ -11,8 +11,18 @@ reactive Kivy State API over Direct or Socket.IO transport.
   ordered triggers, revisions, subscriptions, query writes and persistence.
 - [Error handling](errors.md): the actual Store, Client and State result
   types, expected rejection, infrastructure failure and ambiguous outcomes.
+- [History](history.md): selection, undo/redo, signals, grouping, bounds,
+  restoration conflicts, and worker ownership.
+- [Browser devtools](devtools.md): inspection, commands, recording, preview,
+  sessions, and diagnostic limits.
+- [Release verification](release-verification.md): exact results, architecture
+  adjustments, additional fixes, and remaining verification limits.
+- [Coverage matrix](coverage-matrix.md): concrete evidence for every PLAN area.
+- [Release builds](release.md): frontend assets and installed-package checks.
 - [Test guide](../tests/README.md): test layout and execution.
-- [Correction summary](../CORRECTIONS.md): changes, edge cases and validation.
+- [Correction plan](../OPTOMIZE.md): changes, edge cases and validation.
+- [Updating application startup](upgrading-builder.md): centralized Builder
+  configuration and Initializer migration examples.
 
 Applications normally create a `StateManager` around a `StoreClient`.
 `StateManager.create(SingleSchemaType)` returns a State;

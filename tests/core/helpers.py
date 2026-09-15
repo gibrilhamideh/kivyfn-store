@@ -23,8 +23,8 @@ def make_store(
     tree = Branch(root_schema)
     for schema in schemas:
         tree.child(schema.__name__, Branch(schema))
-    root, config = Builder().tree(tree).storage_path(path).build()
-    store = Store(root, config)
+    config = Builder().tree(tree).storage_path(path).build()
+    store = Store(config)
     store.boot()
     return store
 

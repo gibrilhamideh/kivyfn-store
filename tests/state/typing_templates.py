@@ -146,7 +146,10 @@ if TYPE_CHECKING:
             QueryCollectionState[StateUnitRows],
         )
         manager.create(StateUnitRows, state_type=TemplateRow)  # type: ignore
-        state_template(StateUnitSingle, collection_type=TemplateCollection)  # type: ignore
+        state_template(
+            StateUnitSingle,  # type: ignore
+            collection_type=TemplateCollection,
+        )
         check_widened_template(manager, single_template)
         manager.release(single_template)
         manager.release(rows_template)

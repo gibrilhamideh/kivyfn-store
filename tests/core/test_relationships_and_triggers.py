@@ -340,9 +340,9 @@ def test_duplicate_schema_registration_is_rejected(tmp_path: Path) -> None:
         .child("a", Branch(Parents))
         .child("b", Branch(Parents))
     )
-    root, config = Builder().tree(tree).storage_path(tmp_path).build()
+    config = Builder().tree(tree).storage_path(tmp_path).build()
     with pytest.raises(RuntimeError, match="attached to multiple nodes"):
-        Store(root, config)
+        Store(config)
 
 
 def test_cascade_trigger_removes_already_scheduled_policy_row(

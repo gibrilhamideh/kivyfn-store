@@ -27,8 +27,8 @@ QueryRowFactory = Callable[[str], State[SchemaT]]
 class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
     """Read-only reactive collection derived from one immutable Query."""
 
+    _row_version = NumericProperty(0)
     synced = BooleanProperty(False)
-    _rows_version = NumericProperty(0)
 
     __events__ = ("on_enter", "on_leave")
 
@@ -72,7 +72,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
     def _get_rows(self) -> Mapping[str, State[SchemaT]]:
         return self._rows_view
 
-    rows = AliasProperty(_get_rows, None, bind=("_rows_version",), cache=True)
+    rows = AliasProperty(_get_rows, None, bind=("_row_version",))
 
     def __getitem__(self, row_id: str) -> State[SchemaT]:
         return self._rows[row_id]
@@ -132,17 +132,17 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
     def set_membership(
         self, row_ids: Iterable[str]
     ) -> MembershipDelta[SchemaT]:
-        ordered_ids = tuple(row_ids)
+        row_ids = tuple(row_ids)
 
-        for row_id in ordered_ids:
+        for row_id in row_ids:
             self._validate_row_id(row_id)
 
-        if len(ordered_ids) != len(set(ordered_ids)):
+        if len(row_ids) != len(set(row_ids)):
             raise ValueError(
                 "Query membership cannot contain duplicate row IDs"
             )
 
-        target_ids = set(ordered_ids)
+        target_ids = set(row_ids)
 
         entered: list[tuple[str, State[SchemaT]]] = []
         left: list[tuple[str, State[SchemaT]]] = []
@@ -155,7 +155,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
             state.set_owner_synced(self, False)
             left.append((row_id, state))
 
-        for row_id in ordered_ids:
+        for row_id in row_ids:
             if row_id in self._rows:
                 continue
 
@@ -171,7 +171,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
         if not delta.changed:
             return
 
-        set_property(self, "_rows_version", self._rows_version + 1)
+        set_property(self, "_row_version", self._row_version + 1)
 
         for row_id, state in delta.left:
             self._dispatch_membership("on_leave", row_id, state)

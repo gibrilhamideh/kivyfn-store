@@ -1,8 +1,12 @@
-
 # kivyfn-store: history, undo/redo, and browser devtools
 
-Status: revised draft; features below are not implemented by this document.
-Revised: 2026-09-15, after the signal and undo/redo discussion.
+Status: Builder/initializer and browser follow-up implemented and verified.
+Actual kivy-stubs verification remains open.
+Revised: 2026-09-15, including the keyed-collection simplification.
+
+The latest user decision removes row-order restoration and synchronization.
+Collections are keyed by ID. Instruction, signal, transaction and stream
+ordering remain essential. See OPTOMIZE.md for the active correction pass.
 
 This plan consolidates the agreed direction and resolves implementation details
 against the current repository. All completion checkboxes start unchecked.
@@ -10,9 +14,66 @@ Complete each phase with its acceptance tests before marking it done.
 
 The agreed direction is schema opt-in, complete transaction capture including
 trigger/cascade effects, operation-level reversal, optional inverse signals,
-oldest-entry eviction, and centralized devtools. The exact inverse-signal API,
-normalization rules, and unsupported-effect barriers below are proposed choices
-that make that direction concrete. They are not existing public APIs.
+oldest-entry eviction, and centralized devtools. The inverse-signal API, normalization rules and unsupported-effect barriers
+below are implemented and covered by the release tests.
+
+## Current follow-up patch
+
+- [x] Builder returns one StoreConfig containing the Branch definition, boot
+  settings, migrations, Initializer, HistoryConfig and optional HostConfig.
+  Each Store creates fresh Nodes. HostConfig owns endpoint and devtools.
+- [x] Store(config), StoreHost(store, optional_host_config), and
+  StoreProcess(process_manager, config) consume the centralized definition.
+  Client recovery and parent process policy retain their existing owners.
+- [x] Initializer.run(data) transforms detached migrated raw data before
+  schema defaults, field/unique checks and final foreign-key validation.
+  It seeds single/collection and nonpersistent schemas. Loading/saving still
+  filters persistent schemas. Initialized data is the startup baseline, with
+  no trigger replay, mutation events, or undo entry.
+- [x] Initializer errors fail startup without ERASE fallback. Schema-data
+  failures follow existing boot policies; an ERASE replacement candidate also
+  runs initialization. Preserve detached saved-data comparisons.
+- [x] State selection loads that schema automatically with a clear loading
+  state. Remove the manual Capture step while preserving draft revision guards,
+  preview restrictions and real row selection for collection signals.
+- [x] Activity request events say received and link to retained responses.
+  Missing responses mean unavailable recording, not ongoing execution.
+  Recording controls remain separate from live State and Store history.
+- [x] Apply a Tokyo Midnight inspired dark theme and default devtools to
+  loopback port 3000. Explicit port zero remains available. Preserve real
+  startup failure for an occupied configured port.
+- [x] Migrate repository callers/examples, run available release gates, rebuild
+  assets and provide one repository-root ZIP with exact obsolete paths.
+
+The existing history contract, including x/z/y restoration, is unchanged.
+This patch intentionally changes Builder/Store/Host/process construction APIs;
+there is no dual tuple/config mode or duplicate source of endpoint settings.
+
+## Implementation progress
+
+- Applied the accepted restoration contract and all five remaining corrections
+  before implementing the release.
+- Completed Store history, normalized restoration, signals, grouping, hosted
+  ownership, strict protocol checks, reactive State, browser devtools, preview, packaging,
+  documentation, and regression coverage. No repository AGENTS.md was present.
+- The initial release passed 1,293 pytest tests and its browser/packaging
+  gates. The subsequent OPTOMIZE.md correction pass removes collection order
+  metadata, fixes the review defects and adds Client recovery and rows binding.
+  Final verification passed 1,436 Python tests on both 3.11 and 3.12,
+  16 frontend unit tests, 38 real browser tests and installed distributions.
+  Pyright and Ruff passed; see the report for the missing stubs gate.
+- Feature acceptance retains the exact x/z/y contract. Actual instructions,
+  signal occurrences and history transactions still execute in order.
+- The genuine uploaded kivyfn source and actual Kivy runtime are used. Actual
+  kivy-stubs remains unavailable; that dependency-specific gate stays open.
+- The Builder/initializer/browser follow-up passes 1,493 Python tests on each
+  of Python 3.11 and 3.12, 18 frontend unit tests and 50 real browser tests.
+  Pyright, Ruff, frontend checks, rebuilt assets and installed wheel/sdist
+  checks pass. Application construction migration is documented in
+  docs/upgrading-builder.md; no trigger-restoration contract has changed.
+- See [coverage evidence](docs/coverage-matrix.md) and
+  [release verification](docs/release-verification.md) for concrete assertions,
+  final results, and environment limitations.
 
 ## 1. Goals and scope
 
@@ -89,11 +150,12 @@ flowchart TD
     H -->|"Request and lifecycle capture"| D
 ```
 
-## 3. Proposed public API
+## 3. Public API
 
-Examples show the target API, not currently available functionality. Final
-implementation may adjust names when needed for consistency, but must preserve
-the ownership and behavior defined here.
+The APIs below are implemented. Examples omit ordinary response handling;
+Client.history() returns HistoryResponse or FailureResponse, with the page at
+response.page. Store.history() returns HistoryPage directly. See docs/history.md
+for complete examples and docs/release-verification.md for verification limits.
 
 ### Schema opt-in and Store configuration
 
@@ -110,7 +172,7 @@ when schemas/configuration are built, not on every mutation or in every layer.
 The flag selects a transaction for history; it does not filter the transaction's
 recorded effects or permanently enable tracking on another schema.
 
-Mixed tracked/untracked foreign-key schemas are allowed in this draft. Requiring
+Mixed tracked/untracked foreign-key schemas are allowed. Requiring
 equal flags would not account for trigger chains or application code. Complete
 transaction capture plus restoration guards and final constraints protect
 recorded effects and declared Store constraints. The restoration contract
@@ -120,8 +182,11 @@ sections 4 and 5.
 Add an optional `HistoryConfig` to `StoreConfig`:
 
 ```python
-config = StoreConfig(
-    history=HistoryConfig(max_entries=500, max_bytes=16 * 1024 * 1024)
+config = (
+    Builder()
+    .tree(tree)
+    .history(HistoryConfig(max_entries=500, max_bytes=16 * 1024 * 1024))
+    .build()
 )
 ```
 
@@ -131,7 +196,7 @@ The example limits are starting defaults to validate with representative data.
 
 ### Inverse signal declarations
 
-Proposed v1 syntax uses another signal's name in the same schema:
+V1 syntax uses another signal's name in the same schema:
 
 ```python
 class WindowCommandsSchema(SingleSchema):
@@ -179,7 +244,10 @@ history = await client.history()
   many unrelated positional parameters.
 - Provide synchronous Store equivalents for callers without a Host/Client.
   They use the same history implementation and require operation identity and
-  expected position for a guarded undo/redo.
+  expected position for a guarded undo/redo. Cached-result retries belong to
+  Host/Client while that live Host retains the result. Direct Store navigation
+  has no second cache: repeating an applied position may return stale without
+  executing again.
 - Undo/redo are strict commands. They do not add an optimistic inverse overlay.
   Existing canonical events synchronize State objects after success.
 - Client completion means the command response was received. Browser display
@@ -192,17 +260,25 @@ history = await client.history()
 ### Host and process API
 
 ```python
-host = StoreHost(store, endpoint, devtools=True)
+config = Builder().tree(tree).host(HostConfig(endpoint, devtools=True)).build()
+store = Store(config)
+store.boot()
+host = StoreHost(store)
 await host.start()
 print(host.devtools_url)
 ```
 
 ```python
-host = StoreHost(store, endpoint, devtools=DevToolsConfig(port=8766))
+hosting = HostConfig(endpoint, devtools=DevToolsConfig(port=8766))
+config = Builder().tree(tree).host(hosting).build()
+store = Store(config)
+store.boot()
+host = StoreHost(store)
 ```
 
 - Default: devtools=False.
-- `devtools=True` uses loopback and port 0 to select an available port.
+- `devtools=True` uses loopback port 3000. Explicit port 0 requests an
+  available port; configured-port conflicts fail startup without fallback.
 - `devtools_url` is None until the listener has started and after it stops.
 - DevToolsConfig owns listener and diagnostic capture settings, not undo limits.
 - StoreProcess forwards the configuration and includes the resolved URL in
@@ -255,7 +331,6 @@ For a selected transaction, retain all final effects:
 - The full trigger chain and all generated cascade effects.
 - Detached first-before and final-after values for changed fields.
 - Full before/after rows and existence for structural changes.
-- The collection order information needed to restore the recorded order.
 - Every forward signal occurrence and its declared inverse, if available.
 - Original transaction ID, Store instance, available origin client ID, label,
   group metadata, and an immutable history entry ID.
@@ -275,13 +350,13 @@ bookkeeping against the history budget.
 Store operation-level records of the final data transformation, not a replay
 script of every intermediate assignment. Coalesce repeated writes to the same
 field into first-before/final-after. Preserve full rows for structural changes
-and a canonical order plan for each structurally affected collection.
+for structural changes. Collections are restored by ID and value only.
 
 - If a field finishes at its original value, omit its data effect. Undo must not
   write that field and overwrite an independent later change.
 - Removing and recreating an existing row may normalize into row field changes
-  plus order; inserting and removing a new row may leave no data effect.
-- A selected transaction with no final data/order change and no signals creates
+  without restoring position; inserting and removing a new row may leave no data effect.
+- A selected transaction with no final data change and no signals creates
   no entry. Signal occurrences are never removed because data became net-zero.
 - Undo visits the normalized data effects in reverse order; redo visits them in
   forward order. Only the complete staged result is validated and installed.
@@ -315,7 +390,7 @@ them one atomic execution or force untracked-only transactions into history.
 
 - Undo targets the most recent applied undoable entry at the current head.
 - Redo targets the next entry on the current redo branch.
-- A successful selected ordinary transaction with final data/order changes or
+- A successful selected ordinary transaction with final data changes or
   signal occurrences after undo discards the redo branch.
 - An entirely net-zero transaction with no signals creates no entry and leaves
   redo intact. A later net-zero group cannot resurrect redo discarded by an
@@ -340,16 +415,15 @@ Before restoration, compare the current values against the expected side of the
 entry: after-values for undo; before-values for redo.
 
 - Field changes guard the affected fields, preserving unrelated fields.
-- Structural changes guard row existence, full relevant rows, and order.
+- Structural changes guard row existence, full relevant rows.
 - Records distinguish absence from an explicit None value; restoration must not
   infer existence or absence from truthiness or dict.get alone.
 - A surviving row's ordinary field change requires the row to exist; it must
   never resurrect a row removed independently after recording.
 - Validate the complete proposed final state, including relationships to rows
   that were not part of the original transaction.
-- A structural order plan guards the full affected collection order in v1.
-  Concurrent membership/order changes may conservatively conflict. Unrelated
-  field-only writes on surviving rows do not conflict solely due to order.
+- Structural guards apply to affected keyed rows, not whole-collection order.
+  Independent row changes remain subject to declared relationship constraints.
 - Reject a conflict atomically; do not overwrite newer data or silently apply a
   partial inverse. Return useful conflict details through the normal failure API.
 - An unrelated schema revision change alone must not block a safe undo.
@@ -404,7 +478,7 @@ restoration contract while preserving independent untracked changes.
 ### Bounds, barriers, and lifecycle
 
 - History is bounded by entry count and retained bytes, including both signal
-  payload directions, row-order metadata, and group bookkeeping.
+  payload directions and group bookkeeping.
 - On successful selected work, discard redo if necessary, append/merge the
   complete entry, then evict the oldest complete entries until it fits.
   Prepare this retention change before commit and publish it only on success.
@@ -466,7 +540,7 @@ the recorded original signals in their original order. Preserve every repeated
 occurrence, even with equal payloads; do not cancel opposite signal names or
 deduplicate by payload equality. Grouping preserves the full signal sequence.
 
-In both directions, install all data, indexes, order, revisions, and history
+In both directions, install all data, indexes, revisions, and history
 position before publishing any callback. Preserve current State delivery: all
 canonical views are updated first, then signals in commit occurrence order.
 There is no interleaving with intermediate staged data just because original
@@ -479,8 +553,10 @@ Failure before installation emits no signals and moves no history cursor.
 After successful installation, a publication callback failure cannot roll back
 the Store commit or retract effects in another process. Keep existing callback
 isolation and native Kivy binding limitations. A duplicate same-ID navigation
-returns its cached outcome without republishing signals; transport loss still
-has the ordinary ambiguous-outcome contract.
+through the same live Host returns its retained cached outcome without
+republishing signals. Direct Store navigation uses expected-position guards
+and may return stale on repetition. Transport loss retains the ordinary
+ambiguous-outcome contract.
 
 ### Signal target lifetime and multiwindow ownership
 
@@ -510,12 +586,18 @@ Application handlers must define a meaningful compensation contract. Opening an
 already-open window and then closing it is not automatically an inverse of the
 original intent. State restoration and signal publication are what Store can
 guarantee; OS/hardware effects and later callback-generated transactions are
-outside its atomic boundary.
+outside its atomic boundary. A compensation handler that submits new tracked
+work creates a separate history transaction and can clear redo. Applications
+whose window lifecycle also updates tracked Store data should model retained
+desired-window state as authoritative. There is no implicit causality tracking
+or history suppression for compensation handlers.
 
 ### Grouping rules
 
 - Group only matching tokens from the same originating session/client.
-- Merge normalized first-before/final-after data effects and order; append
+- Entries have stable identities and revisioned contents as groups merge.
+  Inspection returns detached snapshots; users cannot edit stored history.
+- Merge normalized first-before/final-after data effects; append
   signal records without compacting their occurrence sequence.
 - Before accepting a merge, recheck every signal target against the group's
   earliest before-state and final after-state. Insert-then-signal can remove an
@@ -567,7 +649,6 @@ parallel hierarchy of generic commands, adapters, or reversible handlers.
 | Collection row field set | Restore before-value in the existing row; return SetRowEvent. | Restore after-value in the existing row; return SetRowEvent. |
 | Inserted row | Remove the recorded row; return RemoveEvent. | Reinsert the full recorded row; return InsertEvent. |
 | Removed row | Restore the full recorded row; return InsertEvent. | Remove that row; return RemoveEvent. |
-| Collection order | Apply recorded before-order after staging data effects. | Apply recorded after-order after staging data effects. |
 
 Operations resolve the current Node by stored schema/address identity and edit
 its private staged data. They do not call Node.install, publish callbacks, write
@@ -584,7 +665,7 @@ and not accepted from imported files or remote clients.
 ### Shared preparation, installation, and publication
 
 1. Under the Store mutation lock and existing Engine locking discipline, check
-   instance, history position, and recorded values/existence/order against
+   instance, history position, and recorded values/existence against
    canonical state. Build no browser-specific mutation path.
 2. Call operation undo/redo on private Delta data for the complete normalized
    effect list. Prepare the selected forward/inverse signal occurrences too.
@@ -596,7 +677,7 @@ and not accepted from imported files or remote clients.
    metadata, and signal publication before the durable boundary.
 5. Persist through the existing complete-generation mechanism if retained
    persistent data changed. Signal-only navigation has no data write to persist.
-6. Install prepared values, indexes, order, history position, and revisions
+6. Install prepared values, indexes, history position, and revisions
    before any observer sees the result.
 7. Publish one canonical StoreCommit through existing Host/State delivery, then
    the separate history status notification. Data and signal occurrence ordering
@@ -615,9 +696,16 @@ For example, an untracked row may have claimed a formerly free unique value, or
 a new child may reference a parent that undo would remove. Reject the navigation
 without changing data/cursor rather than creating duplicates or orphaned rows.
 
-Apply the same reentrancy rule as Store.execute: undo/redo cannot run inside
-synchronous commit delivery. Every observer must see the same completed state
-and revision pair; follow-up mutations must be scheduled after delivery returns.
+All mutations of a Store with an active Host execute on that Host's event
+loop. Enforce this ownership centrally before mutation. Worker callers schedule
+the complete operation there, not merely its commit callback; standalone Store
+use retains synchronous locking behavior.
+
+Apply one no-reentrant-mutation guard across canonical commit and history-status
+publication, including history-only notifications. Every observer must see the
+same completed state and revision pair; follow-up mutations are scheduled after
+delivery returns. Preserve callback exception isolation without introducing
+another observer framework.
 
 Refactor only the shared preparation/install steps needed for ordinary execution
 and restoration to use the same invariants. Do not add an independent engine.
@@ -641,37 +729,22 @@ An unexpected failure after durable installation follows the existing fail-close
 policy; do not claim rollback after disk may already contain the new generation.
 After restart, recovered canonical data is authoritative and history is empty.
 
-### Collection order is an explicit compatibility requirement
+### Collections restore keyed data
 
-Removing and reinserting a row currently appends it. Values alone are therefore
-insufficient to restore a collection exactly. Existing snapshots also differ
-from commit delivery in their callback behavior, so a forced snapshot is not an
-automatic substitute for a normal undo commit.
+Collections and query results are keyed mappings. Undo/redo restores row IDs,
+existence and values; it does not restore dictionary iteration positions.
+There is no separate order metadata, order guard or order-only commit.
+Independent rows are not made conflicting merely to preserve a position.
 
-Plan a small additive optional final `row_order` on collection/query subscription
-messages, with supporting commit order metadata if needed:
+State keeps surviving row objects and local properties. Membership changes
+publish through the uncached `rows` AliasProperty bound to `_row_version`.
+That counter is local to a reactive container and never enters the protocol.
+Canonical data and overlays are reconciled before notifications. Row-field
+changes continue to notify their individual State properties.
 
-- Keep existing Set/SetRow/Insert/Remove event meanings and payloads unchanged.
-- Omit order metadata when ordinary event application already produces the right
-  order. Preserve the old decode path when the optional field is absent.
-- Include schemas changed only in order when stamping revisions, deciding whether
-  to publish a commit, and checking Host commit/revision consistency. Those paths
-  currently derive changes from value events; an order-only commit must not be
-  suppressed or rejected because its ordinary action list is empty.
-- Host query diffing must detect pure reorder as well as value/membership changes.
-- StateManager applies canonical actions and final canonical order before
-  publishing callbacks; pending optimistic membership/order is reconciled over it.
-- MembershipDelta recognizes order-only changes, updating the rows view without
-  artificial leave/enter events or replacing surviving State objects.
-- Define protocol capability/version negotiation in phase 1. The new Host protocol
-  requires order-aware clients and rejects incompatible sessions at registration
-  with a clear reason; do not infer support from silence. Update Direct and
-  Socket.IO clients together and document the coordinated upgrade requirement.
-  Existing Python application calls remain unchanged.
-
-Structural undo/redo cannot ship until canonical, collection, query, and client
-callback order agree. This is the necessary additive event-envelope change to
-the earlier goal of preserving ordinary mutation event semantics.
+The Host accepts one exact protocol version. Upgrade Host and Client together;
+there is no cross-version negotiation or fallback. Removing order metadata is
+an intentional wire change, identified by protocol version 3.
 
 ## 6. Protocol, IDs, retries, and Client integration
 
@@ -708,7 +781,9 @@ request items, not transaction actions that can be nested inside themselves.
 | History revision | Monotonic guard for history navigation and group changes. |
 | Stream sequence | Diagnostic continuity only; not a schema revision. |
 
-Extend the Host's shared completed-operation cache beyond TransactionRequest:
+Extend the Host's shared completed-operation cache beyond TransactionRequest.
+Cached-result retry guarantees belong to this live Host and its Clients;
+Store has no duplicate cache for direct navigation.
 
 - Include command kind, actions, grouping metadata, edit guards, and undo/redo
   preconditions in the request fingerprint. Reusing an ID for different work is
@@ -865,10 +940,8 @@ a concrete readability reason warrants separating them.
 
 ### Read-only Store inspection APIs
 
-The current Store has per-schema snapshots and revisions, but lacks a detached
-browser-ready schema catalog and an atomic multi-schema checkpoint operation.
-
-Add narrowly scoped Store read APIs for:
+Store provides schema_catalog(), checkpoint(), and observe_checkpoint(),
+alongside per-schema snapshots and revisions. These read APIs supply:
 
 - Schema names and kind; fields, nullability, supported enum/default metadata,
   relationships, signal declarations and inverse names, persistence, and history
@@ -908,9 +981,9 @@ browser's live State feed, or live application synchronization.
 
 ## 10. Historical preview and browser behavior
 
-Preserve the approved theme: violet accents, neutral surfaces, compact type,
-navigation/undo controls above a selectable list and a details panel. Adapt the
-layout for smaller browser windows; do not replace it with a generic admin theme.
+Use the agreed Tokyo Midnight inspired palette: dark navy surfaces with blue,
+purple and cyan accents. Preserve compact type, navigation/undo controls above
+a selectable list and a details panel, and usable smaller browser windows.
 
 ### State view
 
@@ -927,7 +1000,9 @@ layout for smaller browser windows; do not replace it with a generic admin theme
 
 ### History view
 
-- Immutable entries with before/after values, origin, grouping, and status.
+- Entries with stable identities, revisioned contents, before/after values,
+  origin, grouping, and status. Inspection returns detached snapshots; users
+  cannot edit stored history.
 - Show normalized data effects alongside the forward/inverse signal occurrences.
   Distinguish an original transaction from an undo/redo commit in Activity.
 - Undo last / Redo next act on the guarded history head, not the selected row.
@@ -937,8 +1012,12 @@ layout for smaller browser windows; do not replace it with a generic admin theme
   target absent from the before-state, or an oversized transaction. Show the
   retained oldest boundary when history eviction advances it. Do not describe
   a compensating signal as confirmation of an external action's success.
-- Copy as new mutation creates a fresh editable request with a fresh transaction
-  ID. It never edits the original record or reuses its execution identity.
+- Copy as new mutation creates a draft from original caller actions retained
+  in Activity, with a fresh transaction ID. Never reconstruct caller intent
+  from expanded trigger/cascade effects or normalized history records. Disable
+  copying when original actions are unavailable or a grouped entry lacks one
+  unambiguous source request. Do not add separate request retention solely for
+  this button. Users cannot edit the original record or reuse its identity.
 
 ### Activity view
 
@@ -1014,18 +1093,18 @@ Existing modules expected to change:
 - store/instructions.py for shared signal-target validation; signals stay at
   the Store layer instead of becoming compiler instructions.
 - core/operations.py, core/execution.py, core/engine.py, core/constraintguard.py,
-  and relevant Delta/Node preparation code for operation-owned restoration/order.
+  and relevant Delta/Node preparation code for operation-owned restoration.
   Compiler may expose existing execution provenance where needed; it must not
   gain devtools dependencies or repeat trigger expansion during navigation.
 - protocol/message, codec/requests.py, codec/responses.py, and codec/events.py for
-  additive commands, metadata, failures, and order-aware delivery.
+  commands, metadata, failures and keyed delivery.
 - host/host.py, host/client.py, and host/request.py for client ownership, shared
   request handling, capture, deduplication, and lifecycle.
-- host/query.py and host/subscription.py for order-aware result delivery.
+- host/query.py and host/subscription.py for keyed result delivery.
 - transport/direct and transport/socketio only where registration/cleanup or
   boundary error reporting needs to use the new Host connection ownership.
 - client/client.py and narrowly scoped State transaction/collection/query code
-  for new commands, grouping metadata, and canonical order reconciliation.
+  for new commands, grouping metadata, and canonical membership reconciliation.
 - process.py for configuration forwarding and readiness information.
 - pyproject.toml and release configuration for package data and validation tools.
 
@@ -1075,72 +1154,74 @@ repository's configured formatting rules and existing public type checks.
 
 ### Phase 1: contracts and Host connection ownership
 
-- [ ] Finalize typed history positions, command IDs, failure details, grouping,
-  inverse-signal declarations, normalized operation records, order metadata,
+- [x] Finalize typed history positions, command IDs, failure details, grouping,
+  inverse-signal declarations, normalized operation records,
   and diagnostic envelope version.
-- [ ] Move delivery/close callbacks to each registered Host client.
-- [ ] Preserve Direct/Socket.IO request ordering, disconnect, and cleanup behavior.
-- [ ] Add central optional request/response/lifecycle capture hooks.
-- [ ] Add detached schema catalog, history-status observation, and atomic
+- [x] Move delivery/close callbacks to each registered Host client.
+- [x] Enforce hosted Store mutation ownership centrally on the Host event loop.
+- [x] Cover commit and history-status delivery with one publication guard.
+- [x] Preserve Direct/Socket.IO request ordering, disconnect, and cleanup behavior.
+- [x] Add central optional request/response/lifecycle capture hooks.
+- [x] Add detached schema catalog, history-status observation, and atomic
   checkpoint/observer APIs.
-- [ ] Run existing tests plus focused multi-owner and snapshot-race tests.
+- [x] Run existing tests plus focused multi-owner and snapshot-race tests.
 
 Gate: enabling no devtools changes no existing application behavior; browser-style
 sessions can use the same request dispatcher without misrouted cleanup.
 
 ### Phase 2: devtools inspection and live Activity
 
-- [ ] Implement facade, bounded recorder, separate aiohttp listener, and sessions.
-- [ ] Implement real State/Activity views with the approved theme.
-- [ ] Implement snapshot continuity, filtering, gaps, reconnect and startup/stop.
-- [ ] Forward configuration/readiness through StoreProcess.
-- [ ] Package and smoke-test the first functional inspection build.
+- [x] Implement facade, bounded recorder, separate aiohttp listener, and sessions.
+- [x] Implement real State/Activity views with the approved theme.
+- [x] Implement snapshot continuity, filtering, gaps, reconnect and startup/stop.
+- [x] Forward configuration/readiness through StoreProcess.
+- [x] Package and smoke-test the first functional inspection build.
 
 Gate: real application clients over Direct and Socket.IO can be inspected;
 diagnostic failures and slow browser connections do not corrupt application state.
 
 ### Phase 3: browser commands
 
-- [ ] Route mutations, declared signals, and one-shot queries through RequestBatch.
-- [ ] Return ResponseBatch and correlate acknowledgements with live commits.
-- [ ] Implement mutation drafts, guarded edits, failure display, and same-ID retry
+- [x] Route mutations, declared signals, and one-shot queries through RequestBatch.
+- [x] Return ResponseBatch and correlate acknowledgements with live commits.
+- [x] Implement mutation drafts, guarded edits, failure display, and same-ID retry
   handling for ambiguous outcomes within the supported cache window.
-- [ ] Test attribution, session ownership, stale edits, interleaving and cancellation.
+- [x] Test attribution, session ownership, stale edits, interleaving and cancellation.
 
 Gate: browser writes have the same validation, triggers, persistence and event
 effects as normal clients. No browser-specific mutation executor exists.
 
 ### Phase 4: Store history and complete restoration
 
-- [ ] Add schema opt-in, HistoryConfig, detached entries, bounds and barriers.
-- [ ] Select before compaction and record complete finalized transaction effects.
-- [ ] Implement normalized operation records and operation-owned undo/redo.
-- [ ] Use shared final constraints/index preparation, persistence, installation,
+- [x] Add schema opt-in, HistoryConfig, detached entries, bounds and barriers.
+- [x] Select before compaction and record complete finalized transaction effects.
+- [x] Implement normalized operation records and operation-owned undo/redo.
+- [x] Use shared final constraints/index preparation, persistence, installation,
   and publication without repeating compiler/trigger/default expansion.
-- [ ] Correct final incoming relationship checks for restoration.
-- [ ] Verify the recorded-trigger-results acceptance case in section 4:
+- [x] Correct final incoming relationship checks for restoration.
+- [x] Verify the recorded-trigger-results acceptance case in section 4:
   restore recorded effects, preserve the independent untracked input, and
   do not recompute or reject the accepted calculation mismatch.
-- [ ] Add inverse signal declarations and complete forward/inverse occurrence
+- [x] Add inverse signal declarations and complete forward/inverse occurrence
   capture, target lifetime checks, publication ordering, and unsupported barriers.
-- [ ] Implement oldest complete-entry eviction and oversized transaction/group
+- [x] Implement oldest complete-entry eviction and oversized transaction/group
   handling; capacity must never reject the ordinary mutation.
-- [ ] Implement canonical order metadata and order-aware State/query delivery.
-- [ ] Add grouping and all untracked/interleaving/structural conflict rules.
-- [ ] Inject persistence failures before and after each relevant durable boundary.
+- [x] Remove order metadata and retain keyed State/query delivery.
+- [x] Add grouping and all untracked/interleaving/structural conflict rules.
+- [x] Inject persistence failures before and after each relevant durable boundary.
 
 Gate: synchronous Store undo/redo is correct for supported CRUD, grouping,
-relationships, constraints, order, declared signal compensation, and failure
+relationships, constraints, declared signal compensation, and failure
 boundaries before exposing UI controls.
 
 ### Phase 5: protocol and application undo/redo
 
-- [ ] Add history/status/undo/redo requests, responses, codecs and typed failures.
-- [ ] Extend shared deduplication and Client future/batching/response handling.
-- [ ] Add Client APIs and transaction group metadata propagation.
-- [ ] Verify two-client stale positions and duplicate requests across reconnect.
-- [ ] Verify normal canonical events synchronize every affected State and Query.
-- [ ] Verify compensated signals across current subscribers, stable application
+- [x] Add history/status/undo/redo requests, responses, codecs and typed failures.
+- [x] Extend shared deduplication and Client future/batching/response handling.
+- [x] Add Client APIs and transaction group metadata propagation.
+- [x] Verify two-client stale positions and duplicate requests across reconnect.
+- [x] Verify normal canonical events synchronize every affected State and Query.
+- [x] Verify compensated signals across current subscribers, stable application
   ownership filtering, same-ID retry, cancelled waiters, and disconnected origins.
 
 Gate: await client.undo()/redo() works with devtools disabled over both Direct and
@@ -1148,27 +1229,28 @@ Socket.IO, with no duplicate execution or optimistic-state corruption.
 
 ### Phase 6: History UI and historical preview
 
-- [ ] Connect head-based controls, immutable entries, grouped diffs and barriers.
-- [ ] Show recorded inverse signals, compensation limits, oldest retained boundary,
+- [x] Connect head-based controls, revisioned entries, grouped diffs and barriers.
+- [x] Show recorded inverse signals, compensation limits, oldest retained boundary,
   and barrier reasons without permitting edits to stored history records.
-- [ ] Implement bounded chronological checkpoint/delta preview recording.
-- [ ] Implement isolated preview, unavailable ranges, and Return to live.
-- [ ] Add Copy as new mutation and live query rerun controls where supported.
-- [ ] Test live updates during preview/drafting and all disabled-control states.
+- [x] Implement bounded chronological checkpoint/delta preview recording.
+- [x] Implement isolated preview, unavailable ranges, and Return to live.
+- [x] Add Copy as new mutation and live query rerun controls where supported.
+- [x] Test live updates during preview/drafting and all disabled-control states.
 
 Gate: preview never changes live Store data; undo/redo operates on guarded current
 history and every unavailable historical value is represented honestly.
 
 ### Phase 7: complete verification and release
 
-- [ ] Complete the coverage matrix below, including newly discovered edge cases.
-- [ ] Run the full pytest suite, Pyright, Ruff lint and Ruff formatting checks.
+- [x] Complete the coverage matrix below, including newly discovered edge cases.
+- [x] Run the full pytest suite, Pyright, Ruff lint and Ruff formatting checks.
 - [ ] Run those release checks with the actual kivyfn and kivy-stubs dependencies;
   a reduced typing probe or logger substitute is not release verification.
-- [ ] Run frontend typecheck, lint, formatting, unit and browser tests.
-- [ ] Build wheel and sdist from a clean checkout and install both without Node.
-- [ ] Fetch real installed assets and exercise browser commands and a live stream.
-- [ ] Update README/docs and record compatibility changes and actual check results.
+  Actual kivyfn was used; actual kivy-stubs remains unavailable (see report).
+- [x] Run frontend typecheck, lint, formatting, unit and browser tests.
+- [x] Build wheel and sdist from a clean checkout and install both without Node.
+- [x] Fetch real installed assets and exercise browser commands and a live stream.
+- [x] Update README/docs and record compatibility changes and actual check results.
 
 Gate: no feature is called complete based only on a mockup, unit tests, or the
 number of tests. Record concrete invariants tested and any deliberate limitations.
@@ -1184,9 +1266,9 @@ to increase the count. Investigate and fix additional bugs uncovered by testing.
 | --- | --- |
 | Schema/config | Default off, opt-in inheritance, reserved names, persistence independence, mixed FK tracking flags, invalid configuration at its owner. |
 | Retention | Effective tracked participation before compaction, true no-op filtering, failed transactions, complete mixed-schema effects, count/byte bounds, oldest whole-entry eviction, oversized entry barriers, bounded candidate capture. |
-| Operation records | Coalesced repeated writes, tracked net-zero roots with untracked derived effects, insert-remove, remove-reinsert, final order, guarded footprint equals actual restoration writes, no retained live Node/Operation objects. |
+| Operation records | Coalesced repeated writes, tracked net-zero roots with untracked derived effects, insert-remove, remove-reinsert, keyed identity, guarded footprint equals actual restoration writes, no retained live Node/Operation objects. |
 | Values/ownership | Mutable nested values, caller mutation after submission, capture/preview ownership, exact large integers and supported wire types. |
-| CRUD | Single and row sets, insert/delete, repeated writes, insert-remove, remove-reinsert same ID, empty collections, structural order. |
+| CRUD | Single and row sets, insert/delete, repeated writes, insert-remove, remove-reinsert same ID, empty collections, keyed structural restoration. |
 | Constraints | Unique swaps and intervening unique claims, nullable/non-nullable FKs, restrictions, cascades, nested relationships, new incoming dependents under every supported policy. |
 | Triggers | Tracked-to-untracked and untracked-to-tracked chains, complete derived capture, no second expansion/defaults/IDs, final state constraints without repeated static value validation, section 4 acceptance case restoring recorded trigger results while preserving an independent untracked input after an unchanged output write was skipped. |
 | Signal declarations | Default no inverse, missing/non-signal target, unilateral/reciprocal/self-inverse declarations, inheritance, same payload contract, no recursive inverse lookup. |
@@ -1194,13 +1276,13 @@ to increase the count. Investigate and fix additional bugs uncovered by testing.
 | Signal execution | Forward and reverse ordering, final state visible before callbacks, no signals on precommit failure, callback errors after commit, no re-emission on same-ID retry. |
 | Signal targets/routing | Insert-and-signal barrier, independently deleted row conflict, restored live targets, final query membership, schema/query fan-out, multiple clients, disconnected origin, stable owner filtering, no reconnect replay. |
 | Grouping | Multiple commits, late failure, data-only net-zero, retained signals, clients/token reuse, independent telemetry, newly overlapping fields, bounded footprint bookkeeping, oversized merge splitting without splitting a transaction, insert-then-signal/signal-then-remove merge rejection, same-ID remove/reinsert, whole-group final state before signals. |
-| History conflicts | Stale cursor, changed values/rows/order, unrelated changes, value-away-and-back policy, unavailable head, no skipping. |
+| History conflicts | Stale cursor, changed values/rows, unrelated changes, value-away-and-back policy, unavailable head, no skipping. |
 | Persistence/boot | Write/replace/install failures, undo and redo failure, mixed persistent/transient effects, restart after durable change, migration baseline. |
-| Revisions/events | Fresh navigation/occurrence IDs, monotonic data revisions, order-only commits, signal-only history movement with no data revision increment, history-only notifications, final state before callbacks, rejected reentrant undo, callback failures. |
+| Revisions/events | Fresh navigation/occurrence IDs, monotonic data revisions, signal-only history movement with no data revision increment, history-only notifications, final state before callbacks, rejected reentrant undo, callback failures. |
 | State | Strict and optimistic operations, pending overlays during foreign-client undo, rollback, stable row identity, custom State local properties. |
 | Transactions | Open/local pending work, cancelled waiters with inflight requests, status-fetch races, overlapping participants, partial batches, metadata ownership, later callback-generated work as a separate transaction. |
-| Collections/queries | Membership enter/leave, order-only changes, joins/aliases/null relationships, filter transitions, projected writes, query shape identity. |
-| Protocol | Round trips, malformed real-boundary input, wrong response ID/type, reused ID with changed metadata, optional-order compatibility. |
+| Collections/queries | Membership enter/leave, silent incidental reorder, joins/aliases/null relationships, filter transitions, projected writes, query shape identity. |
+| Protocol | Round trips, malformed real-boundary input, wrong response ID/type, reused ID with changed metadata, strict version mismatch rejection. |
 | Direct and Socket.IO | Same history command invariants on both paths; application clients alongside a real browser session; no delivery to wrong owner. |
 | Host lifecycle | Two connection owners, duplicate IDs, startup failure, repeated start/stop, disconnect during request, cancellation-safe cleanup. |
 | Browser sessions | Distinct tabs, HTTP session ownership, closed/spoofed sessions, origins, rejected subscription commands, inert rendering, request limits. |
@@ -1235,8 +1317,9 @@ The final implementation report must state:
 - Tests added by invariant/area, with actual full-suite and tool results.
 - Deliberately deferred capabilities and why they remain outside v1.
 
-Do not report this plan as completed implementation or reuse older test results
-as evidence for new code. This document itself does not change runtime behavior.
+Completed items above refer to the implementation and final verification
+reported in docs/release-verification.md. The actual kivy-stubs gate remains
+open; this document does not turn that unavailable check into a passing result.
 
 Implementation references:
 
@@ -1248,5 +1331,3 @@ Implementation references:
   describes bundling the compiled browser assets.
 - [React application build guidance](https://react.dev/learn/build-a-react-app-from-scratch)
   describes the frontend build-tool approach.
-
-

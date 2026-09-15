@@ -2,20 +2,19 @@
 from __future__ import annotations
 
 from logging import getLogger as get_logger
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
-from kivyfn.store.builder.config import StoreConfig
 from kivyfn.store.core.execution import ExecutionResult
 from kivyfn.store.error import InvalidOperationError, StoreErrorStage
 from kivyfn.store.events import SetEvent, StoreCommit
 from kivyfn.store.events.event import StoreSignal
-from kivyfn.store.node import Node
 from kivyfn.store.operations import OperationSource
 from kivyfn.store.protocol.message.requests import SetRequestAction
 from kivyfn.store.store import store as store_module
 from kivyfn.store.store.store import Store
+from tests.schemas import create_builder
 
 logger = get_logger(__name__)
 
@@ -61,6 +60,7 @@ class FakeEngine:
         *,
         transaction_id: str,
         validate: Any = None,
+        prepare: Any = None,
     ) -> ExecutionResult:
         self.transaction_id = transaction_id
         return self.result
@@ -76,10 +76,9 @@ def store(monkeypatch: pytest.MonkeyPatch) -> Store:
         store_module, "InstructionBuilder", FakeInstructionBuilder
     )
 
-    root = cast(Node, object())
-    config = cast(StoreConfig, object())
+    config = create_builder().build()
 
-    instance = Store(root=root, config=config)
+    instance = Store(config)
     instance.boot()
 
     return instance

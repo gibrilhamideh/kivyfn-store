@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.error import StoreConnectionError
 from kivyfn.store.protocol.message.event import EventMessage
@@ -56,13 +56,15 @@ async def delivery_stack(
     tmp_path: Path, transport_kind: TransportKind
 ) -> AsyncIterator[DeliveryStack]:
     tree = Branch(DeliveryFirst).child("second", Branch(DeliverySecond))
-    root, config = Builder().tree(tree).storage_path(tmp_path).build()
-    store = Store(root, config)
+    config = Builder().tree(tree).storage_path(tmp_path).build()
+    store = Store(config)
     host = StoreHost(
         store,
-        f"direct://{uuid4().hex}"
-        if transport_kind == "direct"
-        else "http://127.0.0.1:0",
+        HostConfig(
+            f"direct://{uuid4().hex}"
+            if transport_kind == "direct"
+            else "http://127.0.0.1:0"
+        ),
     )
     store.boot()
     await host.start()
@@ -83,16 +85,17 @@ async def test_acknowledgement_waits_for_queued_canonical_event(
 ) -> None:
     stack = delivery_stack
     reached, release = asyncio.Event(), asyncio.Event()
-    send = stack.host.clients._send
+    first: Any = stack.state.create(DeliveryFirst)
+    await stack.client.connect(stack.endpoint)
+    connection = next(iter(stack.host.clients._clients.values()))
+    send = connection._send
 
     async def delayed(client_id: str, message: EventMessage) -> None:
         reached.set()
         await release.wait()
         await send(client_id, message)
 
-    stack.host.clients._send = delayed
-    first: Any = stack.state.create(DeliveryFirst)
-    await stack.client.connect(stack.endpoint)
+    connection._send = delayed
     operation = first.set(value=1)
     await reached.wait()
     assert first.value == 0

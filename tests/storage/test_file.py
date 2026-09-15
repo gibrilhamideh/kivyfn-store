@@ -30,7 +30,7 @@ def record(storage: FileStorage, name: str) -> Any:
     return payload
 
 
-def test_complete_generation_replaces_all_schemas_and_preserves_order(
+def test_complete_generation_replaces_all_schemas_and_preserves_values(
     tmp_path: Path,
 ) -> None:
     storage = FileStorage(tmp_path)
@@ -38,8 +38,7 @@ def test_complete_generation_replaces_all_schemas_and_preserves_order(
     assert storage.write_store(data, store_version=2)
     data["A"]["z"]["value"] = 100
     reopened = FileStorage(tmp_path)
-    assert list(snapshot(reopened)["A"]) == ["z", "a"]
-    assert snapshot(reopened)["A"]["z"]["value"] == 1
+    assert snapshot(reopened)["A"] == {"z": {"value": 1}, "a": {"value": 2}}
     assert record(reopened, "A")["metadata"] == {"store_version": 2}
     assert reopened.exists("A")
     assert not reopened.exists("unknown")

@@ -9,11 +9,16 @@ from urllib.parse import urlunsplit
 import socketio
 from aiohttp import web
 from kivyfn.logging import get_logger
+from socketio.exceptions import ConnectionRefusedError
 
 from kivyfn.store.codec.events import encode_event_message
 from kivyfn.store.codec.requests import decode_request
 from kivyfn.store.codec.responses import encode_response
-from kivyfn.store.error import StoreConnectionError, StoreStateError
+from kivyfn.store.error import (
+    StoreConnectionError,
+    StoreProtocolError,
+    StoreStateError,
+)
 from kivyfn.store.protocol.message.event import EventMessage
 from kivyfn.store.transport.host import HostTransport
 
@@ -119,7 +124,21 @@ class SocketIOServerTransport(HostTransport):
         self._connections[client_id] = connection
         try:
             async with connection.requests:
-                await self.store_host.connect(client_id)
+                await self.store_host.connect(
+                    client_id,
+                    send=self.emit,
+                    close=self.disconnect,
+                    protocol_version=(
+                        auth.get("protocol_version")
+                        if isinstance(auth, dict)
+                        else None
+                    ),
+                )
+        except StoreProtocolError as error:
+            await self.on_disconnect(client_id)
+            raise ConnectionRefusedError(
+                str(error), {"code": "protocol_mismatch"}
+            ) from error
         except Exception:
             logger.exception("Store client registration failed: %s", client_id)
             await self.on_disconnect(client_id)
@@ -157,7 +176,11 @@ class SocketIOServerTransport(HostTransport):
                     return None
 
                 payload = values[0] if len(values) == 1 else values
-                request = decode_request(payload)
+                try:
+                    request = decode_request(payload)
+                except (TypeError, ValueError) as error:
+                    self.store_host.rejected(client_id, error)
+                    raise
                 response = await self.store_host.request(client_id, request)
                 return encode_response(response)
         except Exception:

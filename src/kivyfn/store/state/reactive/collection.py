@@ -49,7 +49,7 @@ class CollectionManagerProtocol(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class MembershipDelta(Generic[SchemaT]):
-    """Membership changes for one CollectionState."""
+    """Visible membership changes for one collection."""
 
     entered: tuple[tuple[str, State[SchemaT]], ...] = ()
     left: tuple[tuple[str, State[SchemaT]], ...] = ()
@@ -62,10 +62,10 @@ class MembershipDelta(Generic[SchemaT]):
 class CollectionState(EventDispatcher, Generic[SchemaT]):
     """Editable reactive keyed collection of State objects."""
 
+    _row_version = NumericProperty(0)
     synced = BooleanProperty(False)
     is_pending = BooleanProperty(False)
     pending_count = NumericProperty(0)
-    _rows_version = NumericProperty(0)
 
     __events__ = (
         "on_pending",
@@ -120,7 +120,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def _get_rows(self) -> Mapping[str, State[SchemaT]]:
         return self._rows_view
 
-    rows = AliasProperty(_get_rows, None, bind=("_rows_version",), cache=True)
+    rows = AliasProperty(_get_rows, None, bind=("_row_version",))
 
     def __getitem__(self, row_id: str) -> State[SchemaT]:
         return self._rows[row_id]
@@ -197,15 +197,15 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def set_membership(
         self, row_ids: Iterable[str]
     ) -> MembershipDelta[SchemaT]:
-        rows = {
-            row_id: self._canonical_rows.get(row_id)
-            or self._create_row(row_id)
-            for row_id in row_ids
-        }
-        for row_id, state in self._canonical_rows.items():
-            if row_id not in rows:
+        row_ids = tuple(row_ids)
+        target_ids = set(row_ids)
+        for row_id in tuple(self._canonical_rows):
+            if row_id not in target_ids:
+                state = self._canonical_rows.pop(row_id)
                 state.set_owner_synced(self, False)
-        self._canonical_rows = rows
+        for row_id in row_ids:
+            if row_id not in self._canonical_rows:
+                self._canonical_rows[row_id] = self._create_row(row_id)
         return self._refresh_membership()
 
     def set_membership_overlay(
@@ -233,10 +233,12 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         for overlay in self._membership_overlays.values():
             for row_id, present in overlay.items():
                 if present:
-                    if row_id not in rows:
-                        rows[row_id] = self._rows.get(
-                            row_id
-                        ) or self._create_row(row_id)
+                    state = rows.get(row_id)
+                    rows[row_id] = (
+                        state
+                        or self._rows.get(row_id)
+                        or self._create_row(row_id)
+                    )
                 else:
                     rows.pop(row_id, None)
         delta = MembershipDelta(
@@ -261,7 +263,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         if not delta.changed:
             return
 
-        set_property(self, "_rows_version", self._rows_version + 1)
+        set_property(self, "_row_version", self._row_version + 1)
 
         for row_id, state in delta.left:
             self._dispatch_membership("on_leave", row_id, state)

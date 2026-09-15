@@ -14,6 +14,7 @@ from kivyfn.store.error import StoreProtocolError
 from kivyfn.store.protocol.message.event import EventMessage
 from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
+from kivyfn.store.protocol.version import PROTOCOL_VERSION
 from kivyfn.store.transport.client import ClientTransport
 from kivyfn.store.transport.direct.host import DirectHostTransport
 from kivyfn.store.transport.direct.registry import resolve_host
@@ -34,6 +35,7 @@ class DirectClientTransport(ClientTransport):
         self._name = name
         self._client = client
         self._connected = False
+        self._generation = 0
         self._host: DirectHostTransport | None = None
         self._client_id: str | None = None
 
@@ -49,10 +51,20 @@ class DirectClientTransport(ClientTransport):
         if self._connected:
             return
 
+        if self._host is not None:
+            await self.disconnect()
         host = cast(DirectHostTransport, resolve_host(self._name))
+        self._generation += 1
+        generation = self._generation
+
+        async def message(message: EventMessage) -> None:
+            await self._handle_message(message, generation)
+
+        async def close() -> None:
+            await self._handle_host_close(generation)
 
         client_id = await host.connect_client(
-            self._handle_message, self._handle_host_close
+            message, close, protocol_version=PROTOCOL_VERSION
         )
 
         self._host = host
@@ -62,9 +74,6 @@ class DirectClientTransport(ClientTransport):
         self._client.on_connect()
 
     async def disconnect(self) -> None:
-        if not self._connected:
-            return
-
         host = self._host
         client_id = self._client_id
 
@@ -78,6 +87,7 @@ class DirectClientTransport(ClientTransport):
         try:
             decoded = decode_request(deepcopy(encode_request(request)))
         except (TypeError, ValueError) as error:
+            host.store_host.rejected(client_id, error)
             raise StoreProtocolError("Invalid Store request") from error
         response = await host.request(client_id, decoded)
         try:
@@ -85,7 +95,11 @@ class DirectClientTransport(ClientTransport):
         except (TypeError, ValueError) as error:
             raise StoreProtocolError("Invalid Store response") from error
 
-    async def _handle_message(self, message: EventMessage) -> None:
+    async def _handle_message(
+        self, message: EventMessage, generation: int
+    ) -> None:
+        if generation != self._generation or not self._connected:
+            return
         try:
             try:
                 decoded = decode_event_message(
@@ -95,17 +109,18 @@ class DirectClientTransport(ClientTransport):
                 raise StoreProtocolError("Invalid Store event") from error
             self._client.on_message(decoded)
         except Exception as error:
-            self._clear_connection()
+            # Retain the registration until cleanup has removed it at the Host.
+            self._connected = False
             self._client.on_disconnect(error)
-            # The Host delivery task removes this failed connection.
             raise
 
-    async def _handle_host_close(self) -> None:
-        if not self._connected:
+    async def _handle_host_close(self, generation: int) -> None:
+        if generation != self._generation:
             return
-
+        connected = self._connected
         self._clear_connection()
-        self._client.on_disconnect()
+        if connected:
+            self._client.on_disconnect()
 
     def _require_connection(self) -> tuple[DirectHostTransport, str]:
         if (
@@ -120,6 +135,7 @@ class DirectClientTransport(ClientTransport):
         return self._host, self._client_id
 
     def _clear_connection(self) -> None:
+        self._generation += 1
         self._connected = False
         self._host = None
         self._client_id = None

@@ -151,7 +151,7 @@ causes automatic transaction retries.
 
 | Exception | Meaning |
 | --- | --- |
-| `StoreStateError` | Invalid lifecycle or unsupported reentrant Store mutation |
+| `StoreStateError` | Invalid lifecycle, hosted-loop ownership, or reentrant mutation |
 | `StoreConnectionError` | Connection unavailable or lost |
 | `StoreTimeoutError` | Connection/request timeout |
 | `StoreProtocolError` | Malformed messages, mismatched replies, invalid instance/revision stream |
@@ -178,8 +178,13 @@ tracebacks rather than exposing them on the wire.
 A timeout or lost connection does **not** prove that a transaction failed.
 The Host may have committed, sent signals and lost the acknowledgement.
 StoreClient fails the interrupted request and does not automatically replay
-its batch. Socket.IO reconnection is explicit through `client.connect()`;
-desired subscriptions are retained and resynchronized.
+its batch. By default reconnection is explicit through `client.connect()`.
+`StoreClient(reconnect_interval=10.0)` enables retries after an established
+connection is unexpectedly lost, on Direct and Socket.IO. `None` disables them.
+The first connect attempt still reports failure normally. Explicit disconnect
+stops recovery; old cleanup must finish before a replacement connection starts.
+Desired subscriptions are retained and receive fresh snapshots on reconnect.
+A protocol mismatch stops retries and requires coordinated deployment.
 
 Reconnect and inspect canonical State before deciding whether another
 operation is appropriate. An ephemeral signal cannot be reconstructed from
@@ -187,10 +192,19 @@ a snapshot. Avoid treating `network` or `timeout` as “safe to repeat” for
 signals, increments or other non-idempotent effects.
 
 The Host's bounded in-memory completed-ID cache returns the previous response
-when the same ID and exact actions are seen again. Reusing that ID with
-different actions is rejected. This protection survives reconnects to the
+when the same ID and exact request contents are seen again. Undo/redo
+positions, grouping, and edit guards are part of those contents. Reusing
+that ID with different contents is rejected. This protection survives reconnects to the
 same Host object, but not cache eviction or Host replacement. It is not a
 durable execution ledger, and cached acknowledgements do not replay signals.
+Direct Store undo/redo has no cache: repeating an applied expected position
+can fail as stale without executing again.
+
+History navigation returns ordinary transaction failures with explicit codes:
+`history_disabled`, `history_empty`, `history_stale`, `history_blocked`,
+`history_expired`, or `history_conflict`. Inspect the structured detail and
+refresh the displayed head; do not automatically resubmit a stale command
+with a fresh position. Final constraint rejections also leave history unmoved.
 
 A malformed response invalidates the connection and completes pending
 requests with an error. Subscription handoff buffers are bounded. A missing
@@ -214,14 +228,30 @@ because that final durability confirmation failed.
 During boot, malformed saved envelopes are distinct from absent files.
 `raise` preserves and rejects invalid input; `recover` and `erase` use their
 configured recovery behavior. Missing or failed migrations retain the
-existing fallback of validating/recovering the original selected data.
+existing fallback to the original selected data. The configured initializer
+receives the migration result or that fallback data before schema defaults,
+validation and indexing.
+
+Initializer exceptions and non-dictionary return values fail startup directly;
+they are application preparation errors, not a reason to erase storage.
+Invalid fields or relationships in a returned dictionary follow ordinary boot
+policy. An ERASE fallback initializes its empty candidate before validation,
+so required startup data is not silently omitted. There is no repeated fallback
+loop, and persistence failures still preserve their existing commit boundaries.
 See [persistence and boot](architecture.md#persistence-and-boot) for the
 complete version and recovery contract.
 
+A configured devtools port already in use is a Host startup failure. The default
+is port 3000; no silent fallback changes the browser address. Request `port=0`
+explicitly when dynamic allocation is intended. Partial Host startup cleans up
+its listeners and observers before propagating the error.
+
 ## Observer and cleanup failures
 
-Store commit listeners are synchronous read-only callbacks. A reentrant
-`Store.execute()` raises `StoreStateError`; schedule a later operation.
+Store commit and history-status listeners are synchronous read-only callbacks.
+One guard covers both publication phases and history-only notifications.
+Reentrant mutation raises `StoreStateError`; schedule a later operation on
+the owning Host loop when hosted.
 Callback exceptions are logged and isolated from later Store listeners.
 State notification boundaries also isolate application failures so pending
 transactions finish and subsequent messages can be processed. Native Kivy

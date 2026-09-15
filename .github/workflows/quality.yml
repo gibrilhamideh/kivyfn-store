@@ -18,6 +18,9 @@ jobs:
             dependencies: locked
           - python: "3.11"
             dependencies: minimum
+    defaults:
+      run:
+        working-directory: kivyfn-store
     env:
       KIVY_NO_ARGS: "1"
       KIVY_NO_CONSOLELOG: "1"
@@ -25,10 +28,32 @@ jobs:
       UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: kivyfn-store
+      - uses: actions/checkout@v4
+        with:
+          repository: >-
+            ${{ vars.KIVYFN_REPOSITORY ||
+                format('{0}/kivyfn', github.repository_owner) }}
+          token: ${{ secrets.KIVYFN_READ_TOKEN || github.token }}
+          path: kivyfn
+      - uses: actions/checkout@v4
+        with:
+          repository: >-
+            ${{ vars.KIVY_STUBS_REPOSITORY ||
+                format('{0}/kivy-stubs', github.repository_owner) }}
+          token: ${{ secrets.KIVYFN_READ_TOKEN || github.token }}
+          path: kivy-stubs
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: kivyfn-store/devtools/frontend/package-lock.json
       - run: python -m pip install uv
+      - run: python scripts/build_release.py --assets-only
       - run: uv sync --locked --python ${{ matrix.python }}
       - if: matrix.dependencies == 'minimum'
         run: >-
@@ -38,3 +63,18 @@ jobs:
       - run: uv run --no-sync pyright
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync ruff format --check .
+      - run: npm --prefix devtools/frontend run typecheck
+      - run: npm --prefix devtools/frontend run lint
+      - run: npm --prefix devtools/frontend run format:check
+      - run: npm --prefix devtools/frontend test
+      - if: matrix.python == '3.12' && matrix.dependencies == 'locked'
+        run: >-
+          npm --prefix devtools/frontend exec --
+          playwright install --with-deps chromium
+      - if: matrix.python == '3.12' && matrix.dependencies == 'locked'
+        run: uv run --no-sync npm --prefix devtools/frontend run test:browser
+      - if: matrix.python == '3.12' && matrix.dependencies == 'locked'
+        run: >-
+          uv run --with build python scripts/build_release.py --skip-install
+      - if: matrix.python == '3.12' && matrix.dependencies == 'locked'
+        run: uv run --with pip --with build python scripts/check_install.py dist

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from kivyfn.store import Store, StoreClient, StoreHost
-from kivyfn.store.builder import Branch, Builder
+from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
+from kivyfn.store.builder import Branch, Builder, HistoryConfig
 from kivyfn.store.operations import OpCode
-from kivyfn.store.schema import SingleSchema
+from kivyfn.store.protocol.message.requests import (
+    InsertRequestAction,
+    RemoveRequestAction,
+    SetRequestAction,
+    SetRowRequestAction,
+)
+from kivyfn.store.protocol.message.responses import TransactionResponse
+from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.schema.context import TriggerContext
 from kivyfn.store.schema.fields import NumericField
 from kivyfn.store.schema.signal import Signal
@@ -44,9 +53,9 @@ async def test_singleton_trigger_reads_preceding_write_not_later_coalesced_one(
     tree = Branch(InstructionOrderSource).child(
         "observer", Branch(InstructionOrderObserver)
     )
-    root, config = Builder().tree(tree).storage_path(tmp_path).build()
-    store = Store(root, config)
-    host = StoreHost(store, _host_endpoint(transport_kind))
+    config = Builder().tree(tree).storage_path(tmp_path).build()
+    store = Store(config)
+    host = StoreHost(store, HostConfig(_host_endpoint(transport_kind)))
     client: StoreClient | None = None
     try:
         store.boot()
@@ -90,9 +99,9 @@ async def test_interleaved_signals_preserve_commit_order_after_all_bindings(
     tree = Branch(InstructionOrderSource).child(
         "observer", Branch(InstructionOrderObserver)
     )
-    root, config = Builder().tree(tree).storage_path(tmp_path).build()
-    store = Store(root, config)
-    host = StoreHost(store, _host_endpoint(transport_kind))
+    config = Builder().tree(tree).storage_path(tmp_path).build()
+    store = Store(config)
+    host = StoreHost(store, HostConfig(_host_endpoint(transport_kind)))
     client: StoreClient | None = None
     try:
         store.boot()
@@ -137,5 +146,107 @@ async def test_interleaved_signals_preserve_commit_order_after_all_bindings(
     finally:
         if client is not None:
             await client.disconnect()
+        await host.stop()
+        store.shutdown()
+
+
+class InstructionOrderRows(ManySchema):
+    track_history = True
+    value = NumericField(default=1)
+
+
+class InstructionOrderRowObserver(SingleSchema):
+    track_history = True
+    tick = NumericField(default=0)
+    observed = NumericField(default=0)
+
+    @trigger(OpCode.SET, field="tick")
+    def capture_row(
+        self, transaction: Transaction, context: TriggerContext
+    ) -> None:
+        source = context.engine.get_node_by_schema("InstructionOrderRows")
+        row = context.row(source, "row")
+        transaction.set(
+            context.node.address,
+            "observed",
+            -1 if row is None else row["value"],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("insert", [False, True])
+@pytest.mark.parametrize("state_actions", [False, True])
+async def test_removal_preserves_prior_row_action_seen_by_intervening_trigger(
+    tmp_path: Path,
+    transport_kind: TransportKind,
+    insert: bool,
+    state_actions: bool,
+) -> None:
+    tree = Branch(InstructionOrderRows).child(
+        "observer", Branch(InstructionOrderRowObserver)
+    )
+    config = Builder().tree(tree).storage_path(tmp_path).build()
+    store = Store(replace(config, history=HistoryConfig()))
+    host = StoreHost(store, HostConfig(_host_endpoint(transport_kind)))
+    client = StoreClient()
+    manager = StateManager(client)
+    rows = manager.create(InstructionOrderRows)
+    observer = manager.create(InstructionOrderRowObserver)
+    try:
+        store.boot()
+        await host.start()
+        await client.connect(_client_endpoint(host))
+        if not insert:
+            await rows.insert("row", value=1)
+        value = 9 if insert else 7
+        delivered = asyncio.Event()
+        observer.bind(observed=lambda *_: delivered.set())
+        if state_actions:
+            with manager.transaction() as transaction:
+                if insert:
+                    rows["row"] = {"value": value}
+                else:
+                    rows["row"].value = value
+                observer.tick = 1
+                del rows["row"]
+            await transaction
+            assert transaction.success
+        else:
+            row_action = InsertRequestAction if insert else SetRowRequestAction
+            store.execute(
+                (
+                    row_action(
+                        "InstructionOrderRows", "row", (("value", value),)
+                    ),
+                    SetRequestAction(
+                        "InstructionOrderRowObserver", (("tick", 1),)
+                    ),
+                    RemoveRequestAction("InstructionOrderRows", "row"),
+                ),
+                transaction_id="ordered-store-actions",
+            )
+        await asyncio.wait_for(delivered.wait(), 2)
+        assert observer.get("observed") == value
+        assert "row" not in rows
+        assert (
+            store.snapshot_by_schema("InstructionOrderRowObserver")["observed"]
+            == value
+        )
+        entry = store.history().entries[-1]
+        assert any(
+            record.schema == "InstructionOrderRowObserver"
+            for record in entry.records
+        )
+        assert isinstance(await client.undo(), TransactionResponse)
+        assert observer.get("observed") == observer.get("tick") == 0
+        if insert:
+            assert "row" not in rows
+        else:
+            assert rows["row"].get("value") == 1
+        assert isinstance(await client.redo(), TransactionResponse)
+        assert observer.get("observed") == value
+        assert "row" not in rows
+    finally:
+        await client.disconnect()
         await host.stop()
         store.shutdown()

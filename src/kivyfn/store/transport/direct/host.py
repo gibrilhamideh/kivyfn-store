@@ -101,6 +101,8 @@ class DirectHostTransport(HostTransport):
         self,
         message_handler: DirectMessageHandler,
         close_handler: DirectCloseHandler,
+        *,
+        protocol_version: int | None = None,
     ) -> str:
         self._require_running()
 
@@ -109,7 +111,12 @@ class DirectHostTransport(HostTransport):
         self._clients[client_id] = (message_handler, close_handler)
 
         try:
-            await self.store_host.connect(client_id)
+            await self.store_host.connect(
+                client_id,
+                send=self.emit,
+                close=self.disconnect,
+                protocol_version=protocol_version,
+            )
 
         except BaseException:
             self._clients.pop(client_id, None)

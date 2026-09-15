@@ -9,7 +9,14 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import Query, Store, StoreClient, StoreHost, field
+from kivyfn.store import (
+    HostConfig,
+    Query,
+    Store,
+    StoreClient,
+    StoreHost,
+    field,
+)
 from kivyfn.store.protocol.message.responses import QueryResponse
 from kivyfn.store.state.manager import StateManager
 from kivyfn.store.state.transaction.transaction import StateTransaction
@@ -35,7 +42,7 @@ async def query_stack(
         if transport_kind == "direct"
         else "http://127.0.0.1:0"
     )
-    host = StoreHost(query_store, endpoint)
+    host = StoreHost(query_store, HostConfig(endpoint))
     client: StoreClient | None = None
     try:
         await host.start()
@@ -96,7 +103,9 @@ async def test_shared_query_row_signals_once_per_occurrence(
     articles = query_stack.state.create(QueryArticleSchema)
     all_articles = query_stack.state.create(Query(QueryArticleSchema))
     published = query_stack.state.create(
-        Query(QueryArticleSchema).where(field("published") == True)  # noqa: E712
+        Query(QueryArticleSchema).where(
+            field("published") == True  # noqa: E712
+        )
     )
     await query_stack.client.connect(query_stack.endpoint)
     row = all_articles["article-one"]
@@ -154,7 +163,9 @@ async def test_release_query_then_recreate_hydrates_current_snapshot(
     query_stack: QueryStack,
 ) -> None:
     articles = query_stack.state.create(QueryArticleSchema)
-    query = Query(QueryArticleSchema).where(field("published") == True)  # noqa: E712
+    query = Query(QueryArticleSchema).where(
+        field("published") == True  # noqa: E712
+    )
     collection = query_stack.state.create(query)
     await query_stack.client.connect(query_stack.endpoint)
     row = collection["article-one"]

@@ -20,6 +20,7 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
+from kivyfn.store.protocol.version import PROTOCOL_VERSION
 from kivyfn.store.transport.client import ClientTransport
 
 if TYPE_CHECKING:
@@ -58,10 +59,13 @@ class SocketIOClientTransport(ClientTransport):
         )
 
         self.sio.on("connect", self.on_connect)
+        self.sio.on("connect_error", self.on_connect_error)
         self.sio.on("disconnect", self.on_disconnect)
         self.sio.on("message", self.on_message)
 
         self._connected = False
+        self._connect_error: StoreConnectionError | StoreProtocolError | None
+        self._connect_error = None
         self._generation = 0
         self._connecting: asyncio.Task[None] | None = None
         self._pending: asyncio.Task[object] | None = None
@@ -82,11 +86,13 @@ class SocketIOClientTransport(ClientTransport):
             if self.sio.eio.state != "disconnected":
                 await self._disconnect_socket()
 
+            self._connect_error = None
             self._connecting = asyncio.create_task(
                 self.sio.connect(
                     self.url,
                     socketio_path=self.socketio_path,
                     wait_timeout=self.connect_timeout,
+                    auth={"protocol_version": PROTOCOL_VERSION},
                 )
             )
 
@@ -107,7 +113,10 @@ class SocketIOClientTransport(ClientTransport):
                 self._drop_connection(notify=False)
                 await self._disconnect_socket()
 
-                raise StoreConnectionError("Store connection failed") from exc
+                error = self._connect_error or StoreConnectionError(
+                    "Store connection failed"
+                )
+                raise error from exc
 
             except BaseException:
                 self._drop_connection(notify=False)
@@ -177,6 +186,21 @@ class SocketIOClientTransport(ClientTransport):
                 raise
 
             raise StoreConnectionError("Store connection was lost") from None
+
+    def on_connect_error(self, data: object) -> None:
+        if isinstance(data, dict):
+            message = data.get("message")
+            if isinstance(message, str):
+                detail = data.get("data")
+                if (
+                    isinstance(detail, dict)
+                    and detail.get("code") == "protocol_mismatch"
+                ):
+                    self._connect_error = StoreProtocolError(message)
+                else:
+                    self._connect_error = StoreConnectionError(message)
+        elif isinstance(data, str):
+            self._connect_error = StoreConnectionError(data)
 
     def on_connect(self) -> None:
         self._generation += 1

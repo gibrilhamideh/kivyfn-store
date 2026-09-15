@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from typing import Any, assert_never
 
+from kivyfn.store.codec.history import decode_position, encode_position
 from kivyfn.store.codec.query import query_from_payload, query_to_payload
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
+    HistoryRequest,
     InsertRequestAction,
     QueryRequest,
     QuerySubscriptionRequest,
+    RedoRequest,
     RemoveRequestAction,
     RequestAction,
     RequestBatch,
@@ -19,6 +22,7 @@ from kivyfn.store.protocol.message.requests import (
     SignalRowRequestAction,
     SingleSubscriptionRequest,
     TransactionRequest,
+    UndoRequest,
     UnsubscribeRequest,
 )
 
@@ -42,22 +46,45 @@ def decode_request(payload: object) -> RequestBatch:
 def _encode_item(request: RequestItem) -> dict[str, Any]:
     match request:
         case TransactionRequest():
-            return {
+            payload: dict[str, Any] = {
                 "type": "transaction",
                 "transaction_id": request.transaction_id,
                 "actions": [
                     _encode_action(action) for action in request.actions
                 ],
             }
+            for name in (
+                "history_group",
+                "history_label",
+                "expected_store_instance_id",
+                "expected_revisions",
+            ):
+                value = getattr(request, name)
+                if value is not None:
+                    payload[name] = value
+            return payload
+
+        case HistoryRequest():
+            return {
+                "type": "history",
+                "limit": request.limit,
+                "offset": request.offset,
+            }
+
+        case UndoRequest() | RedoRequest():
+            return {
+                "type": "undo" if isinstance(request, UndoRequest) else "redo",
+                "transaction_id": request.transaction_id,
+                "expected_position": encode_position(
+                    request.expected_position
+                ),
+            }
 
         case QueryRequest():
             return {"type": "query", "query": query_to_payload(request.query)}
 
         case SingleSubscriptionRequest():
-            payload: dict[str, Any] = {
-                "type": "subscribe_single",
-                "schema": request.schema,
-            }
+            payload = {"type": "subscribe_single", "schema": request.schema}
 
             _encode_schema_cache(
                 payload, request.store_instance_id, request.revision
@@ -110,6 +137,27 @@ def _decode_item(payload: object) -> RequestItem:
             return TransactionRequest(
                 transaction_id=_string(data, "transaction_id"),
                 actions=tuple(_decode_action(action) for action in actions),
+                history_group=_optional_string(data, "history_group"),
+                history_label=_optional_string(data, "history_label"),
+                expected_store_instance_id=_optional_string(
+                    data, "expected_store_instance_id"
+                ),
+                expected_revisions=_edit_revisions(data),
+            )
+
+        case "history":
+            limit = _revision(data.get("limit", 100))
+            if not 1 <= limit <= 1000:
+                raise ValueError("History limit must be between 1 and 1000")
+            return HistoryRequest(limit, _revision(data.get("offset", 0)))
+
+        case "undo" | "redo":
+            request_type = UndoRequest if kind == "undo" else RedoRequest
+            return request_type(
+                transaction_id=_string(data, "transaction_id"),
+                expected_position=decode_position(
+                    data.get("expected_position")
+                ),
             )
 
         case "query":
@@ -378,3 +426,20 @@ def _string(payload: dict[str, Any], key: str) -> str:
         raise ValueError(f"Store request {key} must be a non-empty string")
 
     return value
+
+
+def _optional_string(payload: dict[str, Any], key: str) -> str | None:
+    return None if payload.get(key) is None else _string(payload, key)
+
+
+def _edit_revisions(payload: dict[str, Any]) -> dict[str, int] | None:
+    value = payload.get("expected_revisions")
+    if value is None:
+        return None
+    values = _object(value, "expected revisions")
+    result: dict[str, int] = {}
+    for schema, revision in values.items():
+        if not isinstance(schema, str) or not schema:
+            raise ValueError("Revision schema names must be non-empty strings")
+        result[schema] = _revision(revision)
+    return result

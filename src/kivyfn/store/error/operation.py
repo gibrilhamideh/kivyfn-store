@@ -4,6 +4,7 @@ from __future__ import annotations
 from kivyfn.store.error.base import StoreOperationError
 from kivyfn.store.error.category import StoreErrorCategory
 from kivyfn.store.error.code import StoreErrorCode
+from kivyfn.store.error.detail import HistoryErrorDetail
 from kivyfn.store.error.status import StoreErrorStatus
 
 # -------------------------------------------------
@@ -182,3 +183,25 @@ class ForeignKeyRestrictedError(ConstraintError):
     code = StoreErrorCode.FOREIGN_KEY_RESTRICTED
     category = StoreErrorCategory.CONSTRAINT
     status = StoreErrorStatus.CONFLICT
+
+
+class HistoryError(StoreOperationError):
+    """An expected guarded history navigation rejection."""
+
+    category = StoreErrorCategory.STATE
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: StoreErrorCode = StoreErrorCode.HISTORY_CONFLICT,
+        detail: HistoryErrorDetail | None = None,
+    ) -> None:
+        self.code = code
+        self.status = (
+            StoreErrorStatus.CONFLICT
+            if code
+            in {StoreErrorCode.HISTORY_STALE, StoreErrorCode.HISTORY_CONFLICT}
+            else StoreErrorStatus.UNAVAILABLE
+        )
+        super().__init__(message, detail=detail)

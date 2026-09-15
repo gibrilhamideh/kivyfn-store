@@ -137,6 +137,7 @@ class Engine:
         *,
         transaction_id: str | None = None,
         validate: Callable[[Delta], None] | None = None,
+        prepare: Callable[[Delta, ExecutionResult], None] | None = None,
     ) -> ExecutionResult:
         """
         Compile, validate, and execute one atomic batch of instructions.
@@ -158,26 +159,50 @@ class Engine:
             if not result.success:
                 return result
 
-            if any(
-                self.metadata.is_persistent(node)
-                for node in execution.prepared
-            ):
-                self._storage.write_store(
-                    {
-                        node.schema.name: (
-                            execution.prepared[node].value
-                            if node in execution.prepared
-                            else node.value
-                        )
-                        for node in self.metadata.persistent_nodes
-                    },
-                    store_version=self.config.store_version,
-                )
-
-            for node, state in execution.prepared.items():
-                node.install(state)
-
+            if prepare is not None:
+                prepare(execution.delta, result)
+            self._install(execution)
             return result
+
+    def restore(
+        self,
+        delta: Delta,
+        *,
+        transaction_id: str,
+        validate: Callable[[Delta], None] | None = None,
+        prepare: Callable[[Delta, ExecutionResult], None] | None = None,
+    ) -> ExecutionResult:
+        """Install trusted operation records through shared final checks."""
+        with self._lock:
+            self._require_booted()
+            execution = Execution(
+                self, (), transaction_id=transaction_id, validate=validate
+            )
+            result = execution.prepare(delta)
+            if not result.success:
+                return result
+            if prepare is not None:
+                prepare(delta, result)
+            self._install(execution)
+            return result
+
+    def _install(self, execution: Execution) -> None:
+        if any(
+            self.metadata.is_persistent(node) for node in execution.prepared
+        ):
+            self._storage.write_store(
+                {
+                    node.schema.name: (
+                        execution.prepared[node].value
+                        if node in execution.prepared
+                        else node.value
+                    )
+                    for node in self.metadata.persistent_nodes
+                },
+                store_version=self.config.store_version,
+            )
+        for node, state in execution.prepared.items():
+            node.install(state)
 
     # -------------------------------------------------
     # Persistence

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, get_args
 
 from kivyfn.store.error import (
     FieldError,
@@ -22,6 +22,7 @@ IndexKey = tuple[str, ...]
 
 class Schema:
     persistent: ClassVar[bool] = False
+    track_history: ClassVar[bool] = False
 
     indexes: ClassVar[list[IndexKey]] = []
     uniques: ClassVar[list[IndexKey]] = []
@@ -44,6 +45,8 @@ class Schema:
                 raise ValueError(
                     f"Schema declaration name {name!r} is reserved"
                 )
+        if type(self.track_history) is not bool:
+            raise TypeError("Schema.track_history must be a bool")
         self.name = self.__class__.__name__
 
         self._fields: dict[str, BaseField[Any]] = {}
@@ -72,6 +75,20 @@ class Schema:
         for name, attr in _declarations(type(self)).items():
             if isinstance(attr, Signal):
                 self._signals[name] = attr
+        for name, signal in self._signals.items():
+            if signal.undo is not None and signal.undo not in self._signals:
+                raise ValueError(
+                    f"Invalid inverse {signal.undo!r} for {self.name}.{name}"
+                )
+            if signal.undo is not None:
+                inverse = self._signals[signal.undo]
+                contract = get_args(getattr(signal, "__orig_class__", None))
+                other = get_args(getattr(inverse, "__orig_class__", None))
+                if contract and other and contract != other:
+                    raise ValueError(
+                        f"Inverse payload contracts differ for "
+                        f"{self.name}.{name}"
+                    )
 
     def _build_triggers(self) -> None:
         for name, attr in _declarations(type(self)).items():

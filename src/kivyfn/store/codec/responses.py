@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from typing import Any, assert_never
 
+from kivyfn.store.codec.history import decode_history, encode_history
 from kivyfn.store.codec.query import decode_query_rows, encode_query_rows
 from kivyfn.store.error.codec import decode_failure, encode_failure
 from kivyfn.store.protocol.message.responses import (
     CollectionSubscriptionResponse,
     FailureResponse,
+    HistoryResponse,
     QueryResponse,
     QuerySubscriptionResponse,
     ResponseBatch,
@@ -49,6 +51,9 @@ def _encode_item(response: ResponseItem) -> dict[str, Any]:
                 "transaction_id": response.transaction_id,
                 "failure": encode_failure(response.failure),
             }
+
+        case HistoryResponse():
+            return {"type": "history", "page": encode_history(response.page)}
 
         case QueryResponse():
             return {"type": "query", "rows": encode_query_rows(response.rows)}
@@ -121,6 +126,9 @@ def _decode_item(payload: object) -> ResponseItem:
                 transaction_id=_string(data, "transaction_id"),
                 failure=decode_failure(data.get("failure")),
             )
+
+        case "history":
+            return HistoryResponse(page=decode_history(data.get("page")))
 
         case "query":
             return QueryResponse(rows=decode_query_rows(data.get("rows")))

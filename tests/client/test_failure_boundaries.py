@@ -12,6 +12,7 @@ import pytest_asyncio
 
 from kivyfn.store import Store, StoreClient, StoreHost
 from kivyfn.store.builder import Branch, Builder
+from kivyfn.store.builder.config import HostConfig
 from kivyfn.store.error import (
     InvalidOperationError,
     StoreConnectionError,
@@ -73,14 +74,20 @@ async def boundary_stack(
         .child("second", Branch(BoundarySecond))
         .child("rows", Branch(BoundaryRows))
     )
-    root, config = Builder().tree(tree).storage_path(tmp_path).build()
-    store = Store(root, config)
-    host = StoreHost(
-        store,
+    endpoint = (
         f"direct://{uuid4().hex}"
         if transport_kind == "direct"
-        else "http://127.0.0.1:0",
+        else "http://127.0.0.1:0"
     )
+    config = (
+        Builder()
+        .tree(tree)
+        .storage_path(tmp_path)
+        .host(HostConfig(endpoint))
+        .build()
+    )
+    store = Store(config)
+    host = StoreHost(store)
     client: StoreClient | None = None
     try:
         store.boot()

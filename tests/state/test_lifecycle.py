@@ -293,3 +293,19 @@ async def test_transport_domain_errors_preserve_failure_category(kind):
         "network" if kind == "connection" else "timeout"
     )
     assert not state.is_pending
+
+
+@pytest.mark.asyncio
+async def test_history_metadata_captured_when_state_transaction_is_created():
+    manager, client = manager_pair()
+    rows = manager.create(StateUnitRows)
+    rows.enter("a")
+    transaction = manager.transaction(
+        history_group="gesture-1", history_label="Move component"
+    )
+    with pytest.raises(AttributeError):
+        setattr(transaction, "history_group", "gesture-2")
+    with transaction:
+        rows["a"].value = 1
+    assert client.metadata[transaction.id] == ("gesture-1", "Move component")
+    await client.fail(transaction)

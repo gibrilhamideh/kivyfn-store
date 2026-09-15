@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from json import JSONDecodeError
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -49,7 +48,7 @@ class FileStorage:
         try:
             with path.open("r", encoding="utf-8") as file:
                 return json.load(file, parse_constant=_invalid_constant)
-        except (JSONDecodeError, UnicodeError) as exc:
+        except (ValueError, RecursionError) as exc:
             raise StorageCorruptionError(
                 f"Unreadable Store snapshot {path.name!r}"
             ) from exc

@@ -100,3 +100,13 @@ class RuntimeErrorDetail(StoreErrorDetail):
     store: str | None = None
     operation: str | None = None
     transport: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HistoryErrorDetail(StoreErrorDetail):
+    entry_id: str | None = None
+    schema: str | None = None
+    row_id: str | None = None
+    field: str | None = None
+    expected: ProtocolValue = None
+    value: ProtocolValue = None

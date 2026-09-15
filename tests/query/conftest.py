@@ -72,14 +72,14 @@ def query_store(tmp_path: Path) -> Iterator[Store]:
         .child("authors", Branch(QueryAuthorSchema))
         .child("articles", Branch(QueryArticleSchema))
     )
-    root, config = (
+    config = (
         Builder()
         .tree(tree)
         .storage_path(tmp_path)
         .boot_policy("raise")
         .build()
     )
-    store = Store(root, config)
+    store = Store(config)
     store.boot()
     execute(
         store,

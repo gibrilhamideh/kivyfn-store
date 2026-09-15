@@ -92,7 +92,9 @@ def test_logical_builders_flatten_without_mutating_descriptions() -> None:
 def test_query_hash_and_equality_match_immutable_descriptions() -> None:
     query = Query(QueryArticleSchema)
     filtered = query.where(field("published") == True)  # noqa: E712
-    same = Query(QueryArticleSchema).where(field("published") == True)  # noqa: E712
+    same = Query(QueryArticleSchema).where(
+        field("published") == True  # noqa: E712
+    )
     assert query.predicate is None
     assert filtered == same
     assert len({filtered, same}) == 1

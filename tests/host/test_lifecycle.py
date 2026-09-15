@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store.builder.config import HostConfig
 from kivyfn.store.error import StoreInternalError, StoreStateError
 from kivyfn.store.protocol.message.requests import InsertRequestAction
 from tests.conftest import StateStack
@@ -18,7 +19,8 @@ from tests.schemas import create_builder
 async def test_wait_closed_before_start_is_rejected(
     state_stack: StateStack,
 ) -> None:
-    host = StoreHost(state_stack.store, f"direct://unused-{uuid4().hex}")
+    config = HostConfig(f"direct://unused-{uuid4().hex}")
+    host = StoreHost(state_stack.store, config)
     with pytest.raises(StoreStateError, match="not been started"):
         await host.wait_closed()
     await host.stop()
@@ -28,9 +30,14 @@ async def test_wait_closed_before_start_is_rejected(
 async def test_failed_registration_can_retry_after_store_boot(
     tmp_path: Path,
 ) -> None:
-    root, config = create_builder().storage_path(tmp_path).build()
-    store = Store(root, config)
-    host = StoreHost(store, f"direct://retry-{uuid4().hex}")
+    config = (
+        create_builder()
+        .storage_path(tmp_path)
+        .host(HostConfig(f"direct://retry-{uuid4().hex}"))
+        .build()
+    )
+    store = Store(config)
+    host = StoreHost(store)
     try:
         with pytest.raises(StoreStateError):
             await host.start()

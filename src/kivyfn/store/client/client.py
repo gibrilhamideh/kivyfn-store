@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio import sleep
 from collections import defaultdict
 from copy import deepcopy
+from math import isfinite
 from typing import Any, Protocol, TypeAlias, cast
+from uuid import uuid4
 
 from kivyfn.logging import get_logger
 
@@ -20,24 +23,29 @@ from kivyfn.store.client.subscription import (
 from kivyfn.store.error import (
     StoreConnectionError,
     StoreProtocolError,
+    StoreStateError,
     StoreSubscriptionError,
 )
 from kivyfn.store.protocol.message.event import EventMessage, SubscriptionEvent
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
+    HistoryRequest,
     QueryRequest,
     QuerySubscriptionRequest,
+    RedoRequest,
     RequestAction,
     RequestBatch,
     RequestItem,
     SingleSubscriptionRequest,
     SubscriptionRequest,
     TransactionRequest,
+    UndoRequest,
     UnsubscribeRequest,
 )
 from kivyfn.store.protocol.message.responses import (
     CollectionSubscriptionResponse,
     FailureResponse,
+    HistoryResponse,
     QueryResponse,
     QuerySubscriptionResponse,
     ResponseBatch,
@@ -49,11 +57,13 @@ from kivyfn.store.protocol.message.responses import (
     UnsubscribeResponse,
 )
 from kivyfn.store.query import Query
+from kivyfn.store.store.history import HistoryPosition
 from kivyfn.store.transport.client import ClientTransport
 from kivyfn.store.transport.endpoint import create_client_transport
 
 TransactionReply: TypeAlias = TransactionResponse | TransactionFailureResponse
 QueryReply: TypeAlias = QueryResponse | FailureResponse
+HistoryReply: TypeAlias = HistoryResponse | FailureResponse
 
 SUBSCRIPTIONS = (
     SingleSubscriptionRequest,
@@ -82,12 +92,30 @@ class StoreClient:
     """Batch requests and own subscription synchronization.
 
     An interrupted request is never automatically replayed. Its outcome may
-    be unknown, so callers reconnect to obtain current canonical snapshots.
+    be unknown, so reconnect obtains current canonical snapshots. A positive
+    reconnect_interval enables recovery after an established connection is
+    lost. Initial connect failures stay visible, and disconnect stops retries.
     """
 
-    def __init__(self, *, max_buffered_messages: int = 1000) -> None:
+    def __init__(
+        self,
+        *,
+        max_buffered_messages: int = 1000,
+        reconnect_interval: float | None = None,
+    ) -> None:
         if max_buffered_messages < 1:
             raise ValueError("max_buffered_messages must be positive")
+        if reconnect_interval is not None and (
+            isinstance(reconnect_interval, bool)
+            or not isinstance(reconnect_interval, (int, float))
+            or not isfinite(reconnect_interval)
+            or reconnect_interval <= 0
+        ):
+            raise ValueError("reconnect_interval must be positive and finite")
+        self._reconnect_interval = reconnect_interval
+        self._reconnect_enabled = False
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._disconnect_task: asyncio.Task[None] | None = None
         self._endpoint: str | None = None
         self._transport: ClientTransport | None = None
         self._max_buffered_messages = max_buffered_messages
@@ -107,6 +135,7 @@ class StoreClient:
         self._subscription_requests: dict[int, ClientSubscription] = {}
         self._transactions: dict[str, asyncio.Future[TransactionReply]] = {}
         self._queries: dict[int, asyncio.Future[QueryReply]] = {}
+        self._history: dict[int, asyncio.Future[HistoryReply]] = {}
 
     @property
     def endpoint(self) -> str | None:
@@ -132,8 +161,10 @@ class StoreClient:
         subscriptions usable. A later connect() retries only inactive sources.
         """
         loop = asyncio.get_running_loop()
-        if self._loop is not None and self._loop is not loop:
-            raise RuntimeError("StoreClient belongs to another event loop")
+        self._require_loop()
+        disconnecting = self._disconnect_task
+        if disconnecting is not None:
+            await asyncio.shield(disconnecting)
         if endpoint is None:
             endpoint = self._endpoint
         if endpoint is None:
@@ -174,37 +205,78 @@ class StoreClient:
         try:
             await transport.connect()
             await asyncio.shield(sync)
+            if not self.online:
+                raise StoreConnectionError(
+                    "Store connection lost during synchronization"
+                )
+            self._reconnect_enabled = True
         except StoreSubscriptionError:
             # A valid rejection does not invalidate the transport or peers.
+            self._reconnect_enabled = self.online
             raise
-        except BaseException:
+        except BaseException as error:
+            if isinstance(error, StoreProtocolError):
+                self._reconnect_enabled = False
             self._reset(StoreConnectionError("Store connection failed"))
             if sync.done() and not sync.cancelled():
                 sync.exception()
-            await transport.disconnect()
+            if self._disconnect_task is None or self._disconnect_task.done():
+                await transport.disconnect()
             raise
 
     async def disconnect(self) -> None:
+        """Stop recovery and finish one shared connection teardown."""
+        self._require_loop()
+        self._reconnect_enabled = False
+        reconnecting = self._reconnect_task
+        if reconnecting is not None:
+            reconnecting.cancel()
         error = StoreConnectionError(
             "Store client disconnected; in-flight outcomes may be unknown"
         )
-        self._reset(error)
+        await asyncio.shield(
+            self._begin_disconnect(error, cancel_connect=True)
+        )
+        if reconnecting is not None:
+            await asyncio.gather(reconnecting, return_exceptions=True)
+
+    def _begin_disconnect(
+        self, error: Exception, *, cancel_connect: bool = False
+    ) -> asyncio.Task[None]:
+        task = self._disconnect_task
+        if task is None or task.done():
+            self._reset(error)
+            task = asyncio.create_task(self._disconnect(cancel_connect))
+            self._disconnect_task = task
+            task.add_done_callback(_observe_completion)
+        return task
+
+    async def _disconnect(self, cancel_connect: bool) -> None:
         tasks = tuple(
             task
             for task in (self._flush_task, self._connect_task)
-            if task is not None and task is not asyncio.current_task()
+            if task is not None
         )
         for task in tasks:
-            task.cancel()
+            if task is not self._connect_task or cancel_connect:
+                task.cancel()
         transport = self._transport
-        if transport is not None:
-            await transport.disconnect()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._flush_task = None
-        self._connect_task = None
-        self._sync_future = None
-        self._loop = None
+        try:
+            if transport is not None:
+                await transport.disconnect()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._flush_task = None
+            self._connect_task = None
+            self._sync_future = None
+            self._loop = None
+
+    def _require_loop(self) -> None:
+        if self._loop is not None and self._loop is not (
+            asyncio.get_running_loop()
+        ):
+            raise RuntimeError("StoreClient belongs to another event loop")
 
     def on_connect(self) -> None:
         self._generation += 1
@@ -220,7 +292,52 @@ class StoreClient:
             error = StoreConnectionError(
                 "Store connection lost; in-flight outcomes may be unknown"
             )
-        self._reset(error)
+        self._begin_disconnect(error)
+        if isinstance(error, StoreProtocolError):
+            self._reconnect_enabled = False
+        if (
+            self._reconnect_enabled
+            and self._reconnect_interval is not None
+            and (self._reconnect_task is None or self._reconnect_task.done())
+        ):
+            task = asyncio.create_task(self._reconnect())
+            self._reconnect_task = task
+            task.add_done_callback(self._reconnect_done)
+
+    async def _reconnect(self) -> None:
+        assert self._reconnect_interval is not None
+        while self._reconnect_enabled:
+            disconnecting = self._disconnect_task
+            if disconnecting is not None:
+                await asyncio.shield(disconnecting)
+            await sleep(self._reconnect_interval)
+            if self.online:
+                return
+            try:
+                await self.connect()
+                return
+            except StoreSubscriptionError:
+                # Keep healthy subscriptions; retry rejected sources manually.
+                logger.exception(
+                    "Store reconnected with rejected subscriptions"
+                )
+                return
+            except StoreProtocolError:
+                self._reconnect_enabled = False
+                logger.exception(
+                    "Store reconnect stopped: incompatible protocol"
+                )
+                return
+            except Exception:
+                logger.warning(
+                    "Store reconnect failed; will retry", exc_info=True
+                )
+
+    def _reconnect_done(self, task: asyncio.Task[None]) -> None:
+        if self._reconnect_task is task:
+            self._reconnect_task = None
+        if not task.cancelled():
+            task.exception()
 
     def _reset(self, error: Exception) -> None:
         self._generation += 1
@@ -235,9 +352,14 @@ class StoreClient:
         self._subscription_requests.clear()
         self._subscriptions.disconnect()
         self._set_subscription_status(False)
-        futures = (*self._transactions.values(), *self._queries.values())
+        futures = (
+            *self._transactions.values(),
+            *self._queries.values(),
+            *self._history.values(),
+        )
         self._transactions.clear()
         self._queries.clear()
+        self._history.clear()
         for future in futures:
             if not future.done():
                 future.set_exception(error)
@@ -297,16 +419,94 @@ class StoreClient:
         self._finish_sync()
 
     def transaction(
-        self, *, transaction_id: str, actions: tuple[RequestAction, ...]
+        self,
+        *,
+        transaction_id: str,
+        actions: tuple[RequestAction, ...],
+        history_group: str | None = None,
+        history_label: str | None = None,
+        expected_store_instance_id: str | None = None,
+        expected_revisions: dict[str, int] | None = None,
     ) -> asyncio.Future[TransactionReply]:
         self._require_online()
         if transaction_id in self._transactions:
             raise RuntimeError(f"Transaction already exists: {transaction_id}")
-        request = TransactionRequest(transaction_id, deepcopy(actions))
+        request = TransactionRequest(
+            transaction_id,
+            deepcopy(actions),
+            history_group,
+            history_label,
+            expected_store_instance_id,
+            deepcopy(expected_revisions),
+        )
         future: asyncio.Future[TransactionReply] = self._future()
         self._transactions[transaction_id] = future
         self._enqueue(request)
         return future
+
+    def history(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> asyncio.Future[HistoryReply]:
+        self._require_online()
+        request = HistoryRequest(limit, offset)
+        future: asyncio.Future[HistoryReply] = self._future()
+        self._history[id(request)] = future
+        self._enqueue(request)
+        return future
+
+    async def undo(
+        self,
+        *,
+        expected_position: HistoryPosition | None = None,
+        transaction_id: str | None = None,
+    ) -> TransactionReply:
+        return await self._navigate(
+            UndoRequest, expected_position, transaction_id
+        )
+
+    async def redo(
+        self,
+        *,
+        expected_position: HistoryPosition | None = None,
+        transaction_id: str | None = None,
+    ) -> TransactionReply:
+        return await self._navigate(
+            RedoRequest, expected_position, transaction_id
+        )
+
+    async def _navigate(
+        self,
+        request_type: type[UndoRequest] | type[RedoRequest],
+        expected_position: HistoryPosition | None,
+        transaction_id: str | None,
+    ) -> TransactionReply:
+        self._require_navigation_ready()
+        command_id = uuid4().hex if transaction_id is None else transaction_id
+        if expected_position is None:
+            history = await self.history(limit=1)
+            if isinstance(history, FailureResponse):
+                return TransactionFailureResponse(command_id, history.failure)
+            status = history.page.status
+            expected_position = (
+                status.undo_position
+                if request_type is UndoRequest
+                else status.redo_position
+            )
+            # A mutation may have been submitted while status was in flight.
+            self._require_navigation_ready()
+        request = request_type(command_id, expected_position)
+        future: asyncio.Future[TransactionReply] = self._future()
+        self._transactions[command_id] = future
+        self._enqueue(request)
+        return await future
+
+    def _require_navigation_ready(self) -> None:
+        self._require_online()
+        # A cancelled waiter still has unresolved queued or in-flight work.
+        if self._transactions:
+            raise StoreStateError(
+                "Await pending local mutations before undo or redo"
+            )
 
     def query(self, query: Query[Any]) -> asyncio.Future[QueryReply]:
         self._require_online()
@@ -359,8 +559,7 @@ class StoreClient:
                         "Store client batch failed; disconnecting"
                     )
                     # Sent work may already have committed. Never replay it.
-                    self._reset(error)
-                    await transport.disconnect()
+                    self.on_disconnect(error)
                     return
         finally:
             if self._flush_task is asyncio.current_task():
@@ -389,10 +588,16 @@ class StoreClient:
                 )
         self._drain_messages()
         for item, reply in pairs:
-            if isinstance(item, TransactionRequest):
+            if isinstance(
+                item, (TransactionRequest, UndoRequest, RedoRequest)
+            ):
                 future = self._transactions.pop(item.transaction_id, None)
                 if future is not None and not future.done():
                     future.set_result(cast(TransactionReply, reply))
+            elif isinstance(item, HistoryRequest):
+                history_future = self._history.pop(id(item), None)
+                if history_future is not None and not history_future.done():
+                    history_future.set_result(cast(HistoryReply, reply))
             elif isinstance(item, QueryRequest):
                 query_future = self._queries.pop(id(item), None)
                 if query_future is not None and not query_future.done():
@@ -401,13 +606,16 @@ class StoreClient:
     def _validate_response(
         self, request: RequestItem, response: ResponseItem
     ) -> None:
-        if isinstance(request, TransactionRequest):
+        if isinstance(request, (TransactionRequest, UndoRequest, RedoRequest)):
             if not isinstance(
                 response, (TransactionResponse, TransactionFailureResponse)
             ):
                 raise StoreProtocolError("Invalid transaction response")
             if response.transaction_id != request.transaction_id:
                 raise StoreProtocolError("Transaction response ID mismatch")
+        elif isinstance(request, HistoryRequest):
+            if not isinstance(response, (HistoryResponse, FailureResponse)):
+                raise StoreProtocolError("Invalid history response")
         elif isinstance(request, QueryRequest):
             if not isinstance(response, (QueryResponse, FailureResponse)):
                 raise StoreProtocolError("Invalid query response")

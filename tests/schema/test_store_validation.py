@@ -40,10 +40,8 @@ def test_expected_field_failure_does_not_mutate_or_shut_down_store(
     tmp_path: Path, field: Any, invalid: Any, valid: Any
 ) -> None:
     schema_type = type("ValidationSchema", (SingleSchema,), {"value": field})
-    root, config = (
-        Builder().tree(Branch(schema_type)).storage_path(tmp_path).build()
-    )
-    store = Store(root=root, config=config)
+    config = Builder().tree(Branch(schema_type)).storage_path(tmp_path).build()
+    store = Store(config)
     store.boot()
     commits: list[Any] = []
     store.subscribe_commits(commits.append)
