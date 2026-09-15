@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.builder.policy import BootPolicy
 from kivyfn.store.error import (

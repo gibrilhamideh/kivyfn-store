@@ -5,10 +5,11 @@ from collections import deque
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
-from logging import getLogger as get_logger
 from threading import RLock
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.address import Address
 from kivyfn.store.core.engine import Engine

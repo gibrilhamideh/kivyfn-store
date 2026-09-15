@@ -68,6 +68,11 @@ if TYPE_CHECKING:
             assert_type(self.schema, Schema)
             return self.author_label or "Unknown"
 
+    def check_widened_template(
+        manager: StateManager, template: StateTemplate[State[Any]]
+    ) -> None:
+        assert_type(manager.create(template), State[Any])
+
     def check_templates(manager: StateManager) -> None:
         single_template = state_template(
             StateUnitSingle, state_type=TemplateSingle
@@ -142,8 +147,7 @@ if TYPE_CHECKING:
         )
         manager.create(StateUnitRows, state_type=TemplateRow)  # type: ignore
         state_template(StateUnitSingle, collection_type=TemplateCollection)  # type: ignore
-        widened: StateTemplate[State[Any]] = single_template
-        assert_type(widened, StateTemplate[State[Any]])
+        check_widened_template(manager, single_template)
         manager.release(single_template)
         manager.release(rows_template)
         manager.release(query_custom)

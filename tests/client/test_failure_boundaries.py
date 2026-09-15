@@ -30,7 +30,6 @@ from kivyfn.store.protocol.message.requests import (
     SetRowRequestAction,
 )
 from kivyfn.store.protocol.message.responses import (
-    FailureResponse,
     ResponseBatch,
     SingleSubscriptionResponse,
     TransactionFailureResponse,
@@ -156,7 +155,7 @@ async def test_malformed_response_settles_every_pending_request(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["failure", "wrong_instance", "no_snapshot"])
+@pytest.mark.parametrize("fault", ["wrong_instance", "no_snapshot"])
 async def test_bad_subscription_reply_aborts_sync_and_can_reconnect(
     boundary_stack: BoundaryStack, fault: str
 ) -> None:
@@ -167,11 +166,6 @@ async def test_bad_subscription_reply_aborts_sync_and_can_reconnect(
 
     def malformed(client_id: str, batch: RequestBatch) -> ResponseBatch:
         actual = handle(client_id, batch)
-        if fault == "failure":
-            failure = InvalidOperationError("Injected subscription failure")
-            return ResponseBatch(
-                tuple(FailureResponse(failure.failure()) for _ in actual.items)
-            )
         reply = actual.items[1]
         assert isinstance(reply, SingleSubscriptionResponse)
         changed = (

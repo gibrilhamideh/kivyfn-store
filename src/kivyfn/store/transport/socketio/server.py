@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlunsplit
 
 import socketio
 from aiohttp import web
+from kivyfn.logging import get_logger
 
 from kivyfn.store.codec.events import encode_event_message
 from kivyfn.store.codec.requests import decode_request

@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
-from kivyfn.store.error import StoreProtocolError
+from kivyfn.store.error import StoreFailure, StoreProtocolError
 from kivyfn.store.protocol.message.event import (
     SignalEventAction,
     SignalRowEventAction,
@@ -73,6 +73,7 @@ class ClientSubscription:
     manager: SubscriptionManager
     subscription_id: str | None = None
     revisions: dict[str, int] | None = None
+    failure: StoreFailure | None = None
 
     @property
     def active(self) -> bool:
@@ -270,6 +271,7 @@ class ClientSubscriptions:
 
         subscription.subscription_id = subscription_id
         subscription.revisions = dict(revisions)
+        subscription.failure = None
 
         self._by_id[subscription_id] = subscription
 
@@ -290,6 +292,7 @@ class ClientSubscriptions:
     def disconnect(self) -> None:
         for subscription in tuple(self._by_source.values()):
             self._unbind(subscription)
+            subscription.failure = None
 
         self._by_id.clear()
 

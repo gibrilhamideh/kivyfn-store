@@ -2,12 +2,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from logging import getLogger as get_logger
 from types import MappingProxyType
 from typing import Generic, TypeVar
 
 from kivy.event import EventDispatcher
 from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.query import Query

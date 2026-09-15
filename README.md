@@ -13,6 +13,20 @@ Install the repository and its development tools:
 uv sync --group dev
 ```
 
+`kivyfn` supplies the shared `kivyfn.logging.get_logger` integration and is a
+required dependency. `kivy-stubs` is a development dependency. The uv sources
+in `pyproject.toml` use editable sibling checkouts:
+
+```toml
+[tool.uv.sources]
+kivyfn = { path = "../kivyfn", editable = true }
+kivy-stubs = { path = "../kivy-stubs", editable = true }
+```
+
+Keep those sibling repositories beside `kivyfn-store` when using this local
+configuration. These source paths control development installs and are not
+included in the published wheel's dependency metadata.
+
 This complete example creates a persistent collection, connects a reactive
 client, and performs strict mutations. Run it with `uv run python example.py`.
 
@@ -100,6 +114,13 @@ The Client remembers its endpoint: `connect()` reuses it after a disconnect.
 To switch endpoints, disconnect first and then call `connect(new_endpoint)`.
 Desired subscriptions survive disconnects and synchronize on the next
 connection.
+
+A rejected subscription raises `StoreSubscriptionError` from `connect()`
+while leaving the Client online and healthy subscriptions synchronized.
+The error's `failure` contains the Host's structured rejection. Correct the
+cause and call `connect()` again to retry inactive subscriptions, or release
+the unwanted source. Mutations and queries on the connection remain usable;
+this retry does not replay previous transactions.
 
 ## Mutations and transactions
 

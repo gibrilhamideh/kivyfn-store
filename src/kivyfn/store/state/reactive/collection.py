@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from logging import getLogger as get_logger
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
 
 from kivy.event import EventDispatcher
 from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.schema import ManySchema
@@ -120,7 +120,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def _get_rows(self) -> Mapping[str, State[SchemaT]]:
         return self._rows_view
 
-    rows = AliasProperty(_get_rows, None, bind=("_rows_version",))
+    rows = AliasProperty(_get_rows, None, bind=("_rows_version",), cache=True)
 
     def __getitem__(self, row_id: str) -> State[SchemaT]:
         return self._rows[row_id]

@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from kivy.event import EventDispatcher
+from kivyfn.logging import get_logger
 
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.transaction.action import (

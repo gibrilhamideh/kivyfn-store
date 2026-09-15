@@ -152,6 +152,15 @@ synchronize. Calling `connect()` while connected also waits for incremental
 subscriptions. `online` is connection status; `synced` is synchronization
 status. A row's synchronization ownership follows its live subscribed views.
 
+A valid subscription rejection retains its structured failure on the desired
+subscription and raises `StoreSubscriptionError` to synchronization waiters.
+It does not invalidate the transport or successful bindings. The affected
+target stays unsynchronized; healthy targets keep receiving events, and
+transactions and queries continue. Calling `connect()` again retries inactive
+sources without reconnecting or replaying transactions. Late failures apply
+only to the exact desired subscription that requested them, so replacing a
+source cannot inherit an obsolete rejection.
+
 ### Canonical delivery and acknowledgement
 
 A commit is captured into per-client messages. The Host flushes that client's
@@ -302,8 +311,9 @@ their deployment boundary.
 
 ## Tooling
 
-Python 3.11 is the declared minimum. The package uses standard-library
-logging; configure logging in the hosting application. Kivy remains the real
+Python 3.11 is the declared minimum. The package gets loggers from
+`kivyfn.logging.get_logger`; `kivyfn` is a required runtime dependency.
+Configure shared logging in the hosting application. Kivy remains the
 reactive runtime dependency, and integration tests exercise actual Direct
 and Socket.IO transports.
 

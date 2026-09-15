@@ -7,6 +7,7 @@
 | `Store.execute(...)` | `ExecutionResult(success=True, commit=...)` | `ExecutionResult(success=False, error=...)` | Lifecycle, persistence or unexpected errors raise |
 | `await client.transaction(...)` | `TransactionResponse` | `TransactionFailureResponse` with `StoreFailure` | Transport/protocol errors raise |
 | `await client.query(...)` | `QueryResponse` | `FailureResponse` with `StoreFailure` | Transport/protocol errors raise |
+| `await client.connect(...)` | Desired subscriptions synchronized | `StoreSubscriptionError` with `StoreFailure`; connection stays online | Transport/protocol errors raise |
 | `await state_transaction` | Transaction with `success=True` | Transaction with `failed=True` and `failure` | Submitted failures become transaction failure; cancelling the waiter still raises cancellation |
 
 The wire protocol does not use an `ok`/`data` response envelope. Match the
@@ -122,6 +123,30 @@ This lower-level API does not itself create a State subscription. Application
 State normally uses StateManager to receive canonical data and lifecycle
 updates together.
 
+Subscription rejection is separate from connection failure:
+
+```python
+from kivyfn.store.error import StoreSubscriptionError
+
+try:
+    await client.connect(endpoint)
+except StoreSubscriptionError as error:
+    print(error.failure.code, error.failure.message)
+    # The Client is still online; healthy State targets remain synchronized.
+```
+
+The rejected target stays unsynchronized. Once outstanding subscription
+replies have been processed, `connect()` raises the first retained rejection
+in desired-source order. A later call retries only inactive subscriptions;
+successful bindings and the transport remain in place. Releasing a failed
+source removes its synchronization requirement. A late failure for a released
+subscription cannot mark its replacement failed.
+
+An unsubscribe rejection is logged and leaves other subscriptions usable.
+The local source is already released; any remaining Host binding is cleaned
+up when the connection closes. Neither subscription nor unsubscribe rejection
+causes automatic transaction retries.
+
 ## Runtime errors
 
 | Exception | Meaning |
@@ -130,6 +155,7 @@ updates together.
 | `StoreConnectionError` | Connection unavailable or lost |
 | `StoreTimeoutError` | Connection/request timeout |
 | `StoreProtocolError` | Malformed messages, mismatched replies, invalid instance/revision stream |
+| `StoreSubscriptionError` | Host rejected a desired subscription; structured failure is available as `.failure` |
 | `StoreInternalError` | Safe report of an internal runtime failure |
 | `StorageCorruptionError` | Invalid or unavailable complete persisted representation |
 
@@ -137,6 +163,8 @@ Connection and timeout errors derive from `StoreUnavailableError`, which
 derives from `StoreTransportError`. Protocol errors also derive from
 `StoreTransportError`. Lifecycle and internal errors are separate runtime
 branches; not every failure is an availability problem.
+`StoreSubscriptionError` derives directly from `StoreException`, independently
+of transport errors.
 
 Use application startup and shutdown boundaries for boot failure, connection
 failure and resource cleanup. Do not broadly suppress exceptions inside

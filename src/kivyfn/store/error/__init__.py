@@ -51,6 +51,7 @@ from kivyfn.store.error.runtime import (
 )
 from kivyfn.store.error.stage import StoreErrorStage
 from kivyfn.store.error.status import StoreErrorStatus
+from kivyfn.store.error.subscription import StoreSubscriptionError
 
 __all__ = [
     "AddressErrorDetail",
@@ -92,6 +93,7 @@ __all__ = [
     "StoreProtocolError",
     "StoreRuntimeError",
     "StoreStateError",
+    "StoreSubscriptionError",
     "StoreTransportError",
     "StoreTimeoutError",
     "StoreUnavailableError",

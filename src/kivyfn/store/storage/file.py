@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 from json import JSONDecodeError
-from logging import getLogger as get_logger
 from pathlib import Path
 from threading import RLock
 from typing import Any
 from uuid import uuid4
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StorageCorruptionError
 

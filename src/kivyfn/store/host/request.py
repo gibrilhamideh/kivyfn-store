@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from copy import deepcopy
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, assert_never
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import (
     InvalidOperationError,

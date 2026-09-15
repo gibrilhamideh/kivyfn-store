@@ -6,6 +6,8 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Any, Protocol, TypeAlias, cast
 
+from kivyfn.logging import get_logger
+
 from kivyfn.store.client.queue import RequestQueue
 from kivyfn.store.client.subscription import (
     ClientSubscription,
@@ -15,7 +17,11 @@ from kivyfn.store.client.subscription import (
     SubscriptionSource,
     publish_subscriptions,
 )
-from kivyfn.store.error import StoreConnectionError, StoreProtocolError
+from kivyfn.store.error import (
+    StoreConnectionError,
+    StoreProtocolError,
+    StoreSubscriptionError,
+)
 from kivyfn.store.protocol.message.event import EventMessage, SubscriptionEvent
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
@@ -54,6 +60,8 @@ SUBSCRIPTIONS = (
     CollectionSubscriptionRequest,
     QuerySubscriptionRequest,
 )
+
+logger = get_logger(__name__)
 
 
 class ClientSubscriptionManager(SubscriptionManager, Protocol):
@@ -96,7 +104,7 @@ class StoreClient:
         self._messages: list[EventMessage] = []
         self._store_instance_id: str | None = None
         self._connection_instance_id: str | None = None
-        self._subscription_requests: dict[int, SubscriptionSource] = {}
+        self._subscription_requests: dict[int, ClientSubscription] = {}
         self._transactions: dict[str, asyncio.Future[TransactionReply]] = {}
         self._queries: dict[int, asyncio.Future[QueryReply]] = {}
 
@@ -118,7 +126,11 @@ class StoreClient:
         )
 
     async def connect(self, endpoint: str | None = None) -> None:
-        """Connect and synchronize, reusing the last endpoint when omitted."""
+        """Connect and sync, retrying failed subscriptions when already online.
+
+        A StoreSubscriptionError leaves the connection and successfully bound
+        subscriptions usable. A later connect() retries only inactive sources.
+        """
         loop = asyncio.get_running_loop()
         if self._loop is not None and self._loop is not loop:
             raise RuntimeError("StoreClient belongs to another event loop")
@@ -137,6 +149,8 @@ class StoreClient:
         self._loop = loop
         if self._connect_task is None:
             if self.online:
+                for subscription in self._subscriptions.inactive():
+                    self._subscribe(subscription)
                 if self._sync_future is not None:
                     await asyncio.shield(self._sync_future)
                 return
@@ -160,6 +174,9 @@ class StoreClient:
         try:
             await transport.connect()
             await asyncio.shield(sync)
+        except StoreSubscriptionError:
+            # A valid rejection does not invalidate the transport or peers.
+            raise
         except BaseException:
             self._reset(StoreConnectionError("Store connection failed"))
             if sync.done() and not sync.cancelled():
@@ -250,12 +267,18 @@ class StoreClient:
         return subscription
 
     def _subscribe(self, subscription: ClientSubscription) -> None:
+        if any(
+            pending is subscription
+            for pending in self._subscription_requests.values()
+        ):
+            return
         if self._sync_future is None or self._sync_future.done():
             assert self._loop is not None
             self._sync_future = self._loop.create_future()
             self._sync_future.add_done_callback(_observe_completion)
+        subscription.failure = None
         request = subscription.request(self._store_instance_id)
-        self._subscription_requests[id(request)] = subscription.source
+        self._subscription_requests[id(request)] = subscription
         self._enqueue(request)
 
     def unsubscribe(
@@ -271,6 +294,7 @@ class StoreClient:
         manager.on_subscription_status(source, False)
         if self.online and subscription_id is not None:
             self._enqueue(UnsubscribeRequest(subscription_id))
+        self._finish_sync()
 
     def transaction(
         self, *, transaction_id: str, actions: tuple[RequestAction, ...]
@@ -331,6 +355,9 @@ class StoreClient:
                 except Exception as error:
                     if generation != self._generation:
                         return
+                    logger.exception(
+                        "Store client batch failed; disconnecting"
+                    )
                     # Sent work may already have committed. Never replay it.
                     self._reset(error)
                     await transport.disconnect()
@@ -352,6 +379,14 @@ class StoreClient:
         for item, reply in pairs:
             if isinstance(item, SUBSCRIPTIONS):
                 self._handle_subscription_response(item, reply)
+            elif isinstance(item, UnsubscribeRequest) and isinstance(
+                reply, FailureResponse
+            ):
+                logger.warning(
+                    "Store unsubscribe %s failed: %s",
+                    item.subscription_id,
+                    reply.failure.message,
+                )
         self._drain_messages()
         for item, reply in pairs:
             if isinstance(item, TransactionRequest):
@@ -378,9 +413,7 @@ class StoreClient:
                 raise StoreProtocolError("Invalid query response")
         elif isinstance(request, SUBSCRIPTIONS):
             if isinstance(response, FailureResponse):
-                raise StoreProtocolError(
-                    f"Subscription failed: {response.failure.message}"
-                )
+                return
             expected = {
                 SingleSubscriptionRequest: SingleSubscriptionResponse,
                 CollectionSubscriptionRequest: CollectionSubscriptionResponse,
@@ -390,9 +423,7 @@ class StoreClient:
                 raise StoreProtocolError("Invalid subscription response")
         elif isinstance(request, UnsubscribeRequest):
             if isinstance(response, FailureResponse):
-                raise StoreProtocolError(
-                    f"Unsubscribe failed: {response.failure.message}"
-                )
+                return
             if not isinstance(response, UnsubscribeResponse):
                 raise StoreProtocolError("Invalid unsubscribe response")
             if response.subscription_id != request.subscription_id:
@@ -401,12 +432,21 @@ class StoreClient:
     def _handle_subscription_response(
         self, request: SubscriptionRequest, response: ResponseItem
     ) -> None:
-        source = self._subscription_requests.pop(id(request), None)
-        if source is None:
+        requested = self._subscription_requests.pop(id(request), None)
+        if requested is None:
             raise StoreProtocolError("Unknown subscription request")
+        source = requested.source
+        subscription = self._subscriptions.get(source)
+        if isinstance(response, FailureResponse):
+            # Ignore failures belonging to a released or replaced subscription.
+            if subscription is requested and not requested.active:
+                requested.failure = response.failure
+                _subscription_manager(requested).on_subscription_status(
+                    source, False
+                )
+            return
         reply = cast(SubscriptionResponse, response)
         self._check_connection_instance(reply.store_instance_id)
-        subscription = self._subscriptions.get(source)
         if subscription is None:
             self._enqueue(UnsubscribeRequest(reply.subscription_id))
             return
@@ -428,12 +468,31 @@ class StoreClient:
             self._deliver(message)
 
     def _finish_sync(self) -> None:
-        if self._subscription_requests or not self._subscriptions.synced:
+        if not self.online or self._subscription_requests:
             return
         self._drain_messages()
+        if not self.online or self._subscription_requests:
+            return
         self._resubscribing = False
         self._set_subscription_status(True)
+        # State callbacks may release or create subscriptions here.
+        if not self.online or self._subscription_requests:
+            return
         sync = self._sync_future
+        for subscription in self._subscriptions.desired():
+            if subscription.failure is not None:
+                if sync is not None and not sync.done():
+                    sync.set_exception(
+                        StoreSubscriptionError(subscription.failure)
+                    )
+                return
+        if not self._subscriptions.synced:
+            return
+        if sync is not None and sync.done() and sync.exception() is not None:
+            # Removing the failed desired source resolves synchronization.
+            sync = self._future()
+            sync.add_done_callback(_observe_completion)
+            self._sync_future = sync
         if sync is not None and not sync.done():
             sync.set_result(None)
 

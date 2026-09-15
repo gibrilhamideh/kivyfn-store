@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from logging import getLogger as get_logger
 from typing import TypeAlias
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreConnectionError
 from kivyfn.store.protocol.message.event import EventMessage

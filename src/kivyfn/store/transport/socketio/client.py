@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING
 
 import socketio
+from kivyfn.logging import get_logger
 from socketio.exceptions import BadNamespaceError
 from socketio.exceptions import ConnectionError as SocketIOConnectionError
 from socketio.exceptions import TimeoutError as SocketIOTimeoutError

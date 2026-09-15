@@ -217,24 +217,41 @@ def test_singleton_conflicting_types_are_rejected() -> None:
 
 
 @pytest.mark.parametrize("query", [False, True])
-def test_conflicting_container_type_rejected_without_new_subscriptions(query):
+def test_conflicting_container_type_rejected_without_new_subscriptions(
+    query: bool,
+) -> None:
     manager, client = manager_pair()
-    base = TemplateQuery if query else TemplateCollection
-    source = Query(StateUnitRows) if query else StateUnitRows
+    if query:
 
-    alternative = type("Alternative", (base,), {})
+        class AlternativeQuery(TemplateQuery):
+            pass
 
-    manager.create(
-        state_template(source, state_type=TemplateRow, collection_type=base)
-    )
-    with pytest.raises(StoreStateError, match="Conflicting collection_type"):
-        manager.create(
-            state_template(
-                source,
-                state_type=TemplateRow,
-                collection_type=cast(Any, alternative),
-            )
+        source = Query(StateUnitRows)
+        original = state_template(
+            source, state_type=TemplateRow, collection_type=TemplateQuery
         )
+        alternative = state_template(
+            source, state_type=TemplateRow, collection_type=AlternativeQuery
+        )
+    else:
+
+        class AlternativeCollection(TemplateCollection):
+            pass
+
+        source = StateUnitRows
+        original = state_template(
+            source, state_type=TemplateRow, collection_type=TemplateCollection
+        )
+        alternative = state_template(
+            source,
+            state_type=TemplateRow,
+            collection_type=AlternativeCollection,
+        )
+
+    target = manager.create(original)
+    with pytest.raises(StoreStateError, match="Conflicting collection_type"):
+        manager.create(alternative)
+    assert manager.create(original) is target
     assert client.sources == {source}
 
 
@@ -479,10 +496,13 @@ def test_failing_custom_constructor_does_not_poison_configuration(source):
     manager, client = manager_pair()
     if source is StateUnitSingle:
         template = state_template(source, state_type=Broken)
-    else:
-        cls = BrokenQuery if isinstance(source, Query) else BrokenCollection
+    elif isinstance(source, Query):
         template = state_template(
-            source, state_type=TemplateRow, collection_type=cls
+            source, state_type=TemplateRow, collection_type=BrokenQuery
+        )
+    else:
+        template = state_template(
+            source, state_type=TemplateRow, collection_type=BrokenCollection
         )
     with pytest.raises(RuntimeError, match="construction failed"):
         manager.create(template)

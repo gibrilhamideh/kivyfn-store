@@ -4,8 +4,9 @@ from __future__ import annotations
 import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
-from logging import getLogger as get_logger
 from typing import Any
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.address import Address
 from kivyfn.store.error import (

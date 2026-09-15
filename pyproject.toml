@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 authors = [{ name = "Gabtech", email = "gibrilhamideh@gmail.com" }]
 dependencies = [
     "kivy>=2.3.0",
+    "kivyfn",
     "uuid6",
     "python-socketio>=5.11",
     "aiohttp>=3.11",
@@ -18,6 +19,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "kivy-stubs",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -25,6 +27,10 @@ dev = [
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.7",
 ]
+
+[tool.uv.sources]
+kivyfn = { path = "../kivyfn", editable = true }
+kivy-stubs = { path = "../kivy-stubs", editable = true }
 
 [tool.pyright]
 include = ["src", "tests"]

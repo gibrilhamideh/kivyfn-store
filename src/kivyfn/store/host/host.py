@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from logging import getLogger as get_logger
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreInternalError, StoreStateError
 from kivyfn.store.events import StoreCommit

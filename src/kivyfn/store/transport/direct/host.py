@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import uuid4
+
+from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreConnectionError, StoreStateError
 from kivyfn.store.protocol.message.event import EventMessage
