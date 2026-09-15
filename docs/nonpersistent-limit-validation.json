@@ -1,0 +1,1705 @@
+{
+  "python": "3.11.16 (main, Sep  1 2026, 14:18:37) [Clang 22.1.3 ]",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "clock": {
+    "implementation": "clock_gettime(CLOCK_MONOTONIC)",
+    "monotonic": true,
+    "adjustable": false,
+    "resolution": 1e-09
+  },
+  "load_limits": {
+    "min_rate_ratio": 0.99,
+    "max_scheduled_p95_ms": 20.0,
+    "stop_on_overload": true
+  },
+  "results": [
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 60.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 180,
+        "requested_slots": 180,
+        "unsent_slots": 0,
+        "succeeded": 180,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 60.0,
+        "confirmed_updates_per_second": 60.0,
+        "last_submission_seconds": 2.9841997920011636,
+        "wall_seconds": 2.9861575979957706,
+        "drain_seconds": 0.0017831139994086698,
+        "max_inflight": 1,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 180,
+          "p50": 1.0715060052461922,
+          "p95": 1.4672289980808273,
+          "p99": 1.939326997671742,
+          "max": 2.2038569950382225
+        },
+        "scheduler_lateness_ms": {
+          "count": 180,
+          "p50": 0.651464331895113,
+          "p95": 1.1040363315260038,
+          "p99": 1.3335420007933863,
+          "max": 1.4394610043382272
+        },
+        "late_over_one_period": 0,
+        "final_seq": 180,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.21260809999999997,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.21285582200000003,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.6448979984270409,
+            "p95": 0.9868420020211488,
+            "p99": 1.145271999121178,
+            "max": 1.4340569978230633
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.331033003225457,
+            "p95": 1.8793663330143318,
+            "p99": 2.300515669048764,
+            "max": 2.521827002055943
+          }
+        },
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.212912959,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.7598340016556904,
+            "p95": 1.1347409963491373,
+            "p99": 1.5743879994261079,
+            "max": 1.613394997548312
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.44847366027534,
+            "p95": 2.0034723274875432,
+            "p99": 2.4408466706518084,
+            "max": 2.62908900185721
+          }
+        },
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.21295171700000004,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.8613409954705276,
+            "p95": 1.2328519951552153,
+            "p99": 1.6750319991842844,
+            "max": 1.7253239930141717
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.5482556700590067,
+            "p95": 2.1404779981821775,
+            "p99": 2.541490670409985,
+            "max": 2.7266390025033616
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 0.212999471,
+        "final_seq": 180,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 2.1404779981821775
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 60.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 180,
+        "requested_slots": 180,
+        "unsent_slots": 0,
+        "succeeded": 180,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 60.0,
+        "confirmed_updates_per_second": 60.0,
+        "last_submission_seconds": 2.984399574001145,
+        "wall_seconds": 2.985453748005966,
+        "drain_seconds": 0.0008976210010587238,
+        "max_inflight": 1,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 180,
+          "p50": 1.075904001481831,
+          "p95": 1.2863520023529418,
+          "p99": 2.0168650007690303,
+          "max": 2.8028369997628033
+        },
+        "scheduler_lateness_ms": {
+          "count": 180,
+          "p50": 0.6471883389167488,
+          "p95": 1.0841193361557089,
+          "p99": 1.1392150045139715,
+          "max": 1.1903186750714667
+        },
+        "late_over_one_period": 0,
+        "final_seq": 180,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.21163276799999997,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.21175314899999997,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.6419810015358962,
+            "p95": 0.7837740049581043,
+            "p99": 1.0236430025543086,
+            "max": 2.3266890057129785
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.280593336559832,
+            "p95": 1.8050520011456683,
+            "p99": 2.1471513391588815,
+            "max": 3.0260563362389803
+          }
+        },
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.21180735699999997,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.759418006055057,
+            "p95": 0.9229839997715317,
+            "p99": 1.6623229967080988,
+            "max": 2.4742930036154576
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.420046333805658,
+            "p95": 1.9162930038874038,
+            "p99": 2.7450766719994135,
+            "max": 3.1736603341414593
+          }
+        },
+        {
+          "pid": 2,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.2118465479999999,
+          "callback_ms": {
+            "count": 180,
+            "p50": 0.8673880001879297,
+            "p95": 1.0454299990669824,
+            "p99": 1.7956419978872873,
+            "max": 2.5796430054469965
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 1.5170706683420576,
+            "p95": 2.018363004026469,
+            "p99": 2.878395673178602,
+            "max": 3.2790103359729983
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 0.211893938,
+        "final_seq": 180,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 2.018363004026469
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 240.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 720,
+        "requested_slots": 720,
+        "unsent_slots": 0,
+        "succeeded": 720,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 240.0,
+        "confirmed_updates_per_second": 240.0,
+        "last_submission_seconds": 2.9969351359977736,
+        "wall_seconds": 2.9980703559995163,
+        "drain_seconds": 0.0009892640009638853,
+        "max_inflight": 3,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 720,
+          "p50": 1.0051810022559948,
+          "p95": 1.3614330018754117,
+          "p99": 1.7261639950447716,
+          "max": 8.989164998638444
+        },
+        "scheduler_lateness_ms": {
+          "count": 720,
+          "p50": 0.6372296629706398,
+          "p95": 1.0893683283939026,
+          "p99": 1.214998002978973,
+          "max": 1.5917889977572486
+        },
+        "late_over_one_period": 0,
+        "final_seq": 720,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.7964266090000001,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.7964824220000001,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.5847029970027506,
+            "p95": 0.8280210022348911,
+            "p99": 1.2418500045896508,
+            "max": 7.282106002094224
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.2385959926177748,
+            "p95": 1.7352203358314,
+            "p99": 2.128805994288996,
+            "max": 8.55411233351333
+          }
+        },
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.796639996,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.6956700017326511,
+            "p95": 0.9584639992681332,
+            "p99": 1.3588590009021573,
+            "max": 7.50278100167634
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.3548589995480143,
+            "p95": 1.8566343351267278,
+            "p99": 2.239226996607613,
+            "max": 8.774787333095446
+          }
+        },
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.7968150310000001,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.7986119962879457,
+            "p95": 1.0848550009541214,
+            "p99": 1.5016030010883696,
+            "max": 7.694102998357266
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.463114000216592,
+            "p95": 1.9626856592367403,
+            "p99": 2.3381109931506217,
+            "max": 8.966109329776373
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 0.796964704,
+        "final_seq": 720,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 1.9626856592367403
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 240.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 720,
+        "requested_slots": 720,
+        "unsent_slots": 0,
+        "succeeded": 720,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 240.0,
+        "confirmed_updates_per_second": 240.0,
+        "last_submission_seconds": 2.9963146959998994,
+        "wall_seconds": 2.997460808001051,
+        "drain_seconds": 0.0009893640017253347,
+        "max_inflight": 2,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 720,
+          "p50": 1.0048160038422793,
+          "p95": 1.3404790006461553,
+          "p99": 1.8462549996911548,
+          "max": 2.7608989985310473
+        },
+        "scheduler_lateness_ms": {
+          "count": 720,
+          "p50": 0.5474046629387885,
+          "p95": 1.0671179989003576,
+          "p99": 1.2626916650333442,
+          "max": 3.660666996438522
+        },
+        "late_over_one_period": 0,
+        "final_seq": 720,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.7973515789999999,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.797403616,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.5867560030310415,
+            "p95": 0.7747160052531399,
+            "p99": 1.0363379988120869,
+            "max": 2.2855520001030527
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.1573099982342683,
+            "p95": 1.7364763334626332,
+            "p99": 1.9690306653501466,
+            "max": 4.328828996222001
+          }
+        },
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.7975638569999999,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.6987760061747395,
+            "p95": 0.8915889993659221,
+            "p99": 1.294695000979118,
+            "max": 2.397110998572316
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.278363328310661,
+            "p95": 1.8690586657612585,
+            "p99": 2.1739229996455833,
+            "max": 4.434623995621223
+          }
+        },
+        {
+          "pid": 2,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.7977080010000002,
+          "callback_ms": {
+            "count": 720,
+            "p50": 0.7993620019988157,
+            "p95": 1.0628160016494803,
+            "p99": 1.4706430010846816,
+            "max": 2.507912999135442
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 1.3892303322791122,
+            "p95": 1.9913079959223978,
+            "p99": 2.277458996104542,
+            "max": 4.53490099607734
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 0.7978545549999998,
+        "final_seq": 720,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 1.9913079959223978
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 1000.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 3000,
+        "requested_slots": 3000,
+        "unsent_slots": 0,
+        "succeeded": 3000,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 1000.0,
+        "confirmed_updates_per_second": 999.6831410985367,
+        "last_submission_seconds": 2.9991458029981004,
+        "wall_seconds": 3.000950877998548,
+        "drain_seconds": 0.0017135099988081492,
+        "max_inflight": 27,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 3000,
+          "p50": 2.0969329998479225,
+          "p95": 8.162746002199128,
+          "p99": 16.528235995792784,
+          "max": 19.562852001399733
+        },
+        "scheduler_lateness_ms": {
+          "count": 3000,
+          "p50": 0.535806997504551,
+          "p95": 2.0645699987653643,
+          "p99": 3.9823079932830296,
+          "max": 7.741540001006797
+        },
+        "late_over_one_period": 611,
+        "final_seq": 3000,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 2.87729975,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.877364781,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.6208760023582727,
+            "p95": 2.674579001904931,
+            "p99": 4.8974060046020895,
+            "max": 5.668079000315629
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.1877759970957413,
+            "p95": 4.351636998762842,
+            "p99": 7.768985000438988,
+            "max": 13.050470995949581
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.8781406439999997,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.7407320008496754,
+            "p95": 3.058173999306746,
+            "p99": 5.256461998214945,
+            "max": 6.635107994952705
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.31073099328205,
+            "p95": 4.839911998715252,
+            "p99": 8.336958999279886,
+            "max": 14.180320999003015
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.8788479419999997,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.859448999108281,
+            "p95": 3.542731996276416,
+            "p99": 5.918679999012966,
+            "max": 7.5075589993502945
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.4681679967907257,
+            "p95": 5.2256179988035,
+            "p99": 9.257771002012305,
+            "max": 15.13944000180345
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 2.8794775419999996,
+        "final_seq": 3000,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 0.9996831410985367,
+        "worst_scheduled_p95_ms": 5.2256179988035
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 1000.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 3000,
+        "requested_slots": 3000,
+        "unsent_slots": 0,
+        "succeeded": 3000,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 1000.0,
+        "confirmed_updates_per_second": 999.9776461652481,
+        "last_submission_seconds": 2.9991175050017773,
+        "wall_seconds": 3.000067063003371,
+        "drain_seconds": 0.0008242809999501333,
+        "max_inflight": 32,
+        "backpressure_waits": 1,
+        "backpressure_seconds": 0.00348282099730568,
+        "ack_ms": {
+          "count": 3000,
+          "p50": 2.0388560005812906,
+          "p95": 9.535162003885489,
+          "p99": 17.538088002766017,
+          "max": 27.22190899658017
+        },
+        "scheduler_lateness_ms": {
+          "count": 3000,
+          "p50": 0.5413580001913942,
+          "p95": 2.3036819984554313,
+          "p99": 5.208010996284429,
+          "max": 12.496702998760156
+        },
+        "late_over_one_period": 565,
+        "final_seq": 3000,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 2.8572992919999995,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.8573641929999996,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.5993259983370081,
+            "p95": 2.631996998388786,
+            "p99": 6.6841020015999675,
+            "max": 12.011831997369882
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.2018189954687841,
+            "p95": 4.879658001300413,
+            "p99": 10.38343099935446,
+            "max": 19.225984993681777
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.85819843,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.7142670001485385,
+            "p95": 3.336852001666557,
+            "p99": 7.717428001342341,
+            "max": 12.42947699938668
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.3329490029718727,
+            "p95": 5.484472996613476,
+            "p99": 11.474235005152877,
+            "max": 20.799790996534284
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3000,
+          "final_seq": 3000,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 2.858864400999999,
+          "callback_ms": {
+            "count": 3000,
+            "p50": 0.8242680050898343,
+            "p95": 3.8432040018960834,
+            "p99": 8.580394998716656,
+            "max": 12.640885994187556
+          },
+          "scheduled_callback_ms": {
+            "count": 3000,
+            "p50": 1.4590540013159625,
+            "p95": 5.961488001048565,
+            "p99": 12.522708995675202,
+            "max": 22.297914998489432
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 2.8595263159999993,
+        "final_seq": 3000,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 0.9999776461652481,
+        "worst_scheduled_p95_ms": 5.961488001048565
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 2000.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 3590,
+        "requested_slots": 6000,
+        "unsent_slots": 2410,
+        "succeeded": 3590,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 1196.6666666666667,
+        "confirmed_updates_per_second": 1196.0791812793948,
+        "last_submission_seconds": 2.9896465229976457,
+        "wall_seconds": 3.0014735279983142,
+        "drain_seconds": 0.0006769850006094202,
+        "max_inflight": 32,
+        "backpressure_waits": 334,
+        "backpressure_seconds": 2.645210633992974,
+        "ack_ms": {
+          "count": 3590,
+          "p50": 20.505976004642434,
+          "p95": 25.323146997834556,
+          "p99": 43.7245700013591,
+          "max": 49.04625000199303
+        },
+        "scheduler_lateness_ms": {
+          "count": 3590,
+          "p50": 590.3665439982433,
+          "p95": 1148.585335999087,
+          "p99": 1191.4298049960053,
+          "max": 1201.1857899997267
+        },
+        "late_over_one_period": 3583,
+        "final_seq": 3590,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 3.0022865299999992,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 3590,
+          "final_seq": 3590,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.0023599830000016,
+          "callback_ms": {
+            "count": 3590,
+            "p50": 5.627263999485876,
+            "p95": 7.446696996339597,
+            "p99": 9.92670000414364,
+            "max": 32.66793299553683
+          },
+          "scheduled_callback_ms": {
+            "count": 3590,
+            "p50": 596.181129993056,
+            "p95": 1153.6640479971538,
+            "p99": 1197.131126995373,
+            "max": 1207.4600600026315
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3590,
+          "final_seq": 3590,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.0029019509999983,
+          "callback_ms": {
+            "count": 3590,
+            "p50": 7.18792800034862,
+            "p95": 9.502657994744368,
+            "p99": 12.794305999705102,
+            "max": 35.18900399649283
+          },
+          "scheduled_callback_ms": {
+            "count": 3590,
+            "p50": 597.3531100025866,
+            "p95": 1154.7891739974148,
+            "p99": 1198.1589169954532,
+            "max": 1209.1334409997216
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3590,
+          "final_seq": 3590,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.0033776640000003,
+          "callback_ms": {
+            "count": 3590,
+            "p50": 8.738192002056167,
+            "p95": 11.421387993323151,
+            "p99": 14.964406000217423,
+            "max": 36.751524996361695
+          },
+          "scheduled_callback_ms": {
+            "count": 3590,
+            "p50": 598.3901939980569,
+            "p95": 1155.7831959944451,
+            "p99": 1199.1702819941565,
+            "max": 1210.7330200014985
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 3.003876449,
+        "final_seq": 3590,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "OVERLOADED",
+        "reasons": [
+          "Achieved 59.80% of requested rate; requires 99.00%",
+          "Worst observer scheduled p95 1155.78 ms exceeds 20.00 ms"
+        ],
+        "achieved_ratio": 0.5980395906396974,
+        "worst_scheduled_p95_ms": 1155.7831959944451
+      }
+    },
+    {
+      "transport": "direct",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 2000.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "One shared process; do not sum parent/host/observer CPU",
+      "ok": true,
+      "writer": {
+        "submitted": 3367,
+        "requested_slots": 6000,
+        "unsent_slots": 2633,
+        "succeeded": 3367,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 1122.3333333333333,
+        "confirmed_updates_per_second": 1117.5383165220585,
+        "last_submission_seconds": 2.9962155489993165,
+        "wall_seconds": 3.012872086997959,
+        "drain_seconds": 0.00955293500010157,
+        "max_inflight": 32,
+        "backpressure_waits": 416,
+        "backpressure_seconds": 2.629650603943446,
+        "ack_ms": {
+          "count": 3367,
+          "p50": 23.28157400188502,
+          "p95": 36.01720999722602,
+          "p99": 41.818521996901836,
+          "max": 57.256066997069865
+        },
+        "scheduler_lateness_ms": {
+          "count": 3367,
+          "p50": 552.3946000030264,
+          "p95": 1237.9094890056876,
+          "p99": 1305.1041400030954,
+          "max": 1317.7136619997327
+        },
+        "late_over_one_period": 3358,
+        "final_seq": 3367,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 3.022665771,
+      "observer_results": [
+        {
+          "pid": 2,
+          "count": 3367,
+          "final_seq": 3367,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.022946826,
+          "callback_ms": {
+            "count": 3367,
+            "p50": 11.200527995242737,
+            "p95": 16.468447996885516,
+            "p99": 27.454488998046145,
+            "max": 38.55944300448755
+          },
+          "scheduled_callback_ms": {
+            "count": 3367,
+            "p50": 561.2653140051407,
+            "p95": 1248.6975290012197,
+            "p99": 1318.1199300015578,
+            "max": 1330.0460270038457
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3367,
+          "final_seq": 3367,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.023939929999999,
+          "callback_ms": {
+            "count": 3367,
+            "p50": 11.934039001062047,
+            "p95": 17.970676002732944,
+            "p99": 28.727461998641957,
+            "max": 39.50006500235759
+          },
+          "scheduled_callback_ms": {
+            "count": 3367,
+            "p50": 562.5466230048914,
+            "p95": 1249.6853620032198,
+            "p99": 1318.9773050035,
+            "max": 1331.2549330003094
+          }
+        },
+        {
+          "pid": 2,
+          "count": 3367,
+          "final_seq": 3367,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 3.024813698000001,
+          "callback_ms": {
+            "count": 3367,
+            "p50": 12.715826000203378,
+            "p95": 19.22050100256456,
+            "p99": 29.594719999295194,
+            "max": 40.48652400524588
+          },
+          "scheduled_callback_ms": {
+            "count": 3367,
+            "p50": 563.4944190023816,
+            "p95": 1254.0218889989774,
+            "p99": 1319.7539360044175,
+            "max": 1332.4158500035992
+          }
+        }
+      ],
+      "host": {
+        "pid": 2,
+        "cpu_seconds": 3.0255937,
+        "final_seq": 3367,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "OVERLOADED",
+        "reasons": [
+          "Achieved 55.88% of requested rate; requires 99.00%",
+          "Worst observer scheduled p95 1254.02 ms exceeds 20.00 ms"
+        ],
+        "achieved_ratio": 0.5587691582610292,
+        "worst_scheduled_p95_ms": 1254.0218889989774
+      }
+    },
+    {
+      "transport": "socketio",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 60.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "Separate writer, Host and observer processes",
+      "ok": true,
+      "writer": {
+        "submitted": 180,
+        "requested_slots": 180,
+        "unsent_slots": 0,
+        "succeeded": 180,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 60.0,
+        "confirmed_updates_per_second": 60.0,
+        "last_submission_seconds": 2.984396635001758,
+        "wall_seconds": 2.9862248150020605,
+        "drain_seconds": 0.0016672609999659471,
+        "max_inflight": 1,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 180,
+          "p50": 1.8705239999690093,
+          "p95": 2.5043839996214956,
+          "p99": 5.282811995130032,
+          "max": 5.619131996354554
+        },
+        "scheduler_lateness_ms": {
+          "count": 180,
+          "p50": 0.6509526647278108,
+          "p95": 1.1372580047463998,
+          "p99": 1.5884726744843647,
+          "max": 1.9009093375643715
+        },
+        "late_over_one_period": 0,
+        "final_seq": 180,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.1619193920000015,
+      "observer_results": [
+        {
+          "pid": 12,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.08927834899999998,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.6756269978941418,
+            "p95": 2.3368429974652827,
+            "p99": 4.114030001801439,
+            "max": 5.413086997577921
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.393410337390378,
+            "p95": 3.3601346658542752,
+            "p99": 4.5799573344993405,
+            "max": 5.918207665672526
+          }
+        },
+        {
+          "pid": 13,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.06014245100000004,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.704633999906946,
+            "p95": 2.324738001334481,
+            "p99": 4.383824998512864,
+            "max": 5.559765995712951
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.425577004032675,
+            "p95": 3.349320664710831,
+            "p99": 4.9576353339944035,
+            "max": 6.064886663807556
+          }
+        },
+        {
+          "pid": 14,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.06352536800000003,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.6849669991643168,
+            "p95": 2.1765030032838695,
+            "p99": 4.168865998508409,
+            "max": 5.510716000571847
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.3801446659490466,
+            "p95": 3.333557666337583,
+            "p99": 4.725956336187664,
+            "max": 6.015836668666452
+          }
+        }
+      ],
+      "host": {
+        "pid": 8,
+        "cpu_seconds": 0.23763073499999998,
+        "final_seq": 180,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 3.3601346658542752
+      }
+    },
+    {
+      "transport": "socketio",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 60.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "Separate writer, Host and observer processes",
+      "ok": true,
+      "writer": {
+        "submitted": 180,
+        "requested_slots": 180,
+        "unsent_slots": 0,
+        "succeeded": 180,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 60.0,
+        "confirmed_updates_per_second": 60.0,
+        "last_submission_seconds": 2.983939976998954,
+        "wall_seconds": 2.9857008239996503,
+        "drain_seconds": 0.0015848900002310984,
+        "max_inflight": 1,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 180,
+          "p50": 1.8097479987773113,
+          "p95": 2.4024739977903664,
+          "p99": 3.823892002401408,
+          "max": 4.149088999838568
+        },
+        "scheduler_lateness_ms": {
+          "count": 180,
+          "p50": 0.6818526671850123,
+          "p95": 1.1420916707720608,
+          "p99": 1.6818110016174614,
+          "max": 2.0262103353161365
+        },
+        "late_over_one_period": 0,
+        "final_seq": 180,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.1577964749999996,
+      "observer_results": [
+        {
+          "pid": 31,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.07095554999999998,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.6146720008691773,
+            "p95": 2.0188859998597763,
+            "p99": 2.505472002667375,
+            "max": 3.6050050039193593
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.278845335240476,
+            "p95": 3.015342001162935,
+            "p99": 3.7772473369841464,
+            "max": 4.333771001256537
+          }
+        },
+        {
+          "pid": 32,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.068367226,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.689190001343377,
+            "p95": 2.115714996762108,
+            "p99": 2.6067279977723956,
+            "max": 3.665354997792747
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.3758396637276746,
+            "p95": 3.1691209951532073,
+            "p99": 3.8403143335017376,
+            "max": 4.394120995129924
+          }
+        },
+        {
+          "pid": 33,
+          "count": 180,
+          "final_seq": 180,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.06362838199999998,
+          "callback_ms": {
+            "count": 180,
+            "p50": 1.6180370002985,
+            "p95": 2.0735619982588105,
+            "p99": 2.5981049984693527,
+            "max": 3.5918569992645644
+          },
+          "scheduled_callback_ms": {
+            "count": 180,
+            "p50": 2.3089153328328393,
+            "p95": 3.0833810014883056,
+            "p99": 3.7594423338305205,
+            "max": 4.320622996601742
+          }
+        }
+      ],
+      "host": {
+        "pid": 28,
+        "cpu_seconds": 0.21183913199999999,
+        "final_seq": 180,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 3.1691209951532073
+      }
+    },
+    {
+      "transport": "socketio",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 240.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "Separate writer, Host and observer processes",
+      "ok": true,
+      "writer": {
+        "submitted": 720,
+        "requested_slots": 720,
+        "unsent_slots": 0,
+        "succeeded": 720,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 240.0,
+        "confirmed_updates_per_second": 240.0,
+        "last_submission_seconds": 2.996001407998847,
+        "wall_seconds": 2.99778199299908,
+        "drain_seconds": 0.0016404119960498065,
+        "max_inflight": 32,
+        "backpressure_waits": 11,
+        "backpressure_seconds": 0.042015835977508686,
+        "ack_ms": {
+          "count": 720,
+          "p50": 1.6898190006031655,
+          "p95": 51.550649004639126,
+          "p99": 142.8178679998382,
+          "max": 152.8140890004579
+        },
+        "scheduler_lateness_ms": {
+          "count": 720,
+          "p50": 0.6036233389750123,
+          "p95": 1.0830230021383613,
+          "p99": 9.845906672126148,
+          "max": 20.611678999557626
+        },
+        "late_over_one_period": 10,
+        "final_seq": 720,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.5750695639999996,
+      "observer_results": [
+        {
+          "pid": 48,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.267938578,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.5090320011950098,
+            "p95": 51.169470003515016,
+            "p99": 142.86840800195932,
+            "max": 150.8635710051749
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.2050916668376885,
+            "p95": 67.66173867072212,
+            "p99": 143.14811100484803,
+            "max": 151.7784813331673
+          }
+        },
+        {
+          "pid": 49,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.26259938699999996,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.5456010005436838,
+            "p95": 51.214405000791885,
+            "p99": 142.8614340038621,
+            "max": 150.8800119991065
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.23879733675858,
+            "p95": 67.70667366799898,
+            "p99": 143.1411370067508,
+            "max": 151.76438333583064
+          }
+        },
+        {
+          "pid": 50,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.23427185899999997,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.470438000978902,
+            "p95": 51.08277300314512,
+            "p99": 142.4029830013751,
+            "max": 150.6694619965856
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.109971668687649,
+            "p95": 67.57504167035222,
+            "p99": 142.68268600426381,
+            "max": 151.6659503322444
+          }
+        }
+      ],
+      "host": {
+        "pid": 45,
+        "cpu_seconds": 0.817398031,
+        "final_seq": 720,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 1,
+      "load": {
+        "status": "OVERLOADED",
+        "reasons": [
+          "Worst observer scheduled p95 67.71 ms exceeds 20.00 ms"
+        ],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 67.70667366799898
+      }
+    },
+    {
+      "transport": "socketio",
+      "parent_pid": 2,
+      "observers": 3,
+      "rate_hz": 240.0,
+      "duration_seconds": 3.0,
+      "inflight_limit": 32,
+      "cpu_scope": "Separate writer, Host and observer processes",
+      "ok": true,
+      "writer": {
+        "submitted": 720,
+        "requested_slots": 720,
+        "unsent_slots": 0,
+        "succeeded": 720,
+        "failed": 0,
+        "timed_out": 0,
+        "errors": [],
+        "send_updates_per_second": 240.0,
+        "confirmed_updates_per_second": 240.0,
+        "last_submission_seconds": 2.996282230000361,
+        "wall_seconds": 2.998349251000036,
+        "drain_seconds": 0.0019277449973742478,
+        "max_inflight": 2,
+        "backpressure_waits": 0,
+        "backpressure_seconds": 0.0,
+        "ack_ms": {
+          "count": 720,
+          "p50": 1.6321220027748495,
+          "p95": 2.368883004237432,
+          "p99": 3.7015959969721735,
+          "max": 6.97904999833554
+        },
+        "scheduler_lateness_ms": {
+          "count": 720,
+          "p50": 0.6165056693134829,
+          "p95": 1.0701053397497162,
+          "p99": 1.1343570076860487,
+          "max": 1.5854540033615194
+        },
+        "late_over_one_period": 0,
+        "final_seq": 720,
+        "stopped_after_failure": false
+      },
+      "parent_cpu_seconds": 0.567893810000001,
+      "observer_results": [
+        {
+          "pid": 64,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.174600005,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.308808001340367,
+            "p95": 1.9057859972235747,
+            "p99": 3.070639999350533,
+            "max": 6.550040998263285
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.0042056712554768,
+            "p95": 2.74538899975596,
+            "p99": 3.6093400049139746,
+            "max": 7.851195005059708
+          }
+        },
+        {
+          "pid": 65,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.26412798800000004,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.4745040025445633,
+            "p95": 2.0794640004169196,
+            "p99": 3.088712001044769,
+            "max": 6.50527000107104
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.160253672627732,
+            "p95": 2.8692173364106566,
+            "p99": 3.7806690015713684,
+            "max": 7.882405006967019
+          }
+        },
+        {
+          "pid": 66,
+          "count": 720,
+          "final_seq": 720,
+          "gaps": 0,
+          "out_of_order": 0,
+          "bad_payloads": 0,
+          "timed_out": false,
+          "online": true,
+          "synced": true,
+          "cpu_seconds": 0.258489854,
+          "callback_ms": {
+            "count": 720,
+            "p50": 1.5056170013849624,
+            "p95": 2.1209059996181168,
+            "p99": 3.07288600015454,
+            "max": 6.5246149970334955
+          },
+          "scheduled_callback_ms": {
+            "count": 720,
+            "p50": 2.195215674873907,
+            "p95": 2.912007003033068,
+            "p99": 3.8076580021879636,
+            "max": 7.901750002929475
+          }
+        }
+      ],
+      "host": {
+        "pid": 61,
+        "cpu_seconds": 0.806715181,
+        "final_seq": 720,
+        "storage_unchanged": true,
+        "boot_files": 2,
+        "history_enabled": false
+      },
+      "repetition": 2,
+      "load": {
+        "status": "PASS",
+        "reasons": [],
+        "achieved_ratio": 1.0,
+        "worst_scheduled_p95_ms": 2.912007003033068
+      }
+    }
+  ]
+}
