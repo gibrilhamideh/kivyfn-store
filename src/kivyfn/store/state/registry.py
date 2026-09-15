@@ -16,7 +16,6 @@ from kivyfn.store.state.reactive.factory import StateFactory
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State, StateManagerProtocol
 
-
 SchemaT = TypeVar("SchemaT", bound=Schema)
 SingleSchemaT = TypeVar("SingleSchemaT", bound=SingleSchema)
 ManySchemaT = TypeVar("ManySchemaT", bound=ManySchema)
@@ -134,6 +133,12 @@ class StateRegistry:
 
         return state
 
+    def find_row(self, schema_name: str, row_id: str) -> State[Any] | None:
+        schema_type = self._schema_types.get(schema_name)
+        if schema_type is None:
+            return None
+        return self._rows.get((schema_type, row_id))
+
     def create_query_row(
         self, schema_type: type[SchemaT], row_id: str, shape: QueryShape
     ) -> State[SchemaT]:
@@ -226,15 +231,13 @@ class StateRegistry:
 
 
 def _validate_row_id(row_id: str) -> None:
-    if not row_id:
+    if not isinstance(row_id, str) or not row_id:
         raise ValueError("State row ID must be a non-empty string")
 
 
 def _find_schema_type(name: str) -> type[Schema]:
     for schema_type in _schema_subclasses(Schema):
-        schema = schema_type()
-
-        if schema.name == name:
+        if schema_type.__name__ == name:
             return schema_type
 
     raise StoreStateError(f"Schema {name!r} is not loaded in this process")

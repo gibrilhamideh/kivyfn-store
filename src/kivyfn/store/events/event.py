@@ -6,7 +6,6 @@ from typing import Any, ClassVar, TypeAlias
 
 from kivyfn.store.operations import OpCode, OperationSource
 
-
 Row: TypeAlias = dict[str, Any]
 
 

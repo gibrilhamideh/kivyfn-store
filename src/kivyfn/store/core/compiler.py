@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, assert_never
 
+from kivyfn.store.core.delta import Delta
 from kivyfn.store.core.instruction import (
     InsertInstruction,
     Instruction,
@@ -38,31 +39,77 @@ if TYPE_CHECKING:
     from kivyfn.store.node import Node
 
 
+@dataclass(frozen=True, slots=True)
+class _CascadeBoundary:
+    """Expand a deletion after its trigger commands have been compiled."""
+
+    node: Node
+    row_id: str
+
+
 class Compiler:
+    MAX_OPERATIONS = 10_000
+
     def __init__(
         self, engine: Engine, instructions: tuple[Instruction, ...]
     ) -> None:
         self.engine = engine
-        self.pending = deque(instructions)
+        self.pending: deque[Instruction | _CascadeBoundary] = deque(
+            instructions
+        )
         self.operations: list[Operation] = []
+        self.delta = Delta()
+        self._policy_deleted: set[tuple[Node, str]] = set()
 
     def compile(self) -> list[Operation]:
         while self.pending:
+            if len(self.operations) >= self.MAX_OPERATIONS:
+                raise InvalidOperationError(
+                    f"Transaction exceeds the {self.MAX_OPERATIONS}-operation "
+                    "expansion limit"
+                )
             instruction = self.pending.popleft()
+            if isinstance(instruction, _CascadeBoundary):
+                policies = self._collect_policies(
+                    instruction.node, instruction.row_id
+                )
+                self.pending.extendleft(reversed(policies))
+                continue
             node: Node | None = None
 
             try:
                 node = self.engine.get_node_by_address(instruction.address)
+
+                if (
+                    isinstance(instruction, RemoveInstruction)
+                    and not self.delta.exists(node, instruction.id)
+                    and (
+                        instruction.source is OperationSource.POLICY
+                        or (node, instruction.id) in self._policy_deleted
+                    )
+                ):
+                    continue
 
                 operation = self._compile_action(node, instruction)
 
                 if self._is_noop(operation):
                     continue
 
+                self.delta.add(operation)
                 self.operations.append(operation)
 
-                self.pending.extend(self._collect_triggers(operation))
-                self.pending.extend(self._collect_policies(operation))
+                if isinstance(operation, RemoveOperation):
+                    if instruction.source is OperationSource.POLICY:
+                        self._policy_deleted.add((node, operation.id))
+                    self.pending.appendleft(
+                        _CascadeBoundary(node, operation.id)
+                    )
+                elif isinstance(operation, InsertOperation):
+                    self._policy_deleted.discard((node, operation.id))
+
+                self.pending.extendleft(
+                    reversed(self._collect_triggers(operation))
+                )
 
             except StoreOperationError as exc:
                 self._attach_context(exc, instruction=instruction, node=node)
@@ -132,6 +179,8 @@ class Compiler:
                 detail=self._instruction_detail(instruction),
             )
 
+        for key in instruction.value.keys() - schema.field_names():
+            schema.get_field(key)
         built = node.build_row(instruction.value)
 
         resolved = replace(instruction, value=built)
@@ -156,56 +205,16 @@ class Compiler:
     # -------------------------------------------------
 
     def _is_noop(self, operation: Operation) -> bool:
+        data = self.delta.data(operation.node)
         if isinstance(operation, SetOperation):
-            current = operation.node.value.get(operation.key)
-
-            for previous in reversed(self.operations):
-                if (
-                    isinstance(previous, SetOperation)
-                    and previous.node is operation.node
-                    and previous.key == operation.key
-                ):
-                    current = previous.new_value
-                    break
-
-            return current == operation.new_value
-
-        if not isinstance(operation, SetRowOperation):
-            return False
-
-        missing = object()
-        current: object = missing
-
-        for previous in reversed(self.operations):
-            if previous.node is not operation.node:
-                continue
-
-            if isinstance(previous, RemoveOperation):
-                if previous.id == operation.id:
-                    return False
-
-            if isinstance(previous, InsertOperation):
-                if previous.id == operation.id:
-                    current = previous.value.get(operation.key, missing)
-                    break
-
-            if isinstance(previous, SetRowOperation):
-                if (
-                    previous.id == operation.id
-                    and previous.key == operation.key
-                ):
-                    current = previous.new_value
-                    break
-
-        if current is missing:
-            row = operation.node.value.get(operation.id)
-
-            if not isinstance(row, dict):
-                return False
-
-            current = row.get(operation.key, missing)
-
-        return current is not missing and current == operation.new_value
+            return data.get(operation.key) == operation.new_value
+        if isinstance(operation, SetRowOperation):
+            row = data.get(operation.id)
+            return (
+                isinstance(row, dict)
+                and row.get(operation.key) == operation.new_value
+            )
+        return False
 
     # -------------------------------------------------
     # Triggers
@@ -243,37 +252,31 @@ class Compiler:
     # Foreign-key policies
     # -------------------------------------------------
 
-    def _collect_policies(self, operation: Operation) -> list[Instruction]:
-        if not isinstance(operation, RemoveOperation):
-            return []
+    def _collect_policies(
+        self, target: Node, removed_id: str
+    ) -> list[Instruction]:
+        """Expand CASCADE against the logical state at the deletion boundary.
 
-        target_schema = operation.node.schema.name
-        removed_id = operation.id
-
-        derived: list[Instruction] = []
-
-        for foreign_key in self.engine.metadata.referenced_by(target_schema):
+        Triggers run before this boundary and caller instructions resume
+        after it. Reparented children survive; old dependents are deleted
+        before a caller reinserts the same parent identifier. Multiple paths
+        and cycles schedule each existing row at most once per wave.
+        """
+        derived: dict[tuple[Node, str], Instruction] = {}
+        for foreign_key in self.engine.metadata.referenced_by(
+            target.schema.name
+        ):
             if foreign_key.on_delete is not ForeignKeyPolicy.CASCADE:
                 continue
-
-            referencing_node = self.engine.get_node_by_schema(
-                foreign_key.schema
-            )
-
-            row_ids = referencing_node.lookup_all(
-                foreign_key.field, removed_id
-            )
-
-            derived.extend(
-                RemoveInstruction(
-                    address=referencing_node.address,
-                    id=row_id,
-                    source=OperationSource.POLICY,
-                )
-                for row_id in row_ids
-            )
-
-        return derived
+            node = self.engine.get_node_by_schema(foreign_key.schema)
+            for row_id, row in self.delta.data(node).items():
+                if row.get(foreign_key.field) == removed_id:
+                    derived[(node, row_id)] = RemoveInstruction(
+                        address=node.address,
+                        id=row_id,
+                        source=OperationSource.POLICY,
+                    )
+        return list(derived.values())
 
     # -------------------------------------------------
     # Error context

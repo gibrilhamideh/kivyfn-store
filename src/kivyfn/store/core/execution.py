@@ -1,6 +1,7 @@
 # src/kivyfn/store/core/execution.py
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,7 @@ from kivyfn.store.error import (
     StoreOperationError,
 )
 from kivyfn.store.events.event import StoreCommit
+from kivyfn.store.node.node import NodeState
 
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
@@ -40,10 +42,13 @@ class Execution:
         instructions: tuple[Instruction, ...],
         *,
         transaction_id: str | None = None,
+        validate: Callable[[Delta], None] | None = None,
     ) -> None:
         self.engine = engine
         self.instructions = instructions
         self.transaction_id = transaction_id
+        self.validate = validate
+        self.prepared: dict[Node, NodeState] = {}
 
     def execute(self) -> ExecutionResult:
         compiler = Compiler(self.engine, self.instructions)
@@ -60,19 +65,15 @@ class Execution:
                 error=exc,
             )
 
-        try:
-            delta = Delta(compiled)
-        except StoreOperationError as exc:
-            self._attach_stage(exc, StoreErrorStage.DELTA)
-            return ExecutionResult(
-                success=False,
-                stage=StoreErrorStage.DELTA,
-                compiled=tuple(compiled),
-                error=exc,
-            )
+        delta = compiler.delta
 
         try:
             ConstraintGuard(self.engine).validate(delta)
+            if self.validate is not None:
+                self.validate(delta)
+            self.prepared = {
+                node: node.prepare(data) for node, data in delta.values.items()
+            }
         except StoreOperationError as exc:
             self._attach_stage(exc, StoreErrorStage.VALIDATE)
 
@@ -83,7 +84,7 @@ class Execution:
                 error=exc,
             )
 
-        events = tuple(operation.execute() for operation in compiled)
+        events = tuple(delta.events)
 
         return ExecutionResult(
             success=True,

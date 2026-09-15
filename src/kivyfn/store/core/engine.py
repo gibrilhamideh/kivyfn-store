@@ -1,7 +1,7 @@
 # src/kivyfn/store/core/engine.py
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
@@ -14,9 +14,9 @@ from kivyfn.store.error import StoreStateError
 from kivyfn.store.query.plan import QueryPlan
 from kivyfn.store.storage import FileStorage
 
-
 if TYPE_CHECKING:
     from kivyfn.store.builder import StoreConfig
+    from kivyfn.store.core.delta import Delta
     from kivyfn.store.node import Node
     from kivyfn.store.query import Query, QueryResult
 
@@ -136,6 +136,7 @@ class Engine:
         instructions: tuple[Instruction, ...],
         *,
         transaction_id: str | None = None,
+        validate: Callable[[Delta], None] | None = None,
     ) -> ExecutionResult:
         """
         Compile, validate, and execute one atomic batch of instructions.
@@ -147,14 +148,34 @@ class Engine:
             self._require_booted()
 
             execution = Execution(
-                self, instructions, transaction_id=transaction_id
+                self,
+                instructions,
+                transaction_id=transaction_id,
+                validate=validate,
             )
             result = execution.execute()
 
             if not result.success:
                 return result
 
-            self.to_disk(result.touched_nodes)
+            if any(
+                self.metadata.is_persistent(node)
+                for node in execution.prepared
+            ):
+                self._storage.write_store(
+                    {
+                        node.schema.name: (
+                            execution.prepared[node].value
+                            if node in execution.prepared
+                            else node.value
+                        )
+                        for node in self.metadata.persistent_nodes
+                    },
+                    store_version=self.config.store_version,
+                )
+
+            for node, state in execution.prepared.items():
+                node.install(state)
 
             return result
 
@@ -163,15 +184,14 @@ class Engine:
     # -------------------------------------------------
 
     def to_disk(self, nodes: Iterable[Node]) -> None:
-        """Write each supplied persistent node once, immediately."""
+        """Persist a complete generation when persistent data changed."""
         with self._lock:
-            for node in dict.fromkeys(nodes):
-                if not self.metadata.is_persistent(node):
-                    continue
-
-                self._write_node(node, node.value)
-
-    def _write_node(self, node: Node, data: dict[str, Any]) -> None:
-        self._storage.write(
-            node.schema.name, data, store_version=self.config.store_version
-        )
+            if not any(self.metadata.is_persistent(node) for node in nodes):
+                return
+            self._storage.write_store(
+                {
+                    node.schema.name: node.value
+                    for node in self.metadata.persistent_nodes
+                },
+                store_version=self.config.store_version,
+            )

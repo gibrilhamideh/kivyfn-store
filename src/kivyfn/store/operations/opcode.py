@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class OpCode(str, Enum):
     SET = "set"
     SETROW = "setrow"
@@ -8,6 +9,3 @@ class OpCode(str, Enum):
 
     def __str__(self) -> str:
         return self.value
-
-
-

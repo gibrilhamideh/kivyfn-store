@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Hashable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from typing import cast
 
 
 class ComparisonOperator(str, Enum):
@@ -250,7 +251,9 @@ def _require_expression(value: object) -> Expression:
 
 
 def _require_hashable(value: object) -> Hashable:
-    if not isinstance(value, Hashable):
-        raise TypeError("Query comparison values must be hashable")
+    try:
+        hash(value)
+    except TypeError as error:
+        raise TypeError("Query comparison values must be hashable") from error
 
-    return value
+    return cast(Hashable, value)

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Mapping
+from dataclasses import dataclass
+from logging import getLogger as get_logger
 from typing import Any
 
-from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
 from kivyfn.store.error import (
     ConstraintError,
@@ -23,8 +24,21 @@ logger = get_logger(__name__)
 Row = dict[str, Any]
 
 
+@dataclass(slots=True)
+class NodeState:
+    """A validated, privately owned value and its final indexes."""
+
+    value: dict[str, Any]
+    indexes: IndexManager | None
+
+
 class Node:
-    """Canonical in-memory data for one Store schema."""
+    """Internal canonical data for one Store schema.
+
+    Store callers should use snapshots and transactions. Direct Node mutation
+    bypasses field validation, relational constraints, persistence, revisions
+    and commit delivery; it is reserved for Engine and boot implementation.
+    """
 
     def __init__(self, schema: Schema, address: Address) -> None:
         if not isinstance(schema, (SingleSchema, ManySchema)):
@@ -207,7 +221,7 @@ class Node:
 
                 value = default
 
-            row[name] = value
+            row[name] = copy.deepcopy(value)
 
         return row
 
@@ -227,6 +241,24 @@ class Node:
 
         self.children[name] = node
 
+    def prepare(self, data: dict[str, Any]) -> NodeState:
+        """Build final indexes before publishing privately owned data.
+
+        The caller transfers ownership of data. This is an Engine operation;
+        field and row structure validation has already happened in Compiler.
+        """
+        indexes = None
+        if isinstance(self.schema, ManySchema):
+            indexes = IndexManager(self.schema)
+            for row_id, row in data.items():
+                indexes.add(row_id, row)
+        return NodeState(data, indexes)
+
+    def install(self, state: NodeState) -> None:
+        """Publish prepared state without validation or application code."""
+        self.value = state.value
+        self._indexes = state.indexes
+
     # -------------------------------------------------
     # Canonical mutation API
     # -------------------------------------------------
@@ -245,7 +277,7 @@ class Node:
                 ),
             )
 
-        stored = dict(row)
+        stored = copy.deepcopy(dict(row))
 
         indexes.add(row_id, stored)
 
@@ -271,13 +303,13 @@ class Node:
         old_value = old_row.get(key)
 
         new_row = dict(old_row)
-        new_row[key] = value
+        new_row[key] = copy.deepcopy(value)
 
         indexes.update(row_id, old_row, new_row)
 
         self.value[row_id] = new_row
 
-        return old_value
+        return copy.deepcopy(old_value)
 
     def remove(self, row_id: str) -> Row:
         indexes = self._many_indexes(operation="remove", row_id=row_id)
@@ -301,15 +333,15 @@ class Node:
 
         del self.value[row_id]
 
-        return old_row
+        return copy.deepcopy(old_row)
 
     def set(self, key: str, value: Any) -> Any:
         self._require_single(operation="set")
 
         old_value = self.value.get(key)
-        self.value[key] = value
+        self.value[key] = copy.deepcopy(value)
 
-        return old_value
+        return copy.deepcopy(old_value)
 
     # -------------------------------------------------
     # Read / lookup API

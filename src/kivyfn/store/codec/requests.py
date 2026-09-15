@@ -107,9 +107,6 @@ def _decode_item(payload: object) -> RequestItem:
         case "transaction":
             actions = _list(data.get("actions"), "transaction actions")
 
-            if not actions:
-                raise ValueError("Store transaction cannot be empty")
-
             return TransactionRequest(
                 transaction_id=_string(data, "transaction_id"),
                 actions=tuple(_decode_action(action) for action in actions),
@@ -233,7 +230,7 @@ def _decode_action(payload: object) -> RequestAction:
             return InsertRequestAction(
                 schema=schema,
                 row_id=_string(data, "row_id"),
-                values=_values(data, allow_empty=True),
+                values=_values(data),
             )
 
         case "remove":
@@ -350,13 +347,9 @@ def _revision(value: object) -> int:
     return value
 
 
-def _values(
-    payload: dict[str, Any], *, allow_empty: bool = False
-) -> tuple[tuple[str, Any], ...]:
+def _values(payload: dict[str, Any]) -> tuple[tuple[str, Any], ...]:
+    # The Store owns action semantics; the codec validates their wire shape.
     values = _object(payload.get("values"), "action values")
-
-    if not values and not allow_empty:
-        raise ValueError("Store action values cannot be empty")
 
     if any(not isinstance(key, str) or not key for key in values):
         raise ValueError("Store field names must be non-empty strings")

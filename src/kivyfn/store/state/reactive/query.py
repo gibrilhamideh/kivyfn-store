@@ -2,20 +2,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from logging import getLogger as get_logger
 from types import MappingProxyType
 from typing import Generic, TypeVar
 
 from kivy.event import EventDispatcher
 from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
 
-from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.query import Query
 from kivyfn.store.query.shape import QueryShape
 from kivyfn.store.schema import ManySchema
 from kivyfn.store.state.reactive.collection import MembershipDelta
+from kivyfn.store.state.reactive.dispatch import set_property
 from kivyfn.store.state.reactive.state import State
-
 
 logger = get_logger(__name__)
 
@@ -98,6 +98,14 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
     def items(self) -> tuple[tuple[str, State[SchemaT]], ...]:
         return tuple(self._rows.items())
 
+    def canonical_row(self, row_id: str) -> State[SchemaT] | None:
+        return self._rows.get(row_id)
+
+    def sync_rows(self, synced: bool) -> None:
+        for state in self._rows.values():
+            state.set_owner_synced(self, synced)
+        set_property(self, "synced", synced)
+
     def enter(self, row_id: str) -> MembershipDelta[SchemaT]:
         self._validate_row_id(row_id)
 
@@ -108,6 +116,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
 
         state = self._create_row(row_id)
         self._rows[row_id] = state
+        state.set_owner_synced(self, bool(self.synced))
 
         return MembershipDelta(entered=((row_id, state),))
 
@@ -117,6 +126,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
         if state is None:
             return MembershipDelta()
 
+        state.set_owner_synced(self, False)
         return MembershipDelta(left=((row_id, state),))
 
     def set_membership(
@@ -142,6 +152,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
                 continue
 
             state = self._rows.pop(row_id)
+            state.set_owner_synced(self, False)
             left.append((row_id, state))
 
         for row_id in ordered_ids:
@@ -150,6 +161,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
 
             state = self._create_row(row_id)
             self._rows[row_id] = state
+            state.set_owner_synced(self, bool(self.synced))
 
             entered.append((row_id, state))
 
@@ -159,7 +171,7 @@ class QueryCollectionState(EventDispatcher, Generic[SchemaT]):
         if not delta.changed:
             return
 
-        self._rows_version += 1
+        set_property(self, "_rows_version", self._rows_version + 1)
 
         for row_id, state in delta.left:
             self._dispatch_membership("on_leave", row_id, state)

@@ -6,7 +6,6 @@ import pytest
 from tests.conftest import StateStack
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -21,7 +20,7 @@ async def test_duplicate_collection_insert_is_rejected(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -31,22 +30,18 @@ async def test_duplicate_collection_insert_is_rejected(
 
 
 @pytest.mark.asyncio
-async def test_remove_missing_row_is_rejected(
-    state_stack: StateStack,
-) -> None:
+async def test_remove_missing_row_is_rejected(state_stack: StateStack) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     with pytest.raises(KeyError):
         users.remove("missing")
 
 
 @pytest.mark.asyncio
-async def test_empty_strict_set_is_rejected(
-    state_stack: StateStack,
-) -> None:
+async def test_empty_strict_set_is_rejected(state_stack: StateStack) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -59,7 +54,7 @@ async def test_empty_strict_set_is_rejected(
 async def test_empty_transaction_completes_successfully_without_revision(
     state_stack: StateStack,
 ) -> None:
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     revisions = dict(state_stack.store.schema_revisions)
     transaction = state_stack.state.transaction()

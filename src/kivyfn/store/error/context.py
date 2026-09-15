@@ -3,18 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from kivyfn.store.error.detail import (
-    ProtocolValue,
-    StoreAddress,
-)
+from kivyfn.store.error.detail import ProtocolValue, StoreAddress
 from kivyfn.store.error.stage import StoreErrorStage
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StoreErrorContext:
     """
     Transport-safe diagnostic context describing where a store failure

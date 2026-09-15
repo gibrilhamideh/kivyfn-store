@@ -1,14 +1,21 @@
 # src/kivyfn/store/schema/schema.py
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from typing import Any, ClassVar
 
-from kivyfn.store.error import FieldError, FieldErrorDetail, FieldNotFoundError
+from kivyfn.store.error import (
+    FieldError,
+    FieldErrorDetail,
+    FieldNotFoundError,
+    InstructionErrorDetail,
+    InvalidOperationError,
+)
+from kivyfn.store.operations import OpCode
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 from kivyfn.store.schema.signal import Signal
 from kivyfn.store.schema.trigger import Trigger
-
 
 IndexKey = tuple[str, ...]
 
@@ -20,6 +27,23 @@ class Schema:
     uniques: ClassVar[list[IndexKey]] = []
 
     def __init__(self) -> None:
+        declarations = _declarations(type(self))
+        for name, declaration in declarations.items():
+            if isinstance(declaration, (BaseField, Signal)) and (
+                name in Schema.__dict__
+                or name
+                in {
+                    "name",
+                    "_fields",
+                    "_signals",
+                    "_triggers",
+                    "_indexes",
+                    "_uniques",
+                }
+            ):
+                raise ValueError(
+                    f"Schema declaration name {name!r} is reserved"
+                )
         self.name = self.__class__.__name__
 
         self._fields: dict[str, BaseField[Any]] = {}
@@ -40,19 +64,17 @@ class Schema:
     # -------------------------------------------------
 
     def _build_fields(self) -> None:
-        for name, attr in self.__class__.__dict__.items():
+        for name, attr in _declarations(type(self)).items():
             if isinstance(attr, BaseField):
-                attr.name = name
                 self._fields[name] = attr
 
     def _build_signals(self) -> None:
-        for name, attr in self.__class__.__dict__.items():
+        for name, attr in _declarations(type(self)).items():
             if isinstance(attr, Signal):
-                attr.name = name
                 self._signals[name] = attr
 
     def _build_triggers(self) -> None:
-        for name, attr in self.__class__.__dict__.items():
+        for name, attr in _declarations(type(self)).items():
             trigger_meta = getattr(attr, "_trigger_meta", None)
 
             if not trigger_meta:
@@ -61,6 +83,16 @@ class Schema:
             bound_method = getattr(self, name)
 
             for trigger in trigger_meta:
+                if trigger.field is not None:
+                    if trigger.opcode not in {OpCode.SET, OpCode.SETROW}:
+                        raise ValueError(
+                            "Only field writes accept field triggers"
+                        )
+                    if trigger.field not in self._fields:
+                        raise ValueError(
+                            f"Unknown trigger field {trigger.field!r} "
+                            f"in {self.name}"
+                        )
                 self._triggers.append(
                     Trigger(
                         opcode=trigger.opcode,
@@ -71,10 +103,10 @@ class Schema:
 
     def _build_indexes(self) -> None:
         for index in self.indexes:
-            self._indexes.add(tuple(index))
+            self._indexes.add(_index_key(index))
 
         for unique in self.uniques:
-            key = tuple(unique)
+            key = _index_key(unique)
 
             self._uniques.add(key)
             self._indexes.add(key)
@@ -124,8 +156,9 @@ class Schema:
             return self._signals[name]
 
         except KeyError:
-            raise ValueError(
-                f"Unknown signal {name!r} in {self.name}"
+            raise InvalidOperationError(
+                f"Unknown signal {name!r} in {self.name}",
+                detail=InstructionErrorDetail(field=name),
             ) from None
 
     def signals(self) -> dict[str, Signal[Any]]:
@@ -173,10 +206,12 @@ class Schema:
     # -------------------------------------------------
 
     def defaults(self) -> dict[str, Any]:
-        return {
-            name: getattr(field, "default", None)
-            for name, field in self._fields.items()
-        }
+        return deepcopy(
+            {
+                name: getattr(field, "default", None)
+                for name, field in self._fields.items()
+            }
+        )
 
     # -------------------------------------------------
     # Validation
@@ -209,3 +244,21 @@ class SingleSchema(Schema):
 
 class ManySchema(Schema):
     """Schema containing canonical records keyed by row ID."""
+
+
+def _declarations(schema_type: type[Schema]) -> dict[str, Any]:
+    """Resolve declarations with normal Python inheritance and overrides."""
+    declarations: dict[str, Any] = {}
+    for base in reversed(schema_type.__mro__):
+        declarations.update(vars(base))
+    return declarations
+
+
+def _index_key(value: IndexKey) -> IndexKey:
+    if not isinstance(value, (tuple, list)) or not value:
+        raise ValueError("An index requires a non-empty sequence of fields")
+    if not all(isinstance(name, str) and name for name in value):
+        raise ValueError("Index fields must be non-empty strings")
+    if len(set(value)) != len(value):
+        raise ValueError("An index cannot repeat the same field")
+    return tuple(value)

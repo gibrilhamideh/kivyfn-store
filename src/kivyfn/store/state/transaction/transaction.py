@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import asyncio
-
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 from kivy.event import EventDispatcher
 
-from kivyfn.logging import get_logger
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.transaction.action import (
     InsertAction,
@@ -57,6 +56,7 @@ class StateTransaction(EventDispatcher):
 
         self.id = generate_uuid()
 
+        self._owner_task = asyncio.current_task()
         self._manager = manager
         self._loop = loop
         self._token: object | None = None
@@ -81,8 +81,8 @@ class StateTransaction(EventDispatcher):
         if self._closed:
             raise RuntimeError("State transaction is already closed")
 
-        self._entered = True
         self._token = self._manager.enter_transaction(self)
+        self._entered = True
 
         return self
 
@@ -137,6 +137,10 @@ class StateTransaction(EventDispatcher):
         return self
 
     @property
+    def owner_task(self) -> asyncio.Task[Any] | None:
+        return self._owner_task
+
+    @property
     def actions(self) -> tuple[TransactionAction, ...]:
         return tuple(self._actions)
 
@@ -169,7 +173,7 @@ class StateTransaction(EventDispatcher):
         copied = StateData.copy_values(values)
         action = self._sets.get(state)
 
-        if action is None:
+        if action is None or self._actions[-1] is not action:
             action = SetAction(state=state, values=copied)
             self._sets[state] = action
             self._actions.append(action)
@@ -177,7 +181,12 @@ class StateTransaction(EventDispatcher):
 
         action.values.update(copied)
 
-    def add_setrow(self, state: State[Any], values: dict[str, Any]) -> None:
+    def add_setrow(
+        self,
+        state: State[Any],
+        values: dict[str, Any],
+        writes: dict[tuple[str, str, str], Any] | None = None,
+    ) -> None:
         self._require_open()
 
         if state.row_id is None:
@@ -186,24 +195,30 @@ class StateTransaction(EventDispatcher):
         copied = StateData.copy_values(values)
         inserted = self._inserts.get(state)
 
-        if inserted is not None:
+        if inserted is not None and self._actions[-1] is inserted:
             inserted.values.update(copied)
             return
 
-        if state in self._removes:
+        if state in self._removes and inserted is None:
             raise RuntimeError(
                 "A removed State row cannot be updated in one transaction"
             )
 
         action = self._setrows.get(state)
 
-        if action is None:
-            action = SetRowAction(state=state, values=copied)
+        # Only adjacent writes can coalesce: another projection may have
+        # written the same canonical field between two calls on this State.
+        if action is None or self._actions[-1] is not action:
+            action = SetRowAction(
+                state=state, values=copied, writes=writes or {}
+            )
             self._setrows[state] = action
             self._actions.append(action)
             return
 
         action.values.update(copied)
+        if writes is not None:
+            action.writes.update(StateData.copy(writes))
 
     def add_insert(
         self,
@@ -253,6 +268,7 @@ class StateTransaction(EventDispatcher):
 
         if inserted is not None:
             self._actions.remove(inserted)
+            self._drop_row_sets(state)
             return True
 
         if state in self._removes:
@@ -260,10 +276,7 @@ class StateTransaction(EventDispatcher):
                 "A State row cannot be removed twice in one transaction"
             )
 
-        updated = self._setrows.pop(state, None)
-
-        if updated is not None:
-            self._actions.remove(updated)
+        self._drop_row_sets(state)
 
         action = RemoveAction(collection=collection, state=state)
 
@@ -272,19 +285,22 @@ class StateTransaction(EventDispatcher):
 
         return False
 
+    def _drop_row_sets(self, state: State[Any]) -> None:
+        self._setrows.pop(state, None)
+        self._actions[:] = [
+            action
+            for action in self._actions
+            if not isinstance(action, SetRowAction)
+            or action.state is not state
+        ]
+
     def add_signal(self, state: State[Any], signal: str, data: Any) -> None:
         self._require_open()
 
         if not signal:
             raise ValueError("State signal name must be non-empty")
 
-        if state in self._inserts:
-            raise RuntimeError(
-                "A newly inserted State row cannot emit a signal "
-                "in the same transaction"
-            )
-
-        if state in self._removes:
+        if state in self._removes and state not in self._inserts:
             raise RuntimeError(
                 "A removed State row cannot emit a signal "
                 "in the same transaction"

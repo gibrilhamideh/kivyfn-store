@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+from weakref import WeakValueDictionary
 
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.query.shape import (
@@ -33,7 +34,9 @@ class StateFactory:
 
     _schema_types: dict[type[Schema], type[State[Any]]] = {}
 
-    _query_types: dict[tuple[type[Schema], QueryShape], type[State[Any]]] = {}
+    _query_types: WeakValueDictionary[
+        tuple[type[Schema], QueryShape], type[State[Any]]
+    ] = WeakValueDictionary()
 
     _collection_types: dict[type[ManySchema], type[CollectionState[Any]]] = {}
 

@@ -1,6 +1,7 @@
 # src/kivyfn/store/codec/query.py
 from __future__ import annotations
 
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from kivyfn.store.address import Address
@@ -151,7 +152,7 @@ def expression_to_payload(expression: Expression) -> dict[str, Any]:
                 "type": "comparison",
                 "field": list(expression.field.parts),
                 "operator": expression.operator.value,
-                "value": expression.value,
+                "value": _literal_to_payload(expression.value),
             }
 
         case MembershipExpression():
@@ -159,7 +160,9 @@ def expression_to_payload(expression: Expression) -> dict[str, Any]:
                 "type": "membership",
                 "field": list(expression.field.parts),
                 "operator": expression.operator.value,
-                "values": list(expression.values),
+                "values": [
+                    _literal_to_payload(value) for value in expression.values
+                ],
             }
 
         case AndExpression():
@@ -205,7 +208,7 @@ def expression_from_payload(payload: Any) -> Expression:
                 _string_parts(data.get("field"), "comparison field")
             ),
             operator=ComparisonOperator(data.get("operator")),
-            value=data["value"],
+            value=_literal_from_payload(data["value"]),
         )
 
     if expression_type == "membership":
@@ -216,7 +219,7 @@ def expression_from_payload(payload: Any) -> Expression:
                 _string_parts(data.get("field"), "membership field")
             ),
             operator=MembershipOperator(data.get("operator")),
-            values=tuple(values),
+            values=tuple(_literal_from_payload(value) for value in values),
         )
 
     if expression_type == "and":
@@ -268,7 +271,11 @@ def _source_from_payload(payload: Any) -> Address | str:
         )
 
     if has_address:
-        return Address(*_string_parts(data["address"], "query source address"))
+        return Address(
+            *_string_parts(
+                data["address"], "query source address", allow_empty=True
+            )
+        )
 
     schema = data["schema"]
 
@@ -399,3 +406,27 @@ def _shape_bool(data: dict[str, Any], key: str) -> bool:
         raise ValueError(f"Query shape {key} must be a boolean")
 
     return value
+
+
+def _literal_to_payload(value: object) -> Any:
+    """Encode portable immutable literals, including nested tuples."""
+    if isinstance(value, tuple):
+        return [_literal_to_payload(item) for item in value]
+    return _scalar_literal(value)
+
+
+def _literal_from_payload(value: object) -> Any:
+    if isinstance(value, list):
+        return tuple(_literal_from_payload(item) for item in value)
+    return _scalar_literal(value)
+
+
+def _scalar_literal(value: object) -> Any:
+    if value is None or type(value) in (str, bool, int):
+        return value
+    if type(value) is float and isfinite(value):
+        return value
+    raise ValueError(
+        "Serialized query literals must be finite JSON scalars "
+        "or arrays of literals"
+    )

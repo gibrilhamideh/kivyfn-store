@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-
 from collections.abc import Callable
+from logging import getLogger as get_logger
 
-from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreInternalError, StoreStateError
 from kivyfn.store.events import StoreCommit
 from kivyfn.store.host.client import HostClients
@@ -16,7 +15,6 @@ from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
 from kivyfn.store.store import Store
 from kivyfn.store.transport.endpoint import create_host_transport
-
 
 logger = get_logger(__name__)
 
@@ -41,36 +39,71 @@ class StoreHost:
         )
 
         self._running = False
+        self._lifecycle = asyncio.Lock()
         self._unsubscribe: Callable[[], None] | None = None
         self._closed: asyncio.Future[BaseException | None] | None = None
-        self._failure: Exception | None = None
+        self._failure: BaseException | None = None
         self._failure_task: asyncio.Task[None] | None = None
+        self._close_task: asyncio.Task[None] | None = None
+        self._client_closures: set[asyncio.Task[None]] = set()
 
     @property
     def running(self) -> bool:
         return self._running
 
     async def start(self) -> None:
-        if self._running:
-            return
+        closing = self._close_task
+        if closing is not None:
+            await asyncio.shield(closing)
 
-        loop = asyncio.get_running_loop()
+        async with self._lifecycle:
+            if self._running:
+                return
 
-        self._closed = loop.create_future()
-        self._failure = None
-        self._running = True
-
-        self._unsubscribe = self.store.subscribe_commits(self._on_commit)
-
-        try:
-            await self.transport.start(self)
-
-        except BaseException:
-            await self._close()
-            raise
+            self._closed = asyncio.get_running_loop().create_future()
+            self._failure = None
+            self._close_task = None
+            try:
+                self._unsubscribe = self.store.subscribe_commits(
+                    self._on_commit
+                )
+                await self.transport.start(self)
+                self._running = True
+            except BaseException as error:
+                self._failure = error
+                try:
+                    await self._close()
+                finally:
+                    self._finish_close()
+                raise
 
     async def stop(self) -> None:
-        await self._close()
+        await asyncio.shield(self._begin_close())
+
+    def _begin_close(self) -> asyncio.Task[None]:
+        task = self._close_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._close_serialized())
+            self._close_task = task
+            task.add_done_callback(self._observe_close)
+        return task
+
+    async def _close_serialized(self) -> None:
+        async with self._lifecycle:
+            try:
+                await self._close()
+            except BaseException as error:
+                if self._failure is None:
+                    self._failure = error
+                raise
+            finally:
+                self._finish_close()
+
+    @staticmethod
+    def _observe_close(task: asyncio.Task[None]) -> None:
+        # A cancelled stop waiter must not leave a failed task unobserved.
+        if not task.cancelled():
+            task.exception()
 
     async def wait_closed(self) -> None:
         closed = self._closed
@@ -93,7 +126,11 @@ class StoreHost:
         self, client_id: str, request: RequestBatch
     ) -> ResponseBatch:
         self._require_running()
-        return self.requests.handle(client_id, request)
+        if self.clients.get(client_id) is None:
+            raise StoreStateError("Store client is not registered")
+        response = self.requests.handle(client_id, request)
+        await self.clients.flush(client_id)
+        return response
 
     async def disconnect(self, client_id: str) -> None:
         self.subscriptions.remove_client(client_id)
@@ -104,10 +141,6 @@ class StoreHost:
             raise StoreStateError("StoreHost is stopped")
 
     async def _close(self) -> None:
-        if not self._running and self._unsubscribe is None:
-            self._finish_close()
-            return
-
         self._running = False
 
         if self._unsubscribe is not None:
@@ -120,8 +153,12 @@ class StoreHost:
             await self.clients.clear()
 
         finally:
-            await self.transport.stop()
-            self._finish_close()
+            try:
+                await self.transport.stop()
+            finally:
+                pending = tuple(self._client_closures)
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
     def _finish_close(self) -> None:
         closed = self._closed
@@ -134,7 +171,10 @@ class StoreHost:
             return
 
         try:
-            for client_id, message in self.subscriptions.capture(commit):
+            messages = self.subscriptions.capture(
+                commit, on_query_error=self._on_client_error
+            )
+            for client_id, message in messages:
                 self.clients.enqueue(client_id, message)
 
         except Exception as error:
@@ -146,7 +186,17 @@ class StoreHost:
             "Store event delivery to %s failed", client_id, exc_info=error
         )
 
-        self._fail(error)
+        task = asyncio.create_task(self._disconnect_failed_client(client_id))
+        self._client_closures.add(task)
+        task.add_done_callback(self._client_closures.discard)
+
+    async def _disconnect_failed_client(self, client_id: str) -> None:
+        try:
+            await self.transport.disconnect(client_id)
+        except Exception:
+            logger.exception("Failed to disconnect Store client %s", client_id)
+        finally:
+            await self.disconnect(client_id)
 
     def _fail(self, error: Exception) -> None:
         if self._failure is not None:
@@ -154,13 +204,16 @@ class StoreHost:
 
         self._failure = error
         self._running = False
+        closing = self._begin_close()
 
         if self._failure_task is None:
-            self._failure_task = asyncio.create_task(self._close_failed())
+            self._failure_task = asyncio.create_task(
+                self._close_failed(closing)
+            )
 
-    async def _close_failed(self) -> None:
+    async def _close_failed(self, closing: asyncio.Task[None]) -> None:
         try:
-            await self._close()
+            await asyncio.shield(closing)
 
         except Exception:
             logger.exception(

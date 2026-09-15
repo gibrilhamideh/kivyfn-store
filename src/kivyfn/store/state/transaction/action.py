@@ -1,7 +1,7 @@
 # src/kivyfn/store/state/transaction/action.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from kivyfn.store.state.reactive.collection import CollectionState
@@ -18,10 +18,11 @@ class SetAction:
 
 @dataclass(slots=True)
 class SetRowAction:
-    """Set fields on one existing ManySchema row."""
+    """Visible field intent plus canonical writes resolved at mutation time."""
 
     state: State[Any]
     values: dict[str, Any]
+    writes: dict[tuple[str, str, str], Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

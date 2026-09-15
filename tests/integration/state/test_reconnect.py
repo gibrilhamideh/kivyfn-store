@@ -7,7 +7,6 @@ from tests.conftest import StateStack
 from tests.helpers import state_value
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -22,7 +21,7 @@ async def test_disconnect_and_reconnect_resynchronizes_same_state(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -34,7 +33,7 @@ async def test_disconnect_and_reconnect_resynchronizes_same_state(
 
     assert not users.synced
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     assert users is original
     assert users.synced
@@ -48,13 +47,13 @@ async def test_mutation_after_reconnect_still_updates_state(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
 
     await state_stack.client.disconnect()
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     operation = users["user-1"].set(age=31)
     await operation

@@ -1,6 +1,7 @@
 # src/kivyfn/store/host/subscription.py
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import uuid4
@@ -38,7 +39,6 @@ from kivyfn.store.protocol.message.responses import (
 )
 from kivyfn.store.query import Query, QueryRow
 from kivyfn.store.schema import ManySchema, SingleSchema
-
 
 if TYPE_CHECKING:
     from kivyfn.store.store import Store
@@ -201,7 +201,9 @@ class HostSubscriptions:
     # -------------------------------------------------
 
     def capture(
-        self, commit: StoreCommit
+        self,
+        commit: StoreCommit,
+        on_query_error: Callable[[str, Exception], None] | None = None,
     ) -> tuple[tuple[str, EventMessage], ...]:
         """Convert one Store commit into per-client subscription messages."""
         self._require_commit(commit)
@@ -209,6 +211,8 @@ class HostSubscriptions:
         subscriptions = self._affected(commit)
         clients: dict[str, list[SubscriptionEvent]] = {}
         query_actions: dict[HostQuery, tuple[EventAction, ...]] = {}
+        query_errors: dict[HostQuery, Exception] = {}
+        failed_clients: dict[str, Exception] = {}
 
         for subscription in subscriptions:
             revisions = {
@@ -223,24 +227,38 @@ class HostSubscriptions:
                 actions = _schema_actions(commit, source)
 
             else:
+                error = query_errors.get(source)
+
+                if error is not None:
+                    failed_clients[subscription.client_id] = error
+                    continue
+
                 actions = query_actions.get(source)
 
                 if actions is None:
-                    state_actions: tuple[EventAction, ...] = ()
+                    try:
+                        state_actions = (
+                            source.capture(commit.schema_revisions)
+                            if revisions
+                            else ()
+                        )
 
-                    if revisions:
-                        captured = source.capture(commit.schema_revisions)
-
-                        if captured is None:
+                        if state_actions is None:
                             raise StoreStateError(
                                 "Query did not capture its changed dependency"
                             )
 
-                        state_actions = captured
+                        actions = (
+                            *state_actions,
+                            *_query_signal_actions(commit, source),
+                        )
+                    except Exception as error:
+                        if on_query_error is None:
+                            raise
 
-                    signal_actions = _query_signal_actions(commit, source)
-
-                    actions = (*state_actions, *signal_actions)
+                        query_errors[source] = error
+                        failed_clients[subscription.client_id] = error
+                        continue
 
                     query_actions[source] = actions
 
@@ -255,12 +273,18 @@ class HostSubscriptions:
 
             clients.setdefault(subscription.client_id, []).append(event)
 
+        for client_id, error in failed_clients.items():
+            clients.pop(client_id, None)
+            if on_query_error is not None:
+                on_query_error(client_id, error)
+
         return tuple(
             (
                 client_id,
                 EventMessage(
                     store_instance_id=self._store.instance_id,
                     events=tuple(events),
+                    transaction_id=commit.transaction_id,
                 ),
             )
             for client_id, events in clients.items()
@@ -285,7 +309,9 @@ class HostSubscriptions:
             return None
 
         return EventMessage(
-            store_instance_id=message.store_instance_id, events=events
+            store_instance_id=message.store_instance_id,
+            events=events,
+            transaction_id=message.transaction_id,
         )
 
     def _affected(self, commit: StoreCommit) -> tuple[HostSubscription, ...]:
@@ -403,14 +429,18 @@ def _schema_actions(
             case RemoveEvent():
                 actions.append(RemoveEventAction(row_id=event.id))
 
-    for signal in commit.signals:
+    for occurrence_id, signal in enumerate(commit.signals):
         if signal.schema != schema:
             continue
 
         match signal:
             case SignalEvent():
                 actions.append(
-                    SignalEventAction(signal=signal.signal, data=signal.data)
+                    SignalEventAction(
+                        signal=signal.signal,
+                        data=signal.data,
+                        occurrence_id=occurrence_id,
+                    )
                 )
 
             case SignalRowEvent():
@@ -419,6 +449,7 @@ def _schema_actions(
                         row_id=signal.id,
                         signal=signal.signal,
                         data=signal.data,
+                        occurrence_id=occurrence_id,
                     )
                 )
 
@@ -441,7 +472,7 @@ def _query_signal_actions(
     row_ids = {row.id for row in query.rows}
     actions: list[EventAction] = []
 
-    for signal in commit.signals:
+    for occurrence_id, signal in enumerate(commit.signals):
         if not isinstance(signal, SignalRowEvent):
             continue
 
@@ -453,7 +484,10 @@ def _query_signal_actions(
 
         actions.append(
             SignalRowEventAction(
-                row_id=signal.id, signal=signal.signal, data=signal.data
+                row_id=signal.id,
+                signal=signal.signal,
+                data=signal.data,
+                occurrence_id=occurrence_id,
             )
         )
 

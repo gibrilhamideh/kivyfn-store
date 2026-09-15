@@ -6,10 +6,7 @@ from kivyfn.store.error.base import (
 )
 from kivyfn.store.error.category import StoreErrorCategory
 from kivyfn.store.error.code import StoreErrorCode
-from kivyfn.store.error.codec import (
-    decode_failure,
-    encode_failure,
-)
+from kivyfn.store.error.codec import decode_failure, encode_failure
 from kivyfn.store.error.context import StoreErrorContext
 from kivyfn.store.error.detail import (
     AddressErrorDetail,
@@ -43,18 +40,17 @@ from kivyfn.store.error.operation import (
     UniqueConstraintError,
 )
 from kivyfn.store.error.runtime import (
-    StoreTransportError,
+    StorageCorruptionError,
     StoreConnectionError,
     StoreInternalError,
-    StorageCorruptionError,
     StoreProtocolError,
     StoreStateError,
     StoreTimeoutError,
+    StoreTransportError,
     StoreUnavailableError,
 )
 from kivyfn.store.error.stage import StoreErrorStage
 from kivyfn.store.error.status import StoreErrorStatus
-
 
 __all__ = [
     "AddressErrorDetail",

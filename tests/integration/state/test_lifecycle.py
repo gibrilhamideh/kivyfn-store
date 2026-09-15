@@ -18,7 +18,7 @@ async def test_state_created_before_connect_receives_initial_snapshot(
     assert not users.synced
     assert not settings.synced
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     assert users.synced
     assert settings.synced
@@ -35,5 +35,5 @@ async def test_state_registry_preserves_collection_identity(
 
     assert first is second
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
     assert first.synced

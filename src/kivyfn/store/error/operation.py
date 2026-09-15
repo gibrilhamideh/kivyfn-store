@@ -6,7 +6,6 @@ from kivyfn.store.error.category import StoreErrorCategory
 from kivyfn.store.error.code import StoreErrorCode
 from kivyfn.store.error.status import StoreErrorStatus
 
-
 # -------------------------------------------------
 # Instructions and operations
 # -------------------------------------------------

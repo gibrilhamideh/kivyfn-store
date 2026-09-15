@@ -23,7 +23,6 @@ from kivyfn.store.query.result import QueryResult, QueryRow
 from kivyfn.store.query.shape import QueryJoinShape, QueryShape
 from kivyfn.store.schema import ManySchema
 
-
 if TYPE_CHECKING:
     from kivyfn.store.core.engine import Engine
     from kivyfn.store.node import Node
@@ -228,6 +227,11 @@ def _compare(left: Any, operator: ComparisonOperator, right: Any) -> bool:
 
     if operator is ComparisonOperator.NE:
         return left != right
+
+    # Missing left-join values and nullable fields never satisfy ordering.
+    # Equality and inequality retain ordinary Python None semantics.
+    if left is None or right is None:
+        return False
 
     if operator is ComparisonOperator.GT:
         return left > right

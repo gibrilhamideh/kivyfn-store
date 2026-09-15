@@ -1,6 +1,7 @@
 # kivyfn/store/schema/fields/data/enumfield.py
 from __future__ import annotations
 
+from copy import deepcopy
 from enum import Enum
 from typing import Generic, Iterable, TypeVar, cast
 
@@ -11,11 +12,7 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.schema.fields.data.datafield import DataField
 
-
-ValueT = TypeVar(
-    "ValueT",
-    bound=ProtocolValue,
-)
+ValueT = TypeVar("ValueT", bound=ProtocolValue)
 
 
 class EnumField(DataField[ValueT], Generic[ValueT]):
@@ -33,10 +30,7 @@ class EnumField(DataField[ValueT], Generic[ValueT]):
         default: ValueT | None = None,
         allow_none: bool = False,
     ) -> None:
-        super().__init__(
-            default=default,
-            allow_none=allow_none,
-        )
+        super().__init__(default=default, allow_none=allow_none)
 
         if enum is not None and values is not None:
             raise ValueError(
@@ -46,43 +40,31 @@ class EnumField(DataField[ValueT], Generic[ValueT]):
         self.values: tuple[ValueT, ...]
 
         if enum is not None:
-            self.values = tuple(
-                cast(ValueT, item.value)
-                for item in enum
+            self.values = deepcopy(
+                tuple(cast(ValueT, item.value) for item in enum)
             )
         elif values is not None:
-            self.values = tuple(values)
+            self.values = deepcopy(tuple(values))
         else:
-            raise ValueError(
-                "EnumField requires enum or values"
-            )
+            raise ValueError("EnumField requires enum or values")
 
         if not self.values:
-            raise ValueError(
-                "EnumField requires at least one allowed value"
-            )
+            raise ValueError("EnumField requires at least one allowed value")
 
     @property
     def metadata(self) -> dict[str, ProtocolValue]:
-        return {
-            **super().metadata,
-            "values": list(self.values),
-        }
+        return {**super().metadata, "values": deepcopy(list(self.values))}
 
-    def challenge(
-        self,
-        value: ProtocolValue,
-    ) -> None:
+    def challenge(self, value: ProtocolValue) -> None:
         super().challenge(value)
 
         if value is None:
             return
 
-        if value not in self.values:
-            expected: list[ProtocolValue] = [
-                item
-                for item in self.values
-            ]
+        if not any(
+            type(value) is type(item) and value == item for item in self.values
+        ):
+            expected: list[ProtocolValue] = [item for item in self.values]
 
             raise FieldValidationError(
                 "Value is not one of the allowed enum values",

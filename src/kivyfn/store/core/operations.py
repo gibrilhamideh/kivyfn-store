@@ -1,7 +1,8 @@
 # src/kivyfn/store/core/operations.py
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from copy import deepcopy
+from typing import TYPE_CHECKING, Any
 
 from kivyfn.store.events.event import (
     InsertEvent,
@@ -10,7 +11,6 @@ from kivyfn.store.events.event import (
     SetRowEvent,
     StoreEvent,
 )
-
 
 if TYPE_CHECKING:
     from kivyfn.store.core.instruction import (
@@ -31,7 +31,7 @@ class Operation:
         self.opcode = instruction.opcode
         self.source = instruction.source
 
-    def execute(self) -> StoreEvent:
+    def stage(self, data: dict[str, Any]) -> StoreEvent:
         raise NotImplementedError()
 
     def _repr_details(self) -> str:
@@ -51,20 +51,21 @@ class SetOperation(Operation):
     def __init__(self, node: Node, instruction: SetInstruction) -> None:
         super().__init__(node, instruction)
         self.key = instruction.key
-        self.new_value = instruction.value
+        self.new_value = deepcopy(instruction.value)
 
     def _repr_details(self) -> str:
         return f"key={self.key!r}, value={self.new_value!r}"
 
-    def execute(self) -> SetEvent:
-        old_value = self.node.set(self.key, self.new_value)
+    def stage(self, data: dict[str, Any]) -> SetEvent:
+        old_value = data.get(self.key)
+        data[self.key] = deepcopy(self.new_value)
 
         return SetEvent(
             schema=self.node.schema.name,
             source=self.source,
             key=self.key,
-            old=old_value,
-            new=self.new_value,
+            old=deepcopy(old_value),
+            new=deepcopy(self.new_value),
         )
 
 
@@ -73,21 +74,22 @@ class SetRowOperation(Operation):
         super().__init__(node, instruction)
         self.id = instruction.id
         self.key = instruction.key
-        self.new_value = instruction.value
+        self.new_value = deepcopy(instruction.value)
 
     def _repr_details(self) -> str:
         return f"id={self.id!r}, key={self.key!r}, value={self.new_value!r}"
 
-    def execute(self) -> SetRowEvent:
-        old_value = self.node.setrow(self.id, self.key, self.new_value)
+    def stage(self, data: dict[str, Any]) -> SetRowEvent:
+        old_value = data[self.id].get(self.key)
+        data[self.id][self.key] = deepcopy(self.new_value)
 
         return SetRowEvent(
             schema=self.node.schema.name,
             source=self.source,
             id=self.id,
             key=self.key,
-            old=old_value,
-            new=self.new_value,
+            old=deepcopy(old_value),
+            new=deepcopy(self.new_value),
         )
 
 
@@ -95,23 +97,19 @@ class InsertOperation(Operation):
     def __init__(self, node: Node, instruction: InsertInstruction) -> None:
         super().__init__(node, instruction)
         self.id = instruction.id
-        self.value = dict(instruction.value)
+        self.value = deepcopy(instruction.value)
 
     def _repr_details(self) -> str:
         return f"id={self.id!r}, value={self.value!r}"
 
-    def execute(self) -> InsertEvent:
-        self.node.insert(self.id, self.value)
-        row = self.node.snapshot(id=self.id)
-
-        if not isinstance(row, dict):
-            raise RuntimeError("Inserted Store row could not be read back")
+    def stage(self, data: dict[str, Any]) -> InsertEvent:
+        data[self.id] = deepcopy(self.value)
 
         return InsertEvent(
             schema=self.node.schema.name,
             source=self.source,
             id=self.id,
-            new=row,
+            new=deepcopy(self.value),
         )
 
 
@@ -123,12 +121,12 @@ class RemoveOperation(Operation):
     def _repr_details(self) -> str:
         return f"id={self.id!r}"
 
-    def execute(self) -> RemoveEvent:
-        old_row = self.node.remove(self.id)
+    def stage(self, data: dict[str, Any]) -> RemoveEvent:
+        old_row = data.pop(self.id)
 
         return RemoveEvent(
             schema=self.node.schema.name,
             source=self.source,
             id=self.id,
-            old=old_row,
+            old=deepcopy(old_row),
         )

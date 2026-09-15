@@ -9,7 +9,6 @@ from tests.conftest import StateStack
 from tests.helpers import set_state_value, state_value, wait_until
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -29,7 +28,7 @@ async def test_field_binding_fires_once_for_optimistic_confirmation(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -54,7 +53,7 @@ async def test_collection_enter_and_insert_binding_order(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     events: list[tuple[str, str]] = []
     inserted = asyncio.Event()
@@ -81,7 +80,7 @@ async def test_collection_leave_and_remove_bindings(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -109,7 +108,7 @@ async def test_collection_leave_and_remove_bindings(
 @pytest.mark.asyncio
 async def test_operation_lifecycle_bindings(state_stack: StateStack) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted

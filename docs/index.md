@@ -1,91 +1,31 @@
-# KivyFN Store Documentation
+# kivyfn-store documentation
 
-KivyFN Store provides a typed store engine that can be used synchronously in-process or asynchronously through a remote transport.
+`kivyfn-store` provides a synchronous canonical Store and an asynchronous,
+reactive Kivy State API over Direct or Socket.IO transport.
 
-## Guides
+- [README and runnable example](../README.md): installation, connection,
+  mutations, transactions, queries, signals, cleanup and development checks.
+- [Architecture](architecture.md): ownership boundaries, staging, constraints,
+  ordered triggers, revisions, subscriptions, query writes and persistence.
+- [Error handling](errors.md): the actual Store, Client and State result
+  types, expected rejection, infrastructure failure and ambiguous outcomes.
+- [Test guide](../tests/README.md): test layout and execution.
+- [Correction summary](../CORRECTIONS.md): changes, edge cases and validation.
 
-### [Architecture](architecture.md)
+Applications normally create a `StateManager` around a `StoreClient`.
+`StateManager.create(SingleSchemaType)` returns a State;
+`create(ManySchemaType)` returns a CollectionState;
+`create(Query(...))` returns a QueryCollectionState.
 
-Covers:
+`StoreHost` exposes an already booted `Store`. Connect its client with
+`await client.connect(endpoint)`: `direct://name` in-process, or an HTTP
+Socket.IO endpoint remotely. A listener bound to port zero reports its
+actual endpoint after startup; pass that endpoint to the Client.
+These are one architecture with two transports, not separate Store APIs.
 
-- `Engine`;
-- schemas, fields, nodes, and addresses;
-- transaction instructions and compiled operations;
-- compiler, delta, constraint, execution, persistence, and dispatch stages;
-- `LocalStore`;
-- `StoreServer`, proxy, and transports;
-- `RemoteStoreClient` and `RemoteStore`;
-- subscriptions and signals;
-- boot, migration, undo, and redo.
-
-### [Error handling](errors.md)
-
-Covers:
-
-- `SuccessResponse` and `FailureResponse`;
-- `StoreFailure`;
-- operation errors versus runtime exceptions;
-- transport exception hierarchy;
-- local and remote parity;
-- startup, request, and shutdown handling;
-- retry guidance;
-- internal-error safety;
-- testing requirements.
-
-## Minimal workflow
-
-### Local
-
-```python
-store = LocalStore(
-    root=root_node,
-    config=store_config,
-)
-
-store.boot()
-
-response = store.snapshot(
-    AddressBook.SETTINGS,
-)
-
-if response.ok:
-    use(response.data)
-else:
-    handle_store_failure(response.error)
-```
-
-### Remote
-
-```python
-store = RemoteStore(
-    name="main",
-    transport=transport,
-)
-
-try:
-    await store.connect()
-    response = await store.snapshot(
-        AddressBook.SETTINGS,
-    )
-except StoreTransportError:
-    handle_store_offline()
-    return
-
-if response.ok is False:
-    handle_store_failure(
-        response.error,
-    )
-```
-
-## Core contract
-
-```text
-Expected store-domain rejection
-    -> FailureResponse(StoreFailure)
-
-Lifecycle, transport, protocol, persistence,
-or unexpected framework failure
-    -> exception
-```
-
-This contract is the same whether the application uses `LocalStore` or `RemoteStore`.
+The Client and desired State targets can be created before Store startup.
+The minimum lifecycle is: build and boot Store, start Host, connect Client
+with the listening endpoint, perform work, close StateManager, disconnect
+Client, stop Host, shut down Store. Connecting waits for current desired
+subscriptions to synchronize. Later `await client.connect()` calls reuse
+the remembered endpoint; changing endpoints requires disconnecting first.

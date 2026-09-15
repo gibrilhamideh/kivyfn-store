@@ -1,9 +1,11 @@
 # src/kivyfn/store/host/request.py
 from __future__ import annotations
 
+from collections import OrderedDict
+from copy import deepcopy
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, assert_never
 
-from kivyfn.logging import get_logger
 from kivyfn.store.error import (
     InvalidOperationError,
     StoreErrorCategory,
@@ -15,16 +17,11 @@ from kivyfn.store.error import (
 )
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
-    InsertRequestAction,
     QueryRequest,
     QuerySubscriptionRequest,
-    RemoveRequestAction,
+    RequestAction,
     RequestBatch,
     RequestItem,
-    SetRequestAction,
-    SetRowRequestAction,
-    SignalRequestAction,
-    SignalRowRequestAction,
     SingleSubscriptionRequest,
     TransactionRequest,
     UnsubscribeRequest,
@@ -38,8 +35,6 @@ from kivyfn.store.protocol.message.responses import (
     TransactionResponse,
     UnsubscribeResponse,
 )
-from kivyfn.store.store.instructions import StoreRequestAction
-
 
 if TYPE_CHECKING:
     from kivyfn.store.host.subscription import HostSubscriptions
@@ -52,7 +47,19 @@ logger = get_logger(__name__)
 class HostRequests:
     """Route request batches into Store and subscription operations."""
 
-    def __init__(self, store: Store, subscriptions: HostSubscriptions) -> None:
+    def __init__(
+        self,
+        store: Store,
+        subscriptions: HostSubscriptions,
+        *,
+        max_completed: int = 1000,
+    ) -> None:
+        if max_completed < 1:
+            raise ValueError("max_completed must be positive")
+        self._max_completed = max_completed
+        self._completed: OrderedDict[
+            str, tuple[tuple[RequestAction, ...], ResponseItem]
+        ] = OrderedDict()
         self._store = store
         self._subscriptions = subscriptions
 
@@ -64,6 +71,32 @@ class HostRequests:
         )
 
     def _handle(self, client_id: str, request: RequestItem) -> ResponseItem:
+        if not isinstance(request, TransactionRequest):
+            return self._execute_request(client_id, request)
+        cached = self._completed.get(request.transaction_id)
+        if cached is not None:
+            actions, response = cached
+            if actions != request.actions:
+                error = InvalidOperationError(
+                    "Transaction ID was already used with different actions"
+                )
+                return TransactionFailureResponse(
+                    request.transaction_id, error.failure()
+                )
+            self._completed.move_to_end(request.transaction_id)
+            return deepcopy(response)
+        response = self._execute_request(client_id, request)
+        self._completed[request.transaction_id] = (
+            deepcopy(request.actions),
+            deepcopy(response),
+        )
+        while len(self._completed) > self._max_completed:
+            self._completed.popitem(last=False)
+        return response
+
+    def _execute_request(
+        self, client_id: str, request: RequestItem
+    ) -> ResponseItem:
         try:
             match request:
                 case TransactionRequest():
@@ -107,10 +140,8 @@ class HostRequests:
             return FailureResponse(failure=failure)
 
     def _transaction(self, request: TransactionRequest) -> TransactionResponse:
-        actions = self._store_actions(request)
-
         result = self._store.execute(
-            actions, transaction_id=request.transaction_id
+            request.actions, transaction_id=request.transaction_id
         )
 
         if not result.success:
@@ -118,28 +149,6 @@ class HostRequests:
             raise result.error
 
         return TransactionResponse(transaction_id=request.transaction_id)
-
-    def _store_actions(
-        self, request: TransactionRequest
-    ) -> tuple[StoreRequestAction, ...]:
-        actions: list[StoreRequestAction] = []
-
-        for action in request.actions:
-            match action:
-                case (
-                    SetRequestAction()
-                    | SetRowRequestAction()
-                    | InsertRequestAction()
-                    | RemoveRequestAction()
-                    | SignalRequestAction()
-                    | SignalRowRequestAction()
-                ):
-                    actions.append(action)
-
-                case _:
-                    assert_never(action)
-
-        return tuple(actions)
 
     def _failure(self, request: RequestItem, error: Exception) -> StoreFailure:
         if isinstance(error, StoreOperationError):

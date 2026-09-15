@@ -1,8 +1,9 @@
 # src/kivyfn/store/error/codec.py
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from enum import Enum
+from math import isfinite
 from typing import Any, TypeVar, cast
 
 from kivyfn.store.error.category import StoreErrorCategory
@@ -23,7 +24,6 @@ from kivyfn.store.error.detail import (
 from kivyfn.store.error.failure import StoreFailure
 from kivyfn.store.error.stage import StoreErrorStage
 from kivyfn.store.error.status import StoreErrorStatus
-
 
 DataclassT = TypeVar("DataclassT")
 
@@ -78,6 +78,17 @@ def decode_failure(payload: object) -> StoreFailure:
     """
     if not isinstance(payload, dict):
         raise ValueError("Store failure payload must be a dictionary")
+
+    unknown = set(payload) - {
+        "code",
+        "category",
+        "status",
+        "message",
+        "detail",
+        "context",
+    }
+    if unknown:
+        raise ValueError("Unknown fields in store failure payload")
 
     code = _decode_enum(StoreErrorCode, payload.get("code"), field="code")
 
@@ -190,61 +201,65 @@ def _encode_dataclass(value: object) -> dict[str, ProtocolValue]:
 def _construct_dataclass(
     dataclass_type: type[DataclassT], values: dict[str, Any]
 ) -> DataclassT:
-    """
-    Validate fields and construct a dataclass instance.
-    """
-    if not is_dataclass(dataclass_type):
-        raise TypeError(f"{dataclass_type.__name__} is not a dataclass type")
+    """Validate concrete wire fields once, before exposing typed errors."""
+    allowed = {item.name for item in fields(cast(Any, dataclass_type))}
+    if set(values) - allowed:
+        raise ValueError(f"Unknown fields for {dataclass_type.__name__}")
 
-    dataclass_fields = getattr(dataclass_type, "__dataclass_fields__", None)
-
-    if not isinstance(dataclass_fields, dict):
-        raise TypeError(
-            f"{dataclass_type.__name__} has invalid dataclass metadata"
-        )
-
-    allowed_fields = set(dataclass_fields)
-    unknown_fields = set(values) - allowed_fields
-
-    if unknown_fields:
-        names = ", ".join(sorted(unknown_fields))
-
-        raise ValueError(
-            f"Unknown fields for {dataclass_type.__name__}: {names}"
-        )
-
-    normalized = dict(values)
-
-    address = normalized.get("address")
-
-    if address is not None:
-        normalized["address"] = _decode_string_tuple(
-            address, field=f"{dataclass_type.__name__}.address"
-        )
-
-    fields_value = normalized.get("fields")
-
-    if fields_value is not None:
-        normalized["fields"] = _decode_string_tuple(
-            fields_value, field=f"{dataclass_type.__name__}.fields"
-        )
-
-    referencing_row_ids = normalized.get("referencing_row_ids")
-
-    if referencing_row_ids is not None:
-        normalized["referencing_row_ids"] = _decode_string_tuple(
-            referencing_row_ids,
-            field=(f"{dataclass_type.__name__}.referencing_row_ids"),
-        )
+    normalized: dict[str, Any] = {}
+    for name, value in values.items():
+        label = f"{dataclass_type.__name__}.{name}"
+        if name in {"value", "expected"}:
+            normalized[name] = _decode_value(value)
+        elif name in {"address", "fields", "referencing_row_ids"}:
+            nullable = (
+                name == "address" and dataclass_type != AddressErrorDetail
+            )
+            normalized[name] = (
+                None
+                if value is None and nullable
+                else _decode_string_tuple(value, field=label)
+            )
+        elif name == "stage":
+            normalized[name] = value
+        elif name == "allow_none":
+            if value is not None and type(value) is not bool:
+                raise ValueError(f"{label} must be a boolean or None")
+            normalized[name] = value
+        elif name in {"minimum", "maximum"}:
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or isinstance(value, float)
+                and not isfinite(value)
+            ):
+                raise ValueError(f"{label} must be a finite number or None")
+            normalized[name] = value
+        elif name == "instruction_index":
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{label} must be a non-negative int or None")
+            normalized[name] = value
+        else:
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{label} must be a string or None")
+            normalized[name] = value
 
     try:
-        constructor = cast(Any, dataclass_type)
-
-        instance = constructor(**normalized)
-    except (TypeError, ValueError) as exc:
+        return cast(Any, dataclass_type)(**normalized)
+    except TypeError as exc:
         raise ValueError(f"Invalid {dataclass_type.__name__} payload") from exc
 
-    return cast(DataclassT, instance)
+
+def _decode_value(value: Any) -> ProtocolValue:
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float) and isfinite(value):
+        return value
+    if isinstance(value, list):
+        return [_decode_value(item) for item in value]
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return {key: _decode_value(item) for key, item in value.items()}
+    raise ValueError("Invalid store error protocol value")
 
 
 def _decode_string_tuple(value: Any, *, field: str) -> tuple[str, ...]:
@@ -261,11 +276,16 @@ def _normalize_value(value: Any) -> ProtocolValue:
     if value is None:
         return None
 
-    if isinstance(value, (bool, int, float, str)):
-        return value
-
     if isinstance(value, Enum):
         return _normalize_value(value.value)
+
+    if isinstance(value, (bool, int, str)):
+        return value
+
+    if isinstance(value, float):
+        if not isfinite(value):
+            return repr(value)
+        return value
 
     if isinstance(value, dict):
         normalized: dict[str, ProtocolValue] = {}

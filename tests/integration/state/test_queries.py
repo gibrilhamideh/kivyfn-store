@@ -6,12 +6,10 @@ import asyncio
 import pytest
 
 from kivyfn.store import Query, field
-
 from tests.conftest import StateStack
 from tests.helpers import set_state_value, state_value
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
-
 
 USER = {
     "username": "gibril",
@@ -31,7 +29,7 @@ async def test_query_subscription_initial_snapshot(
         Query(UserSchema).where(field("active") == enabled)
     )
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     assert active_users.synced
     assert len(active_users) == 0
@@ -50,14 +48,10 @@ async def test_query_membership_enters_and_leaves(
     entered: list[str] = []
     left: list[str] = []
 
-    active_users.bind(
-        on_enter=lambda _, row_id, __: entered.append(row_id)
-    )
-    active_users.bind(
-        on_leave=lambda _, row_id, __: left.append(row_id)
-    )
+    active_users.bind(on_enter=lambda _, row_id, __: entered.append(row_id))
+    active_users.bind(on_leave=lambda _, row_id, __: left.append(row_id))
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **{**USER, "active": False})
     await inserted
@@ -88,7 +82,7 @@ async def test_query_stays_synced_when_dependency_changes_without_visible_row(
         Query(UserSchema).where(field("active") == enabled)
     )
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **{**USER, "active": False})
     await inserted
@@ -104,15 +98,13 @@ async def test_query_stays_synced_when_dependency_changes_without_visible_row(
 
 
 @pytest.mark.asyncio
-async def test_query_join_exposes_user_fields(
-    state_stack: StateStack,
-) -> None:
+async def test_query_join_exposes_user_fields(state_stack: StateStack) -> None:
     users = state_stack.state.create(UserSchema)
     joined = state_stack.state.create(
         Query(UserSettingsSchema).join("user_id", as_="user")
     )
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -135,7 +127,7 @@ async def test_joined_field_is_writable_through_query_state(
         Query(UserSettingsSchema).join("user_id", as_="user")
     )
 
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted

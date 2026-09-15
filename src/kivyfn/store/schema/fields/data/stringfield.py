@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kivyfn.store.error import (
-    FieldErrorDetail,
-    FieldValidationError,
-)
+from kivyfn.store.error import FieldErrorDetail, FieldValidationError
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
@@ -26,15 +23,18 @@ class StringField(DataField[str]):
     ) -> None:
         super().__init__(**kwargs)
 
+        for label, bound in (
+            ("min_length", min_length),
+            ("max_length", max_length),
+        ):
+            if bound is not None and type(bound) is not int:
+                raise ValueError(f"{label} must be an integer")
+
         if min_length is not None and min_length < 0:
-            raise ValueError(
-                "min_length must be greater than or equal to 0"
-            )
+            raise ValueError("min_length must be greater than or equal to 0")
 
         if max_length is not None and max_length < 0:
-            raise ValueError(
-                "max_length must be greater than or equal to 0"
-            )
+            raise ValueError("max_length must be greater than or equal to 0")
 
         if (
             min_length is not None
@@ -53,18 +53,12 @@ class StringField(DataField[str]):
         data = dict(super().metadata)
 
         data.update(
-            {
-                "min_length": self.min_length,
-                "max_length": self.max_length,
-            }
+            {"min_length": self.min_length, "max_length": self.max_length}
         )
 
         return data
 
-    def challenge(
-        self,
-        value: Any,
-    ) -> None:
+    def challenge(self, value: Any) -> None:
         super().challenge(value)
 
         if value is None:
@@ -74,19 +68,13 @@ class StringField(DataField[str]):
             raise FieldValidationError(
                 "Expected a string value",
                 detail=FieldErrorDetail(
-                    field=self.name,
-                    value=value,
-                    rule="type",
-                    expected="str",
+                    field=self.name, value=value, rule="type", expected="str"
                 ),
             )
 
         length = len(value)
 
-        if (
-            self.min_length is not None
-            and length < self.min_length
-        ):
+        if self.min_length is not None and length < self.min_length:
             raise FieldValidationError(
                 (
                     "String length must be greater than or equal to "
@@ -100,10 +88,7 @@ class StringField(DataField[str]):
                 ),
             )
 
-        if (
-            self.max_length is not None
-            and length > self.max_length
-        ):
+        if self.max_length is not None and length > self.max_length:
             raise FieldValidationError(
                 (
                     "String length must be less than or equal to "

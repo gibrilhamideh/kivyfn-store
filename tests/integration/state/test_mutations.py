@@ -10,7 +10,6 @@ from tests.helpers import set_state_value, state_value, wait_until
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -26,7 +25,7 @@ async def test_optimistic_insert_is_visible_before_confirmation(
 ) -> None:
     users = state_stack.state.create(UserSchema)
     settings = state_stack.state.create(UserSettingsSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = asyncio.Event()
     users.bind(on_insert=lambda *_: inserted.set())
@@ -47,7 +46,7 @@ async def test_strict_insert_is_not_visible_until_confirmed(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     operation = users.insert("user-1", **USER)
 
@@ -64,7 +63,7 @@ async def test_optimistic_assignment_updates_visible_value_immediately(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     operation = users.insert("user-1", **USER)
     await operation
@@ -84,7 +83,7 @@ async def test_strict_set_keeps_old_value_until_confirmation(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -101,12 +100,10 @@ async def test_strict_set_keeps_old_value_until_confirmation(
 
 
 @pytest.mark.asyncio
-async def test_remove_user_cascades_settings(
-    state_stack: StateStack,
-) -> None:
+async def test_remove_user_cascades_settings(state_stack: StateStack) -> None:
     users = state_stack.state.create(UserSchema)
     settings = state_stack.state.create(UserSettingsSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -127,7 +124,7 @@ async def test_same_value_assignment_is_a_noop(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted

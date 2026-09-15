@@ -1,11 +1,11 @@
 # tests/store/test_transaction.py
 from __future__ import annotations
 
+from logging import getLogger as get_logger
 from typing import Any, cast
 
 import pytest
 
-from kivyfn.logging import get_logger
 from kivyfn.store.builder.config import StoreConfig
 from kivyfn.store.core.execution import ExecutionResult
 from kivyfn.store.error import InvalidOperationError, StoreErrorStage
@@ -16,7 +16,6 @@ from kivyfn.store.operations import OperationSource
 from kivyfn.store.protocol.message.requests import SetRequestAction
 from kivyfn.store.store import store as store_module
 from kivyfn.store.store.store import Store
-
 
 logger = get_logger(__name__)
 
@@ -61,6 +60,7 @@ class FakeEngine:
         instructions: tuple[SetRequestAction, ...],
         *,
         transaction_id: str,
+        validate: Any = None,
     ) -> ExecutionResult:
         self.transaction_id = transaction_id
         return self.result

@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from pathlib import Path
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any
 
-from kivyfn.logging import get_logger
 from kivyfn.store.builder.policy import BootPolicy
 from kivyfn.store.error import (
     ConstraintErrorDetail,
@@ -58,7 +57,6 @@ class StoreBoot:
 
         # Disk failures must not trigger an ERASE fallback or cleanup.
         self._save_nodes()
-        self._cleanup_store()
 
     # -------------------------------------------------
     # Policy
@@ -76,80 +74,27 @@ class StoreBoot:
     # -------------------------------------------------
 
     def _load_store(self) -> dict[str, Any]:
-        schema_names = {
+        schema_names = sorted(
             node.schema.name for node in self.engine.metadata.persistent_nodes
-        }
-        candidates: set[str] = set()
-
-        for path in Path(self.engine.config.storage_path).iterdir():
-            if not path.is_file():
-                continue
-
-            if path.name.endswith(".json.tmp"):
-                candidates.add(path.name[:-9])
-            elif path.name.endswith(".json"):
-                candidates.add(path.name[:-5])
-
-        for schema_name in sorted(candidates - schema_names):
-            if self._is_store_snapshot(schema_name):
-                schema_names.add(schema_name)
-
-        raw_store: dict[str, Any] = {}
-
-        for schema_name in sorted(schema_names):
-            try:
-                raw_store[schema_name] = self.engine._storage.read(schema_name)
-            except StorageCorruptionError:
-                if not self._recovering:
-                    raise
-
-                logger.exception(
-                    "Resetting unreadable persisted schema %s", schema_name
-                )
-                raw_store[schema_name] = None
-
-        return raw_store
-
-    def _is_store_snapshot(self, schema_name: str) -> bool:
-        """Recognize retired schemas without claiming unrelated JSON files."""
-        storage = self.engine._storage
-
-        for path in (
-            storage._file_path(schema_name),
-            storage._temp_path(schema_name),
-        ):
-            _, valid, payload = storage._read_candidate(path)
-
-            if not valid:
-                continue
-
-            if not isinstance(payload, dict) or "data" not in payload:
-                return False
-
-            metadata = payload.get("metadata")
-
-            return isinstance(metadata, dict) and "store_version" in metadata
-
-        return False
+        )
+        try:
+            return self.engine._storage.load_store(
+                schema_names, recover=self._recovering
+            )
+        except StorageCorruptionError:
+            if not self._recovering:
+                raise
+            logger.exception("Resetting unreadable Store generation")
+            return {}
 
     def _select_data(
         self, raw_store: dict[str, Any]
     ) -> tuple[dict[str, Any], int]:
-        versions: dict[str, int] = {}
-
-        for schema_name, payload in raw_store.items():
-            if payload is None:
-                continue
-
-            try:
-                versions[schema_name] = self._store_version(payload)
-            except (TypeError, ValueError) as exc:
-                if not self._recovering:
-                    raise
-
-                logger.error(
-                    "Resetting persisted schema %s: %s", schema_name, exc
-                )
+        # FileStorage validates saved envelopes at the persistence boundary.
+        versions = {
+            name: payload["metadata"]["store_version"]
+            for name, payload in raw_store.items()
+        }
 
         current_version = max(
             versions.values(), default=self.engine.config.store_version
@@ -166,30 +111,9 @@ class StoreBoot:
                 )
                 continue
 
-            data[schema_name] = raw_store[schema_name].get("data")
+            data[schema_name] = raw_store[schema_name]["data"]
 
         return data, current_version
-
-    @staticmethod
-    def _store_version(payload: Any) -> int:
-        if not isinstance(payload, dict):
-            raise TypeError("Persisted schema must contain a dictionary")
-
-        metadata = payload.get("metadata", {})
-
-        if not isinstance(metadata, dict):
-            raise TypeError("Persisted schema metadata must be a dictionary")
-
-        version = metadata.get("store_version", 1)
-
-        if (
-            not isinstance(version, int)
-            or isinstance(version, bool)
-            or version < 1
-        ):
-            raise ValueError(f"Invalid store_version: {version!r}")
-
-        return version
 
     # -------------------------------------------------
     # Migration
@@ -405,55 +329,36 @@ class StoreBoot:
     # -------------------------------------------------
 
     def _save_nodes(self) -> None:
-        nodes = sorted(
-            self.engine.metadata.persistent_nodes,
-            key=lambda node: node.schema.name,
-        )
-
-        for node in nodes:
-            expected = {
+        values = {
+            node.schema.name: node.value
+            for node in sorted(
+                self.engine.metadata.persistent_nodes,
+                key=lambda node: node.schema.name,
+            )
+        }
+        expected = {
+            name: {
                 "metadata": {
                     "store_version": self.engine.config.store_version
                 },
-                "data": node.value,
+                "data": value,
             }
-            saved = self._raw_store.get(node.schema.name)
-
-            # JSON comparison also distinguishes recovered bool/int values.
-            if json.dumps(saved) == json.dumps(expected):
-                continue
-
-            self.engine._storage.write(
-                node.schema.name,
-                node.value,
-                store_version=self.engine.config.store_version,
-            )
-
-    def _cleanup_store(self) -> None:
-        active = {
-            node.schema.name for node in self.engine.metadata.persistent_nodes
+            for name, value in values.items()
         }
-        obsolete = self._raw_store.keys() - active
         storage = self.engine._storage
-        removed = False
-
-        with storage._lock:
-            try:
-                for schema_name in sorted(obsolete):
-                    for path in (
-                        storage._file_path(schema_name),
-                        storage._temp_path(schema_name),
-                    ):
-                        try:
-                            path.unlink()
-                        except FileNotFoundError:
-                            continue
-
-                        removed = True
-                        logger.info("Removed obsolete Store snapshot %s", path)
-            finally:
-                if removed:
-                    storage._fsync_directory()
+        # Preserve row order and distinguish recovered bool/int values.
+        unchanged = json.dumps(self._raw_store) == json.dumps(expected)
+        try:
+            committed = storage._manifest_name() is not None
+        except StorageCorruptionError:
+            committed = False
+        durable = True
+        if not unchanged or not committed:
+            durable = storage.write_store(
+                values, store_version=self.engine.config.store_version
+            )
+        if durable:
+            storage.cleanup_legacy(set(self._raw_store) | set(values))
 
     # -------------------------------------------------
     # Erase recovery

@@ -4,7 +4,7 @@ from kivyfn.store.host.host import StoreHost
 from kivyfn.store.query import Query, QueryResult, QueryRow, field
 from kivyfn.store.schema import ManySchema, Schema, SingleSchema
 from kivyfn.store.store import Store
-
+from kivyfn.store.address import Address
 
 __all__ = [
     "ManySchema",

@@ -8,6 +8,7 @@ from kivyfn.store.error.detail import StoreErrorDetail
 from kivyfn.store.error.failure import StoreFailure
 from kivyfn.store.error.status import StoreErrorStatus
 
+
 class StoreException(Exception):
     """
     Base exception for all intentional KivyFN Store exceptions.
@@ -22,8 +23,7 @@ class StoreOperationError(StoreException):
     Expected store operation rejection.
 
     These exceptions are raised internally by the engine and converted into a
-    StoreFailure inside a failed Response at the LocalStore or StoreServer
-    boundary.
+    StoreFailure by the Store, then carried by Host failure responses.
     """
 
     code: StoreErrorCode
@@ -61,10 +61,7 @@ class StoreOperationError(StoreException):
             context=self.context,
         )
 
-    def with_context(
-        self,
-        context: StoreErrorContext,
-    ) -> StoreOperationError:
+    def with_context(self, context: StoreErrorContext) -> StoreOperationError:
         """
         Attach execution context while preserving the semantic error type.
 

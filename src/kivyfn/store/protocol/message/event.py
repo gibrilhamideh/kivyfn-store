@@ -31,6 +31,7 @@ class RemoveEventAction:
 class SignalEventAction:
     signal: str
     data: Any = None
+    occurrence_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +39,7 @@ class SignalRowEventAction:
     row_id: str
     signal: str
     data: Any = None
+    occurrence_id: int | None = None
 
 
 EventAction: TypeAlias = (
@@ -65,3 +67,4 @@ class EventMessage:
 
     store_instance_id: str
     events: tuple[SubscriptionEvent, ...]
+    transaction_id: str | None = None

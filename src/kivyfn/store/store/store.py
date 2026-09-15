@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import replace
+from logging import getLogger as get_logger
+from threading import RLock
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from kivyfn.logging import get_logger
 from kivyfn.store.address import Address
 from kivyfn.store.core.engine import Engine
 from kivyfn.store.core.execution import ExecutionResult
@@ -24,7 +26,6 @@ from kivyfn.store.store.instructions import (
     StoreRequestAction,
 )
 
-
 if TYPE_CHECKING:
     from kivyfn.store.builder import StoreConfig
     from kivyfn.store.node import Node
@@ -35,7 +36,13 @@ logger = get_logger(__name__)
 
 
 class Store:
-    """Canonical synchronous Store state and execution."""
+    """Canonical synchronous Store state and execution.
+
+    Public reads, mutations, revisions and lifecycle transitions share one
+    reentrant lock. Each read observes a complete recorded commit. Separate
+    calls do not form a read transaction; use snapshot_if_changed() when the
+    schema snapshot and its revision must be returned together.
+    """
 
     def __init__(self, root: Node, config: StoreConfig) -> None:
         self._engine = Engine(root=root, config=config)
@@ -43,6 +50,7 @@ class Store:
 
         self._instance_id = uuid4().hex
         self._shutdown = False
+        self._lock = RLock()
 
         self._commit_listeners: dict[
             object, Callable[[StoreCommit], None]
@@ -59,36 +67,40 @@ class Store:
     # -------------------------------------------------
 
     def boot(self) -> None:
-        if self._shutdown:
-            raise StoreStateError("A shut-down Store cannot be booted")
+        with self._lock:
+            if self._shutdown:
+                raise StoreStateError("A shut-down Store cannot be booted")
 
-        logger.info("Booting Store instance=%s", self._instance_id)
+            logger.info("Booting Store instance=%s", self._instance_id)
 
-        self._engine.boot()
+            self._engine.boot()
 
-        logger.info(
-            "Store booted instance=%s schemas=%d",
-            self._instance_id,
-            len(self._engine.metadata.nodes_by_schema),
-        )
+            logger.info(
+                "Store booted instance=%s schemas=%d",
+                self._instance_id,
+                len(self._engine.metadata.nodes_by_schema),
+            )
 
     def shutdown(self) -> None:
-        if self._shutdown:
-            return
+        with self._lock:
+            if self._shutdown:
+                return
 
-        logger.info("Shutting down Store instance=%s", self._instance_id)
+            logger.info("Shutting down Store instance=%s", self._instance_id)
 
-        self._shutdown = True
-        self._commit_listeners.clear()
-        self._pending_commits.clear()
+            self._shutdown = True
+            self._commit_listeners.clear()
+            self._pending_commits.clear()
 
     @property
     def booted(self) -> bool:
-        return self._engine.booted and not self._shutdown
+        with self._lock:
+            return self._engine.booted and not self._shutdown
 
     @property
     def is_shutdown(self) -> bool:
-        return self._shutdown
+        with self._lock:
+            return self._shutdown
 
     @property
     def instance_id(self) -> str:
@@ -96,12 +108,14 @@ class Store:
 
     @property
     def schema_revisions(self) -> dict[str, int]:
-        self._require_booted()
-
-        return {
-            schema: node.revision
-            for schema, node in self._engine.metadata.nodes_by_schema.items()
-        }
+        with self._lock:
+            self._require_booted()
+            return {
+                schema: node.revision
+                for schema, node in (
+                    self._engine.metadata.nodes_by_schema.items()
+                )
+            }
 
     def _require_booted(self) -> None:
         if self._shutdown:
@@ -115,24 +129,30 @@ class Store:
     # -------------------------------------------------
 
     def get_node_by_address(self, address: Address) -> Node:
-        self._require_booted()
-        return self._engine.get_node_by_address(address)
+        """Borrow an internal Node; application mutations use execute()."""
+        with self._lock:
+            self._require_booted()
+            return self._engine.get_node_by_address(address)
 
     def get_node_by_schema(self, schema: str) -> Node:
-        self._require_booted()
-        return self._engine.get_node_by_schema(schema)
+        """Borrow an internal Node; application mutations use execute()."""
+        with self._lock:
+            self._require_booted()
+            return self._engine.get_node_by_schema(schema)
 
     def snapshot_by_address(
         self, address: Address, id: str | None = None, key: str | None = None
     ) -> Any:
-        self._require_booted()
-        return self._engine.snapshot_by_address(address, id=id, key=key)
+        with self._lock:
+            self._require_booted()
+            return self._engine.snapshot_by_address(address, id=id, key=key)
 
     def snapshot_by_schema(
         self, schema: str, id: str | None = None, key: str | None = None
     ) -> Any:
-        self._require_booted()
-        return self._engine.snapshot_by_schema(schema, id=id, key=key)
+        with self._lock:
+            self._require_booted()
+            return self._engine.snapshot_by_schema(schema, id=id, key=key)
 
     def snapshot_if_changed(
         self,
@@ -141,27 +161,30 @@ class Store:
         revision: int | None = None,
         store_instance_id: str | None = None,
     ) -> tuple[int, dict[str, Any] | None]:
-        self._require_booted()
+        with self._lock:
+            self._require_booted()
+            node = self._engine.get_node_by_schema(schema)
+            current = node.revision
 
-        node = self._engine.get_node_by_schema(schema)
-        current = node.revision
+            if store_instance_id == self._instance_id and revision == current:
+                return current, None
 
-        if store_instance_id == self._instance_id and revision == current:
-            return current, None
-
-        return current, node.snapshot()
+            return current, node.snapshot()
 
     def query(self, query: Query[Any]) -> QueryResult:
-        self._require_booted()
-        return self._engine.query(query)
+        with self._lock:
+            self._require_booted()
+            return self._engine.query(query)
 
     def compile_query(self, query: Query[Any]) -> QueryPlan:
-        self._require_booted()
-        return self._engine.compile_query(query)
+        with self._lock:
+            self._require_booted()
+            return self._engine.compile_query(query)
 
     def execute_query(self, plan: QueryPlan) -> QueryResult:
-        self._require_booted()
-        return self._engine.execute_query(plan)
+        with self._lock:
+            self._require_booted()
+            return self._engine.execute_query(plan)
 
     # -------------------------------------------------
     # Transactions
@@ -170,7 +193,22 @@ class Store:
     def execute(
         self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
     ) -> ExecutionResult:
-        """Execute Store actions as one atomic transaction."""
+        """Execute atomically with synchronous, read-only commit listeners.
+
+        A listener may read final data, subscribe or unsubscribe. It must
+        schedule subsequent mutations after delivery returns, so every
+        listener observes the same canonical data and revision pair.
+        """
+        with self._lock:
+            if self._publishing_commits:
+                raise StoreStateError(
+                    "Store mutations are not allowed during commit delivery"
+                )
+            return self._execute(actions, transaction_id=transaction_id)
+
+    def _execute(
+        self, actions: tuple[StoreRequestAction, ...], *, transaction_id: str
+    ) -> ExecutionResult:
         self._require_booted()
 
         logger.info(
@@ -205,7 +243,11 @@ class Store:
 
         try:
             result = self._engine.execute(
-                instructions, transaction_id=transaction_id
+                instructions,
+                transaction_id=transaction_id,
+                validate=lambda delta: self._instructions.validate_signals(
+                    signals, delta
+                ),
             )
 
             if not result.success:
@@ -249,22 +291,23 @@ class Store:
         self, callback: Callable[[StoreCommit], None]
     ) -> Callable[[], None]:
         """Subscribe to future Store commits."""
-        self._require_booted()
-
-        token = object()
-        self._commit_listeners[token] = callback
-
-        logger.debug(
-            "Commit listener added listeners=%d", len(self._commit_listeners)
-        )
-
-        def unsubscribe() -> None:
-            self._commit_listeners.pop(token, None)
+        with self._lock:
+            self._require_booted()
+            token = object()
+            self._commit_listeners[token] = callback
 
             logger.debug(
-                "Commit listener removed listeners=%d",
+                "Commit listener added listeners=%d",
                 len(self._commit_listeners),
             )
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._commit_listeners.pop(token, None)
+                logger.debug(
+                    "Commit listener removed listeners=%d",
+                    len(self._commit_listeners),
+                )
 
         return unsubscribe
 
@@ -296,7 +339,7 @@ class Store:
                         continue
 
                     try:
-                        callback(current)
+                        callback(deepcopy(current))
 
                     except Exception:
                         logger.exception(

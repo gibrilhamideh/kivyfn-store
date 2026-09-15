@@ -2,18 +2,27 @@
 from __future__ import annotations
 
 import asyncio
-
 from contextvars import ContextVar, Token
+from functools import partial
 from typing import Any, TypeVar, cast, overload
 
 from kivyfn.store.client.client import StoreClient
-from kivyfn.store.client.subscription import SubscriptionSource
-from kivyfn.store.error import StoreErrorCode, StoreErrorStatus, StoreFailure
+from kivyfn.store.client.subscription import (
+    SubscriptionPublication,
+    SubscriptionSource,
+)
+from kivyfn.store.error import (
+    StoreErrorCode,
+    StoreErrorStatus,
+    StoreFailure,
+    StoreTimeoutError,
+    StoreUnavailableError,
+)
 from kivyfn.store.protocol.message.event import (
+    EventMessage,
     InsertEventAction,
     RemoveEventAction,
     SetEventAction,
-    SetRowEventAction,
     SignalEventAction,
     SignalRowEventAction,
     SubscriptionEvent,
@@ -40,6 +49,11 @@ from kivyfn.store.query.shape import QueryFieldShape, QueryShape
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.data import StateData
+from kivyfn.store.state.reactive.dispatch import (
+    defer_properties,
+    dispatch,
+    set_property,
+)
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State
 from kivyfn.store.state.registry import StateRegistry
@@ -54,7 +68,6 @@ from kivyfn.store.state.transaction.action import (
 from kivyfn.store.state.transaction.context import TransactionContext
 from kivyfn.store.state.transaction.failure import TransactionFailure
 from kivyfn.store.state.transaction.transaction import StateTransaction
-
 
 SingleSchemaT = TypeVar("SingleSchemaT", bound=SingleSchema)
 
@@ -106,13 +119,36 @@ class StateManager:
 
         return target
 
+    def release(self, source: SubscriptionSource) -> None:
+        """Release a subscription and its synchronization ownership."""
+        target = self._targets.pop(source, None)
+        if target is None:
+            return
+        self._client.unsubscribe(source, self)
+        for key, candidate in tuple(self._subscription_targets.items()):
+            if candidate is target:
+                del self._subscription_targets[key]
+        if isinstance(target, State):
+            set_property(target, "synced", False)
+        else:
+            target.sync_rows(False)
+
+    def close(self) -> None:
+        """Release subscriptions and finish outstanding local operations."""
+        for context in tuple(self._transactions.values()):
+            self.abort_transaction(
+                context.transaction, ConnectionError("StateManager closed")
+            )
+        for source in tuple(self._targets):
+            self.release(source)
+
     def transaction(self) -> StateTransaction:
         return StateTransaction(self)
 
     def enter_transaction(self, transaction: StateTransaction) -> object:
         active = _active_transaction.get()
 
-        if active is not None:
+        if active is not None and not active[1].closed:
             raise RuntimeError("Nested State transactions are not supported")
 
         return _active_transaction.set((self, transaction))
@@ -148,14 +184,13 @@ class StateManager:
     ) -> None:
         context = self._transactions.pop(transaction.id, None)
 
-        self._rollback_transaction(transaction)
+        self._discard_transaction_overlays(transaction)
 
         failure = _failure_from_exception(error)
 
+        transaction._fail(failure)
         if context is not None:
             self._fail_participants(context, failure)
-
-        transaction._fail(failure)
 
     def request_set(
         self, state: State[Any], values: dict[str, Any], *, optimistic: bool
@@ -254,43 +289,145 @@ class StateManager:
         raise TypeError("Unsupported subscription response")
 
     def on_subscription_event(self, event: SubscriptionEvent) -> None:
-        target = self._subscription_targets.get(event.subscription_id)
+        """Apply one event; transports should deliver complete messages."""
+        self._prepare_events((event,), None)()
 
-        if target is None:
-            return
+    def on_subscription_message(self, message: EventMessage) -> None:
+        self.prepare_subscription_message(message)()
 
-        for action in event.actions:
-            if isinstance(action, SetEventAction):
-                self._apply_set_event(target, action)
+    def prepare_subscription_message(
+        self, message: EventMessage
+    ) -> SubscriptionPublication:
+        return self._prepare_events(message.events, message.transaction_id)
 
-                continue
+    def _prepare_events(
+        self, events: tuple[SubscriptionEvent, ...], transaction_id: str | None
+    ) -> SubscriptionPublication:
+        changed: dict[State[Any], set[str]] = {}
+        notifications: list[Any] = []
+        signals: list[
+            tuple[ReactiveTarget, SignalEventAction | SignalRowEventAction]
+        ] = []
+        with defer_properties() as properties:
+            for event in events:
+                target = self._subscription_targets.get(event.subscription_id)
+                if target is None:
+                    continue
+                for action in event.actions:
+                    if isinstance(
+                        action, (SignalEventAction, SignalRowEventAction)
+                    ):
+                        signals.append((target, action))
+                        continue
+                    if isinstance(action, SetEventAction):
+                        if not isinstance(target, State):
+                            raise TypeError(
+                                "Set event requires a State target"
+                            )
+                        state = target
+                    else:
+                        if isinstance(target, State):
+                            raise TypeError("Row event requires a collection")
+                        if isinstance(action, InsertEventAction):
+                            delta = target.enter(action.row_id)
+                        elif isinstance(action, RemoveEventAction):
+                            state = target.canonical_row(action.row_id)
+                            delta = target.leave(action.row_id)
+                        else:
+                            delta = None
+                        if delta is not None:
+                            notifications.append(
+                                lambda t=target, d=delta: t.publish_membership(
+                                    d
+                                )
+                            )
+                        if isinstance(action, RemoveEventAction):
+                            if isinstance(target, CollectionState) and state:
+                                notifications.append(
+                                    lambda t=target, a=action, r=state: (
+                                        t.publish_remove(a.row_id, r)
+                                    )
+                                )
+                            continue
+                        state = target.canonical_row(action.row_id)
+                        if state is None:
+                            raise RuntimeError(
+                                "Canonical event references an unknown row: "
+                                f"{action.row_id!r}"
+                            )
+                        if isinstance(
+                            action, InsertEventAction
+                        ) and isinstance(target, CollectionState):
+                            notifications.append(
+                                lambda t=target, a=action, r=state: (
+                                    t.publish_insert(a.row_id, r)
+                                )
+                            )
+                    changed.setdefault(state, set()).update(
+                        state.set_canonical(dict(action.values))
+                    )
 
-            if isinstance(action, SetRowEventAction):
-                self._apply_setrow_event(target, action)
+            # Remove only this transaction's optimistic contribution.
+            # Install all committed values before the first user callback.
+            if transaction_id is not None:
+                context = self._transactions.get(transaction_id)
+                if context is not None:
+                    self._discard_overlays(
+                        context.transaction, changed, notifications
+                    )
 
-                continue
+        def publish() -> None:
+            for (target, name), value in properties.items():
+                set_property(target, name, value)
+            for state, fields in changed.items():
+                state.publish(fields)
+            for notify in notifications:
+                notify()
 
-            if isinstance(action, InsertEventAction):
-                self._apply_insert_event(target, action)
-
-                continue
-
-            if isinstance(action, RemoveEventAction):
-                self._apply_remove_event(target, action)
-
-                continue
-
+        occurrences = []
+        seen: set[tuple[State[Any], int]] = set()
+        for target, action in signals:
             if isinstance(action, SignalEventAction):
-                self._apply_signal_event(target, action)
+                if not isinstance(target, State):
+                    raise TypeError("Signal event requires a State target")
+                emit = partial(
+                    dispatch,
+                    target,
+                    f"on_{action.signal}",
+                    StateData.copy(action.data),
+                )
+            else:
+                if isinstance(target, State):
+                    raise TypeError("SignalRow event requires a collection")
+                state = target.canonical_row(action.row_id)
+                if state is None:
+                    raise RuntimeError(
+                        "Signal references an unknown canonical row"
+                    )
+                emit = partial(
+                    self._publish_row_signal, target, state, action, seen
+                )
+            occurrences.append((action.occurrence_id, emit))
+        return SubscriptionPublication(publish, tuple(occurrences))
 
-                continue
-
-            if isinstance(action, SignalRowEventAction):
-                self._apply_signalrow_event(target, action)
-
-                continue
-
-            raise TypeError("Unsupported subscription event action")
+    def _publish_row_signal(
+        self,
+        target: CollectionState[Any] | QueryCollectionState[Any],
+        state: State[Any],
+        action: SignalRowEventAction,
+        seen: set[tuple[State[Any], int]],
+    ) -> None:
+        occurrence = action.occurrence_id
+        if occurrence is None or (state, occurrence) not in seen:
+            dispatch(state, f"on_{action.signal}", StateData.copy(action.data))
+            if occurrence is not None:
+                seen.add((state, occurrence))
+        dispatch(
+            target,
+            f"on_{action.signal}",
+            action.row_id,
+            StateData.copy(action.data),
+        )
 
     def on_subscription_status(
         self, source: SubscriptionSource, synced: bool
@@ -300,14 +437,25 @@ class StateManager:
         if target is None:
             return
 
-        target.synced = synced
+        if isinstance(target, State):
+            set_property(target, "synced", synced)
+        else:
+            target.sync_rows(synced)
 
     def _request(self, callback: Any) -> StateTransaction:
         active = _active_transaction.get()
 
         if active is not None:
             manager, transaction = active
+            if transaction.closed:
+                active = None
 
+        if active is not None:
+            manager, transaction = active
+            if transaction.owner_task is not asyncio.current_task():
+                raise RuntimeError(
+                    "State transaction belongs to another asyncio task"
+                )
             if manager is not self:
                 raise RuntimeError(
                     "A State transaction cannot span StateManagers"
@@ -339,7 +487,8 @@ class StateManager:
             raise ValueError("State set requires at least one field")
 
         if row:
-            transaction.add_setrow(state, copied)
+            writes = self._resolve_row_writes(transaction, state, copied)
+            transaction.add_setrow(state, copied, writes)
         else:
             transaction.add_set(state, copied)
 
@@ -370,7 +519,7 @@ class StateManager:
         if not optimistic:
             return
 
-        delta = collection.enter(row_id)
+        delta = collection.set_membership_overlay(transaction.id, row_id, True)
 
         changed = state.set_overlay(transaction.id, prepared)
 
@@ -395,7 +544,17 @@ class StateManager:
         state.publish(changed)
 
         if cancelled_insert:
-            delta = collection.leave(row_id)
+            if any(
+                isinstance(action, RemoveAction) and action.state is state
+                for action in transaction.actions
+            ):
+                delta = collection.set_membership_overlay(
+                    transaction.id, row_id, False
+                )
+            else:
+                delta = collection.discard_membership_overlay(
+                    transaction.id, row_id
+                )
 
             collection.publish_membership(delta)
 
@@ -404,7 +563,9 @@ class StateManager:
         if not optimistic:
             return
 
-        delta = collection.leave(row_id)
+        delta = collection.set_membership_overlay(
+            transaction.id, row_id, False
+        )
 
         collection.publish_membership(delta)
 
@@ -534,25 +695,9 @@ class StateManager:
     def _setrow_request_actions(
         self, action: SetRowAction
     ) -> tuple[RequestAction, ...]:
-        target = self._query_target(action.state, tuple(action.values))
-
-        if target is None:
-            return (
-                SetRowRequestAction(
-                    schema=action.state.schema.name,
-                    row_id=_row_id(action.state),
-                    values=tuple(action.values.items()),
-                ),
-            )
-
         grouped: dict[tuple[str, str], list[tuple[str, Any]]] = {}
-
-        for name, value in action.values.items():
-            field = target.shape.field(name)
-            row_id = _query_field_row_id(action.state, target.shape, field)
-            key = (field.schema, row_id)
-            grouped.setdefault(key, []).append((field.field, value))
-
+        for (schema, row_id, field), value in action.writes.items():
+            grouped.setdefault((schema, row_id), []).append((field, value))
         return tuple(
             SetRowRequestAction(
                 schema=schema, row_id=row_id, values=tuple(values)
@@ -560,30 +705,79 @@ class StateManager:
             for (schema, row_id), values in grouped.items()
         )
 
-    def _query_target(
-        self, state: State[Any], fields: tuple[str, ...]
-    ) -> QueryCollectionState[Any] | None:
-        row_id = state.row_id
+    def _resolve_row_writes(
+        self,
+        transaction: StateTransaction,
+        state: State[Any],
+        values: dict[str, Any],
+    ) -> dict[tuple[str, str, str], Any]:
+        shape = cast(QueryShape | None, getattr(type(state), "_query_shape"))
+        if shape is None:
+            return {
+                (state.schema.name, _row_id(state), field): value
+                for field, value in values.items()
+            }
+        previous: dict[tuple[str, str, str], Any] = {}
+        for action in transaction.actions:
+            if isinstance(action, SetRowAction):
+                previous.update(action.writes)
+        result: dict[tuple[str, str, str], Any] = {}
+        # Relationship fields in this call are logical writes even for .set().
+        fields = sorted(
+            values, key=lambda name: len(shape.field(name).relation_path)
+        )
+        for name in fields:
+            field = shape.field(name)
+            row_id = self._query_field_row_id(state, shape, field, previous)
+            key = (field.schema, row_id, field.field)
+            result[key] = previous[key] = values[name]
+        return result
 
-        if row_id is None:
-            return None
-
-        for target in self._targets.values():
-            if not isinstance(target, QueryCollectionState):
-                continue
-
-            if target.get(row_id) is not state:
-                continue
-
-            try:
-                for field in fields:
-                    target.shape.field(field)
-            except KeyError:
-                continue
-
-            return target
-
-        return None
+    def _query_field_row_id(
+        self,
+        state: State[Any],
+        shape: QueryShape,
+        field: QueryFieldShape,
+        writes: dict[tuple[str, str, str], Any],
+    ) -> str:
+        row_id = original_id = _row_id(state)
+        canonical = state.canonical_snapshot(frozenset(state.fields))
+        for depth in range(1, len(field.relation_path) + 1):
+            path = field.relation_path[:depth]
+            join = next(
+                join for join in shape.joins if join.relation_path == path
+            )
+            owner = next(
+                candidate
+                for candidate in shape.fields
+                if candidate.relation_path == join.owner_path
+                and candidate.field == join.field_name
+            )
+            key = (owner.schema, row_id, owner.field)
+            original_next = canonical[owner.name]
+            if key in writes:
+                next_id = writes[key]
+            elif row_id == original_id:
+                next_id = original_next
+            else:
+                related = self._registry.find_row(owner.schema, row_id)
+                if related is None or not related.synced:
+                    raise ValueError(
+                        "Cannot resolve nested joined write "
+                        "after retargeting: "
+                        f"{field.name!r}; subscribe to {owner.schema} first"
+                    )
+                next_id = related.canonical_snapshot({owner.field})[
+                    owner.field
+                ]
+            if next_id is None:
+                raise ValueError(
+                    f"Cannot write query field {field.name!r}: "
+                    f"relationship {'.'.join(path)!r} has no target row"
+                )
+            row_id = str(next_id)
+            original_id = original_next
+        return row_id
 
     def _complete_transaction(
         self,
@@ -648,63 +842,49 @@ class StateManager:
         self._succeed_transaction(context)
 
     def _succeed_transaction(self, context: TransactionContext) -> None:
-        transaction = context.transaction
-
-        for action in transaction.actions:
-            if isinstance(action, (SetAction, SetRowAction, InsertAction)):
-                changed = action.state.discard_overlay(transaction.id)
-
-                action.state.publish(changed)
-
+        self._discard_transaction_overlays(context.transaction)
+        context.transaction._succeed()
         self._succeed_participants(context)
-
-        transaction._succeed()
 
     def _fail_transaction(
         self, context: TransactionContext, failure: TransactionFailure
     ) -> None:
-        self._rollback_transaction(context.transaction)
-
+        self._discard_transaction_overlays(context.transaction)
+        context.transaction._fail(failure)
         self._fail_participants(context, failure)
 
-        context.transaction._fail(failure)
-
-    def _rollback_transaction(self, transaction: StateTransaction) -> None:
-        for action in reversed(transaction.actions):
-            self._rollback_action(transaction, action)
-
-    def _rollback_action(
-        self, transaction: StateTransaction, action: TransactionAction
+    def _discard_overlays(
+        self,
+        transaction: StateTransaction,
+        changed: dict[State[Any], set[str]],
+        notifications: list[Any],
     ) -> None:
-        if isinstance(action, (SetAction, SetRowAction)):
-            changed = action.state.discard_overlay(transaction.id)
+        states: set[State[Any]] = set()
+        collections: set[CollectionState[Any]] = set()
+        for action in transaction.actions:
+            states.add(action.state)
+            if isinstance(action, (InsertAction, RemoveAction)):
+                collections.add(action.collection)
+        for state in states:
+            changed.setdefault(state, set()).update(
+                state.discard_overlay(transaction.id)
+            )
+        for collection in collections:
+            delta = collection.discard_membership_overlay(transaction.id)
+            notifications.append(
+                lambda t=collection, d=delta: t.publish_membership(d)
+            )
 
-            action.state.publish(changed)
-
-            return
-
-        if isinstance(action, InsertAction):
-            changed = action.state.discard_overlay(transaction.id)
-
-            action.state.publish(changed)
-
-            delta = action.collection.leave(_row_id(action.state))
-
-            action.collection.publish_membership(delta)
-
-            return
-
-        if isinstance(action, RemoveAction):
-            delta = action.collection.enter(_row_id(action.state))
-
-            action.collection.publish_membership(delta)
-
-            return
-
-        if isinstance(action, SignalAction):
-            return
-
-        raise TypeError("Unsupported State transaction action")
+    def _discard_transaction_overlays(
+        self, transaction: StateTransaction
+    ) -> None:
+        changed: dict[State[Any], set[str]] = {}
+        notifications: list[Any] = []
+        self._discard_overlays(transaction, changed, notifications)
+        for state, fields in changed.items():
+            state.publish(fields)
+        for notify in notifications:
+            notify()
 
     def _single_snapshot(
         self, target: ReactiveTarget, response: SingleSubscriptionResponse
@@ -752,162 +932,19 @@ class StateManager:
     ) -> None:
         delta = target.set_membership(tuple(row.id for row in rows))
 
+        changes: list[tuple[State[Any], frozenset[str]]] = []
         for row in rows:
-            state = target[row.id]
+            state = target.canonical_row(row.id)
+            if state is None:
+                raise RuntimeError("Snapshot row is missing")
 
             changed = state.set_canonical(row.to_dict())
 
+            changes.append((state, changed))
+
+        for state, changed in changes:
             state.publish(changed)
-
         target.publish_membership(delta)
-
-    def _apply_set_event(
-        self, target: ReactiveTarget, action: SetEventAction
-    ) -> None:
-        if not isinstance(target, State):
-            raise TypeError("Set event requires a State target")
-
-        changed = target.set_canonical(dict(action.values))
-
-        target.publish(changed)
-
-    def _apply_setrow_event(
-        self, target: ReactiveTarget, action: SetRowEventAction
-    ) -> None:
-        if isinstance(target, State):
-            raise TypeError("SetRow event requires a collection target")
-
-        state = target.get(action.row_id)
-
-        if state is None:
-            raise RuntimeError(
-                f"SetRow event references an unknown row: {action.row_id!r}"
-            )
-
-        changed = state.set_canonical(dict(action.values))
-
-        state.publish(changed)
-
-    def _apply_insert_event(
-        self, target: ReactiveTarget, action: InsertEventAction
-    ) -> None:
-        if isinstance(target, State):
-            raise TypeError("Insert event requires a collection target")
-
-        delta = target.enter(action.row_id)
-
-        state = target[action.row_id]
-
-        changed = state.set_canonical(dict(action.values))
-
-        state.publish(changed)
-
-        target.publish_membership(delta)
-
-        if isinstance(target, CollectionState) and not isinstance(
-            target, QueryCollectionState
-        ):
-            target.publish_insert(action.row_id, state)
-
-    def _apply_remove_event(
-        self, target: ReactiveTarget, action: RemoveEventAction
-    ) -> None:
-        if isinstance(target, State):
-            raise TypeError("Remove event requires a collection target")
-
-        if isinstance(target, CollectionState) and not isinstance(
-            target, QueryCollectionState
-        ):
-            state = self._registry.create_row(
-                type(target.schema), action.row_id
-            )
-        else:
-            state = target.get(action.row_id)
-
-            if state is None:
-                raise RuntimeError(
-                    f"Remove event references an unknown row: {action.row_id!r}"
-                )
-
-        delta = target.leave(action.row_id)
-
-        target.publish_membership(delta)
-
-        if isinstance(target, CollectionState) and not isinstance(
-            target, QueryCollectionState
-        ):
-            target.publish_remove(action.row_id, state)
-
-    def _apply_signal_event(
-        self, target: ReactiveTarget, action: SignalEventAction
-    ) -> None:
-        if not isinstance(target, State):
-            raise TypeError("Signal event requires a State target")
-
-        target.dispatch(f"on_{action.signal}", action.data)
-
-    def _apply_signalrow_event(
-        self, target: ReactiveTarget, action: SignalRowEventAction
-    ) -> None:
-        if isinstance(target, State):
-            raise TypeError("SignalRow event requires a collection target")
-
-        state = target.get(action.row_id)
-
-        if state is None:
-            raise RuntimeError(
-                f"SignalRow event references an unknown row: {action.row_id!r}"
-            )
-
-        state.dispatch(f"on_{action.signal}", action.data)
-        target.dispatch(f"on_{action.signal}", action.row_id, action.data)
-
-
-def _query_field_row_id(
-    state: State[Any], shape: QueryShape, field: QueryFieldShape
-) -> str:
-    if not field.relation_path:
-        return _row_id(state)
-
-    join = next(
-        (
-            join
-            for join in shape.joins
-            if join.relation_path == field.relation_path
-        ),
-        None,
-    )
-
-    if join is None:
-        raise RuntimeError(
-            f"Query field {field.name!r} has no matching join relationship"
-        )
-
-    owner_field = next(
-        (
-            candidate
-            for candidate in shape.fields
-            if candidate.relation_path == join.owner_path
-            and candidate.field == join.field_name
-        ),
-        None,
-    )
-
-    if owner_field is None:
-        raise RuntimeError(
-            f"Query join {'.'.join(join.relation_path)!r} has no owner "
-            "foreign-key field"
-        )
-
-    row_id = getattr(state, owner_field.name)
-
-    if row_id is None:
-        raise ValueError(
-            f"Cannot write query field {field.name!r}: relationship "
-            f"{'.'.join(field.relation_path)!r} has no target row"
-        )
-
-    return str(row_id)
 
 
 def _insert_values(
@@ -969,10 +1006,10 @@ def _transaction_failure(failure: StoreFailure) -> TransactionFailure:
 
 
 def _failure_from_exception(error: BaseException) -> TransactionFailure:
-    if isinstance(error, asyncio.TimeoutError):
+    if isinstance(error, (asyncio.TimeoutError, StoreTimeoutError)):
         failure_type = "timeout"
 
-    elif isinstance(error, ConnectionError):
+    elif isinstance(error, (ConnectionError, StoreUnavailableError)):
         failure_type = "network"
 
     else:

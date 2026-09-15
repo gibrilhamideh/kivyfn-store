@@ -8,7 +8,6 @@ from tests.helpers import set_state_value, state_value
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -24,7 +23,7 @@ async def test_full_state_transaction_creates_triggered_state(
 ) -> None:
     users = state_stack.state.create(UserSchema)
     settings = state_stack.state.create(UserSettingsSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     transaction = state_stack.state.transaction()
 
@@ -48,7 +47,7 @@ async def test_transaction_coalesces_multiple_sets_to_final_value(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     inserted = users.insert("user-1", **USER)
     await inserted
@@ -76,7 +75,7 @@ async def test_insert_then_remove_in_same_transaction_is_noop(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     before = dict(state_stack.store.schema_revisions)
     transaction = state_stack.state.transaction()
@@ -98,7 +97,7 @@ async def test_transaction_callbacks_fire_after_canonical_state(
 ) -> None:
     users = state_stack.state.create(UserSchema)
     settings = state_stack.state.create(UserSettingsSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     observed: list[tuple[str, bool, bool]] = []
     transaction = state_stack.state.transaction()
@@ -119,17 +118,14 @@ async def test_transaction_callbacks_fire_after_canonical_state(
 
     await transaction
 
-    assert observed == [
-        ("success", True, True),
-        ("done", True, True),
-    ]
+    assert observed == [("success", True, True), ("done", True, True)]
 
 
 @pytest.mark.asyncio
 async def test_nested_transactions_are_rejected(
     state_stack: StateStack,
 ) -> None:
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     outer = state_stack.state.transaction()
 

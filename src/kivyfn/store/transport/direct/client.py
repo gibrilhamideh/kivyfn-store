@@ -1,15 +1,22 @@
 # src/kivyfn/store/transport/direct/client.py
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
+from kivyfn.store.codec.events import (
+    decode_event_message,
+    encode_event_message,
+)
+from kivyfn.store.codec.requests import decode_request, encode_request
+from kivyfn.store.codec.responses import decode_response, encode_response
+from kivyfn.store.error import StoreProtocolError
 from kivyfn.store.protocol.message.event import EventMessage
 from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
 from kivyfn.store.transport.client import ClientTransport
 from kivyfn.store.transport.direct.host import DirectHostTransport
 from kivyfn.store.transport.direct.registry import resolve_host
-
 
 if TYPE_CHECKING:
     from kivyfn.store.client.client import StoreClient
@@ -68,10 +75,30 @@ class DirectClientTransport(ClientTransport):
 
     async def request(self, request: RequestBatch) -> ResponseBatch:
         host, client_id = self._require_connection()
-        return await host.request(client_id, request)
+        try:
+            decoded = decode_request(deepcopy(encode_request(request)))
+        except (TypeError, ValueError) as error:
+            raise StoreProtocolError("Invalid Store request") from error
+        response = await host.request(client_id, decoded)
+        try:
+            return decode_response(deepcopy(encode_response(response)))
+        except (TypeError, ValueError) as error:
+            raise StoreProtocolError("Invalid Store response") from error
 
     async def _handle_message(self, message: EventMessage) -> None:
-        self._client.on_message(message)
+        try:
+            try:
+                decoded = decode_event_message(
+                    deepcopy(encode_event_message(message))
+                )
+            except (TypeError, ValueError) as error:
+                raise StoreProtocolError("Invalid Store event") from error
+            self._client.on_message(decoded)
+        except Exception as error:
+            self._clear_connection()
+            self._client.on_disconnect(error)
+            # The Host delivery task removes this failed connection.
+            raise
 
     async def _handle_host_close(self) -> None:
         if not self._connected:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Set, Literal
+from typing import Literal, Optional, Set
 
 from kivyfn.store.address import Address
 from kivyfn.store.builder.branch import Branch
@@ -58,7 +58,7 @@ class Builder:
     # --------------------------------------------------------
 
     def store_version(self, version: int) -> Builder:
-        if not isinstance(version, int):
+        if type(version) is not int:
             raise TypeError("store_version must be an int")
 
         if version < 1:
@@ -68,8 +68,7 @@ class Builder:
         return self
 
     def boot_policy(
-        self,
-        policy: Literal["erase", "raise", "recover"],
+        self, policy: Literal["erase", "raise", "recover"]
     ) -> Builder:
         boot_policy = BootPolicy(policy)
 
@@ -91,7 +90,6 @@ class Builder:
         if self._root_branch is None:
             raise RuntimeError("No tree defined. Call .tree() first.")
 
-
         self._validate_structure(self._root_branch)
 
         root_node = self._build_node(self._root_branch)
@@ -100,7 +98,7 @@ class Builder:
             storage_path=self._storage_path,
             store_version=self._store_version,
             boot_policy=self._boot_policy,
-            migrations=self._migrations,
+            migrations=list(self._migrations),
         )
 
         self._built = True
@@ -134,19 +132,12 @@ class Builder:
     # Branch -> Node Conversion
     # --------------------------------------------------------
 
-    def _build_node(
-        self,
-        branch: Branch,
-        path: tuple[str, ...] = (),
-    ) -> Node:
+    def _build_node(self, branch: Branch, path: tuple[str, ...] = ()) -> Node:
         address = Address(*path)
         node = Node(branch.schema(), address)
 
         for name, child_branch in branch._raw_children().items():
-            child_node = self._build_node(
-                child_branch,
-                path + (name,),
-            )
+            child_node = self._build_node(child_branch, path + (name,))
             node.add_child(name, child_node)
 
         return node

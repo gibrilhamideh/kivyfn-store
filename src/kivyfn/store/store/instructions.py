@@ -1,6 +1,7 @@
 # src/kivyfn/store/store/instructions.py
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, TypeAlias, assert_never
 
 from kivyfn.store.core.instruction import (
@@ -10,7 +11,13 @@ from kivyfn.store.core.instruction import (
     SetInstruction,
     SetRowInstruction,
 )
-from kivyfn.store.error import NodeErrorDetail, NodeNotFoundError
+from kivyfn.store.error import (
+    InvalidOperationError,
+    NodeErrorDetail,
+    NodeNotFoundError,
+    RowErrorDetail,
+    RowNotFoundError,
+)
 from kivyfn.store.events.event import SignalEvent, SignalRowEvent, StoreSignal
 from kivyfn.store.operations import OperationSource
 from kivyfn.store.protocol.message.requests import (
@@ -21,9 +28,10 @@ from kivyfn.store.protocol.message.requests import (
     SignalRequestAction,
     SignalRowRequestAction,
 )
-
+from kivyfn.store.schema import ManySchema, SingleSchema
 
 if TYPE_CHECKING:
+    from kivyfn.store.core.delta import Delta
     from kivyfn.store.core.metadata import EngineMetadata
     from kivyfn.store.node import Node
 
@@ -56,6 +64,10 @@ class InstructionBuilder:
 
             match action:
                 case SetRequestAction():
+                    if not action.values:
+                        raise InvalidOperationError(
+                            "Set requires field values"
+                        )
                     instructions.extend(
                         SetInstruction(
                             address=address,
@@ -67,6 +79,10 @@ class InstructionBuilder:
                     )
 
                 case SetRowRequestAction():
+                    if not action.values:
+                        raise InvalidOperationError(
+                            "SetRow requires field values"
+                        )
                     instructions.extend(
                         SetRowInstruction(
                             address=address,
@@ -98,6 +114,10 @@ class InstructionBuilder:
                     )
 
                 case SignalRequestAction():
+                    if not isinstance(node.schema, SingleSchema):
+                        raise InvalidOperationError(
+                            "Row identifier required for a ManySchema signal"
+                        )
                     node.schema.get_signal(action.signal)
 
                     signals.append(
@@ -105,11 +125,15 @@ class InstructionBuilder:
                             schema=node.schema.name,
                             source=OperationSource.COMMAND,
                             signal=action.signal,
-                            data=action.data,
+                            data=deepcopy(action.data),
                         )
                     )
 
                 case SignalRowRequestAction():
+                    if not isinstance(node.schema, ManySchema):
+                        raise InvalidOperationError(
+                            "Row signals require a ManySchema"
+                        )
                     node.schema.get_signal(action.signal)
 
                     signals.append(
@@ -118,7 +142,7 @@ class InstructionBuilder:
                             source=OperationSource.COMMAND,
                             id=action.row_id,
                             signal=action.signal,
-                            data=action.data,
+                            data=deepcopy(action.data),
                         )
                     )
 
@@ -126,6 +150,25 @@ class InstructionBuilder:
                     assert_never(action)
 
         return tuple(instructions), tuple(signals)
+
+    def validate_signals(
+        self, signals: tuple[StoreSignal, ...], delta: Delta
+    ) -> None:
+        """A row signal must have a live target in the final transaction."""
+        for signal in signals:
+            if not isinstance(signal, SignalRowEvent):
+                continue
+            node = self._node(signal.schema)
+            if not delta.exists(node, signal.id):
+                raise RowNotFoundError(
+                    f"Signal target {signal.schema}[{signal.id!r}] "
+                    "does not exist in the committed transaction",
+                    detail=RowErrorDetail(
+                        schema=signal.schema,
+                        row_id=signal.id,
+                        operation="signal",
+                    ),
+                )
 
     def _node(self, schema: str) -> Node:
         try:

@@ -15,24 +15,17 @@ from kivyfn.store.transaction import Transaction
 class UserSchema(ManySchema):
     persistent = True
 
-    uniques = [
-        ("email",),
-    ]
+    uniques = [("email",)]
 
     username = StringField(default="")
     email = StringField(default="")
     age = NumericField(ge=0, le=130, default=0)
     active = BooleanField(default=True)
-    role = EnumField(
-        values=("user", "admin"),
-        default="user",
-    )
+    role = EnumField(values=("user", "admin"), default="user")
 
     @trigger(OpCode.INSERT)
     def create_settings(
-        self,
-        transaction: Transaction,
-        context: TriggerContext,
+        self, transaction: Transaction, context: TriggerContext
     ) -> None:
         row_id = context.id
 
@@ -41,8 +34,4 @@ class UserSchema(ManySchema):
 
         settings = context.engine.get_node_by_schema("UserSettingsSchema")
 
-        transaction.insert(
-            settings.address,
-            {"user_id": row_id},
-            id=row_id,
-        )
+        transaction.insert(settings.address, {"user_id": row_id}, id=row_id)

@@ -21,6 +21,7 @@ def encode_event_message(message: EventMessage) -> dict[str, Any]:
     return {
         "event": {
             "store_instance_id": message.store_instance_id,
+            "transaction_id": message.transaction_id,
             "events": [
                 _encode_subscription_event(event) for event in message.events
             ],
@@ -39,6 +40,7 @@ def decode_event_message(payload: object) -> EventMessage:
 
     return EventMessage(
         store_instance_id=_string(data, "store_instance_id"),
+        transaction_id=_optional_string(data, "transaction_id"),
         events=tuple(_decode_subscription_event(event) for event in events),
     )
 
@@ -91,6 +93,7 @@ def _encode_action(action: EventAction) -> dict[str, Any]:
                 "type": "signal",
                 "signal": action.signal,
                 "data": action.data,
+                "occurrence_id": action.occurrence_id,
             }
 
         case SignalRowEventAction():
@@ -99,6 +102,7 @@ def _encode_action(action: EventAction) -> dict[str, Any]:
                 "row_id": action.row_id,
                 "signal": action.signal,
                 "data": action.data,
+                "occurrence_id": action.occurrence_id,
             }
 
         case _:
@@ -129,7 +133,9 @@ def _decode_action(payload: object) -> EventAction:
 
         case "signal":
             return SignalEventAction(
-                signal=_string(data, "signal"), data=data.get("data")
+                signal=_string(data, "signal"),
+                data=data.get("data"),
+                occurrence_id=_occurrence_id(data),
             )
 
         case "signalrow":
@@ -137,6 +143,7 @@ def _decode_action(payload: object) -> EventAction:
                 row_id=_string(data, "row_id"),
                 signal=_string(data, "signal"),
                 data=data.get("data"),
+                occurrence_id=_occurrence_id(data),
             )
 
         case _:
@@ -195,4 +202,17 @@ def _string(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"Store event {key} must be a non-empty string")
 
+    return value
+
+
+def _optional_string(payload: dict[str, Any], key: str) -> str | None:
+    if payload.get(key) is None:
+        return None
+    return _string(payload, key)
+
+
+def _occurrence_id(payload: dict[str, Any]) -> int | None:
+    value = payload.get("occurrence_id")
+    if value is not None and (type(value) is not int or value < 0):
+        raise ValueError("Signal occurrence ID must be a nonnegative integer")
     return value

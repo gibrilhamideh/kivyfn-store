@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 # src/kivyfn/store/builder/migration.py
 from __future__ import annotations
 

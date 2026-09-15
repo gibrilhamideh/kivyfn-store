@@ -2,20 +2,67 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from itertools import count
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, cast
 from urllib.parse import urlsplit
 
-from kivyfn.runtime.process import FnProcessContext
 from kivyfn.store.host.host import StoreHost
 from kivyfn.store.store import Store
 
 if TYPE_CHECKING:
-    from kivyfn.runtime.process.manager import FnProcessManager
-    from kivyfn.runtime.process.process import FnProcess
     from kivyfn.store.builder.config import StoreConfig
     from kivyfn.store.node import Node
+
+
+class ProcessContext(Protocol):
+    """Child-process hooks required by the Store runner."""
+
+    @property
+    def args(self) -> tuple[Any, ...]: ...
+
+    def listen(self, callback: Callable[[], None]) -> None: ...
+
+    def ready(self, payload: dict[str, Any]) -> None: ...
+
+
+class ProcessHandle(Protocol):
+    """Read-only lifecycle information exposed by a process manager."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def running(self) -> bool: ...
+
+    @property
+    def ready(self) -> bool: ...
+
+    @property
+    def ready_payload(self) -> dict[str, Any] | None: ...
+
+    @property
+    def pid(self) -> int | None: ...
+
+
+class ProcessManager(Protocol):
+    """The process-management operations used by StoreProcess."""
+
+    def register(
+        self, name: str, target: Callable[..., None]
+    ) -> ProcessHandle: ...
+
+    def start(
+        self,
+        name: str,
+        *,
+        args: tuple[Any, ...],
+        wait: bool,
+        timeout: float | None,
+        daemon: bool,
+    ) -> object: ...
+
+    def stop(self, name: str, *, timeout: float | None) -> object: ...
 
 
 class StoreProcess:
@@ -32,7 +79,7 @@ class StoreProcess:
 
     def __init__(
         self,
-        processes: FnProcessManager,
+        processes: ProcessManager,
         root: Node,
         config: StoreConfig,
         endpoint: str,
@@ -60,9 +107,9 @@ class StoreProcess:
 
         self._startup_timeout = startup_timeout
         self._shutdown_timeout = shutdown_timeout
-        self._process: FnProcess | None = None
+        self._process: ProcessHandle | None = None
 
-    def start(self) -> FnProcess:
+    def start(self) -> ProcessHandle:
         """Start the child and wait until its host accepts connections."""
         process = self._process
         if process is None:
@@ -89,8 +136,8 @@ class StoreProcess:
         self._processes.stop(process.name, timeout=self._shutdown_timeout)
 
     @staticmethod
-    def entry(context: FnProcessContext) -> None:
-        """Entry point used by FnProcessManager in the child process."""
+    def entry(context: ProcessContext) -> None:
+        """Entry point called by the supplied manager in the child process."""
         root, config, endpoint = context.args
         asyncio.run(
             StoreProcess._run(
@@ -103,10 +150,7 @@ class StoreProcess:
 
     @staticmethod
     async def _run(
-        context: FnProcessContext,
-        root: Node,
-        config: StoreConfig,
-        endpoint: str,
+        context: ProcessContext, root: Node, config: StoreConfig, endpoint: str
     ) -> None:
         loop = asyncio.get_running_loop()
         stopped = asyncio.Event()
@@ -167,7 +211,7 @@ class StoreProcess:
         return endpoint if isinstance(endpoint, str) and endpoint else None
 
     @property
-    def process(self) -> FnProcess | None:
+    def process(self) -> ProcessHandle | None:
         return self._process
 
     @property

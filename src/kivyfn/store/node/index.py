@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from kivyfn.store.error import (
     ConstraintErrorDetail,
+    FieldErrorDetail,
+    FieldValidationError,
     IndexErrorDetail,
     IndexNotFoundError,
     UniqueConstraintError,
@@ -27,15 +29,24 @@ class _Index:
         self._rows: dict[Any, set[str]] = {}
 
     def key(self, row: Mapping[str, Any]) -> Any | None:
-        if len(self.fields) == 1:
-            return row.get(self.fields[0])
-
         values = tuple(row.get(field) for field in self.fields)
-
         if any(value is None for value in values):
             return None
-
-        return values
+        key = values[0] if len(values) == 1 else values
+        try:
+            hash(key)
+        except TypeError:
+            raise FieldValidationError(
+                f"Indexed fields {self.schema}.{'.'.join(self.fields)} "
+                "must contain hashable values",
+                detail=FieldErrorDetail(
+                    schema=self.schema,
+                    field=".".join(self.fields),
+                    rule="index",
+                    expected="hashable value",
+                ),
+            ) from None
+        return key
 
     def validate(self, row_id: str, key: Any | None) -> None:
         if key is None or not self.unique:
@@ -47,7 +58,8 @@ class _Index:
             return
 
         raise UniqueConstraintError(
-            f"Unique constraint violated on {self.schema}.{'.'.join(self.fields)}",
+            f"Unique constraint violated on "
+            f"{self.schema}.{'.'.join(self.fields)}",
             detail=ConstraintErrorDetail(
                 schema=self.schema,
                 fields=self.fields,
@@ -104,9 +116,7 @@ class IndexManager:
 
         self._indexes = {
             fields: _Index(
-                fields,
-                schema=self._schema,
-                unique=fields in unique_keys,
+                fields, schema=self._schema, unique=fields in unique_keys
             )
             for fields in schema.index_keys()
         }
@@ -162,11 +172,8 @@ class IndexManager:
             raise IndexNotFoundError(
                 f"No index exists for {self._schema}.{'.'.join(key)}",
                 detail=IndexErrorDetail(
-                    schema=self._schema,
-                    fields=key,
-                    value=value,
+                    schema=self._schema, fields=key, value=value
                 ),
             )
 
         return index
-

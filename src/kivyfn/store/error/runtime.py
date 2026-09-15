@@ -11,9 +11,9 @@ class StoreStateError(StoreRuntimeError):
 
     Examples:
 
-    - LocalStore has not been booted.
-    - LocalStore has already been shut down.
-    - RemoteStore is not connected.
+    - Store has not been booted.
+    - Store has already been shut down.
+    - StoreClient is not connected.
     - A connection or boot operation is requested in an invalid state.
     """
 

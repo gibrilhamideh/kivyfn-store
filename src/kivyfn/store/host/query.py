@@ -13,7 +13,6 @@ from kivyfn.store.protocol.message.event import (
 )
 from kivyfn.store.query import Query, QueryResult, QueryRow
 
-
 if TYPE_CHECKING:
     from kivyfn.store.query.plan import QueryPlan
     from kivyfn.store.store import Store

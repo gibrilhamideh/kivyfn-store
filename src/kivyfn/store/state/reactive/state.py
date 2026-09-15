@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
+from weakref import WeakKeyDictionary
 
 from kivy.event import EventDispatcher
 from kivy.properties import BooleanProperty, NumericProperty
 
-from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.schema import Schema
 from kivyfn.store.schema.fields import BaseField
 from kivyfn.store.state.reactive.data import StateData
+from kivyfn.store.state.reactive.dispatch import dispatch, set_property
 
 if TYPE_CHECKING:
     from kivyfn.store.state.transaction.failure import TransactionFailure
@@ -62,8 +64,55 @@ class State(EventDispatcher, Generic[SchemaT]):
         self._row_id = row_id
         self._data = StateData(schema.defaults())
         self._pending_transactions: set[str] = set()
+        self._sync_owners: WeakKeyDictionary[Any, bool] = WeakKeyDictionary()
 
         self.publish(self._state_field_names)
+
+    def __getattribute__(self, name: str) -> Any:
+        # Properties notify Kivy; StateData is the authoritative read view.
+        # Copying here also prevents in-place edits escaping request routing.
+        if name in {"pending_count", "is_pending"}:
+            try:
+                pending = object.__getattribute__(
+                    self, "_pending_transactions"
+                )
+            except AttributeError:
+                pass
+            else:
+                return (
+                    len(pending) if name == "pending_count" else bool(pending)
+                )
+        if name == "synced":
+            try:
+                row_id = object.__getattribute__(self, "_row_id")
+                owners = object.__getattribute__(self, "_sync_owners")
+            except AttributeError:
+                pass
+            else:
+                if row_id is not None:
+                    return bool(owners)
+        if not name.startswith("_"):
+            fields = type(self)._state_field_names
+            if name in fields:
+                try:
+                    data = object.__getattribute__(self, "_data")
+                except AttributeError:
+                    pass
+                else:
+                    return data.visible(name)
+        return super().__getattribute__(name)
+
+    def set_owner_synced(self, owner: object, synced: bool) -> None:
+        if synced:
+            self._sync_owners[owner] = True
+        else:
+            self._sync_owners.pop(owner, None)
+        set_property(self, "synced", bool(self._sync_owners))
+
+    def get(self, name: str) -> Any:
+        """Read a named field, including dynamically projected query fields."""
+        self._require_fields({name: None})
+        return self._data.visible(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
         if not name.startswith("_") and name in type(self)._state_field_names:
@@ -153,14 +202,14 @@ class State(EventDispatcher, Generic[SchemaT]):
         self._pending_transactions.add(transaction.id)
         self._sync_pending()
 
-        self.dispatch("on_pending", transaction)
+        dispatch(self, "on_pending", transaction)
 
     def succeed_transaction(self, transaction: StateTransaction) -> None:
         if not self._finish_transaction(transaction.id):
             return
 
-        self.dispatch("on_success", transaction)
-        self.dispatch("on_done", transaction, None)
+        dispatch(self, "on_success", transaction)
+        dispatch(self, "on_done", transaction, None)
 
     def fail_transaction(
         self, transaction: StateTransaction, failure: TransactionFailure
@@ -168,8 +217,8 @@ class State(EventDispatcher, Generic[SchemaT]):
         if not self._finish_transaction(transaction.id):
             return
 
-        self.dispatch("on_failed", transaction, failure)
-        self.dispatch("on_done", transaction, failure)
+        dispatch(self, "on_failed", transaction, failure)
+        dispatch(self, "on_done", transaction, failure)
 
     def _request_set(
         self, values: dict[str, Any], *, optimistic: bool
@@ -217,8 +266,8 @@ class State(EventDispatcher, Generic[SchemaT]):
     def _sync_pending(self) -> None:
         count = len(self._pending_transactions)
 
-        self.pending_count = count
-        self.is_pending = count > 0
+        set_property(self, "pending_count", count)
+        set_property(self, "is_pending", count > 0)
 
     def _require_fields(self, values: Mapping[str, Any]) -> None:
         for name in values:

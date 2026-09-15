@@ -9,7 +9,6 @@ from tests.conftest import StateStack
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
 
-
 USER = {
     "username": "gibril",
     "email": "gibril@example.com",
@@ -24,7 +23,7 @@ async def test_invalid_field_value_is_rejected_locally(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     with pytest.raises(Exception):
         users["user-1"] = {**USER, "age": 200}
@@ -37,15 +36,12 @@ async def test_strict_duplicate_unique_value_fails_without_membership(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     first = users.insert("user-1", **USER)
     await first
 
-    duplicate = users.insert(
-        "user-2",
-        **{**USER, "username": "other"},
-    )
+    duplicate = users.insert("user-2", **{**USER, "username": "other"})
     await duplicate
 
     assert getattr(duplicate, "failed")
@@ -58,7 +54,7 @@ async def test_optimistic_duplicate_insert_rolls_back(
 ) -> None:
     users = state_stack.state.create(UserSchema)
     settings = state_stack.state.create(UserSettingsSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     first = users.insert("user-1", **USER)
     await first
@@ -83,7 +79,7 @@ async def test_failed_transaction_rolls_back_optimistic_membership(
     state_stack: StateStack,
 ) -> None:
     users = state_stack.state.create(UserSchema)
-    await state_stack.client.connect()
+    await state_stack.client.connect(state_stack.endpoint)
 
     first = users.insert("user-1", **USER)
     await first

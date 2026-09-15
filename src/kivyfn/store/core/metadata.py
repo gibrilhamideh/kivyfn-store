@@ -8,8 +8,9 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from kivyfn.store.address import Address
+from kivyfn.store.error import NodeErrorDetail, NodeNotFoundError
+from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.schema.policy import ForeignKeyPolicy
-
 
 if TYPE_CHECKING:
     from kivyfn.store.node import Node
@@ -66,14 +67,18 @@ class EngineMetadata:
         try:
             return self.nodes_by_address[address]
         except KeyError:
-            raise RuntimeError(f"Node address not found: {address}") from None
+            raise NodeNotFoundError(
+                f"Node address not found: {address}",
+                detail=NodeErrorDetail(address=address.parts),
+            ) from None
 
     def get_node_by_schema(self, schema_name: str) -> Node:
         try:
             return self.nodes_by_schema[schema_name]
         except KeyError:
-            raise RuntimeError(
-                f"No node found for schema {schema_name!r}"
+            raise NodeNotFoundError(
+                f"No node found for schema {schema_name!r}",
+                detail=NodeErrorDetail(schema=schema_name),
             ) from None
 
     def foreign_keys_of(self, schema_name: str) -> tuple[ForeignKey, ...]:
@@ -137,6 +142,21 @@ def _build_foreign_keys(
                 raise RuntimeError(
                     "Foreign key reference schema "
                     f"{reference!r} is not registered"
+                )
+
+            if not isinstance(nodes_by_schema[reference].schema, ManySchema):
+                raise ValueError(
+                    f"Foreign key {schema_name}.{field_name} must reference "
+                    "a ManySchema"
+                )
+            if (
+                isinstance(node.schema, SingleSchema)
+                and field.on_delete is ForeignKeyPolicy.CASCADE
+            ):
+                raise ValueError(
+                    f"Foreign key {schema_name}.{field_name}: "
+                    "CASCADE requires "
+                    "a ManySchema source; singleton records cannot be deleted"
                 )
 
             foreign_key = ForeignKey(

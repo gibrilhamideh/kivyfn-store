@@ -2,17 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING
 
 import socketio
-from socketio.exceptions import (
-    BadNamespaceError,
-    ConnectionError as SocketIOConnectionError,
-    TimeoutError as SocketIOTimeoutError,
-)
+from socketio.exceptions import BadNamespaceError
+from socketio.exceptions import ConnectionError as SocketIOConnectionError
+from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
-from kivyfn.logging import get_logger
 from kivyfn.store.codec.events import decode_event_message
 from kivyfn.store.codec.requests import encode_request
 from kivyfn.store.codec.responses import decode_response
@@ -156,17 +153,17 @@ class SocketIOClientTransport(ClientTransport):
             return decode_response(payload)
 
         except SocketIOTimeoutError as exc:
-            await self._disconnect_lost()
+            await self.disconnect()
 
             raise StoreTimeoutError("Store request timed out") from exc
 
         except (SocketIOConnectionError, BadNamespaceError) as exc:
-            await self._disconnect_lost()
+            await self.disconnect()
 
             raise StoreConnectionError("Store connection was lost") from exc
 
         except (TypeError, ValueError) as exc:
-            await self._disconnect_lost()
+            await self.disconnect()
 
             raise StoreProtocolError("Invalid Store response") from exc
 
@@ -200,20 +197,19 @@ class SocketIOClientTransport(ClientTransport):
                 return
 
             try:
-                payload = values[0] if len(values) == 1 else values
-
-                message = decode_event_message(payload)
-
+                try:
+                    payload = values[0] if len(values) == 1 else values
+                    message = decode_event_message(payload)
+                except (TypeError, ValueError) as error:
+                    raise StoreProtocolError("Invalid Store event") from error
                 self._client.on_message(message)
-
-            except Exception:
+            except Exception as error:
                 logger.exception("Store message delivery failed")
+                await self._disconnect_lost(error)
 
-                await self._disconnect_lost()
-
-    async def _disconnect_lost(self) -> None:
-        self._drop_connection(notify=True)
-
+    async def _disconnect_lost(self, error: Exception | None = None) -> None:
+        self._drop_connection(notify=False)
+        self._client.on_disconnect(error)
         await self.disconnect()
 
     def _drop_connection(self, *, notify: bool) -> None:

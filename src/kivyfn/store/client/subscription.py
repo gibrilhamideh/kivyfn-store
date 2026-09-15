@@ -1,11 +1,16 @@
 # src/kivyfn/store/client/subscription.py
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias
 
 from kivyfn.store.error import StoreProtocolError
-from kivyfn.store.protocol.message.event import SubscriptionEvent
+from kivyfn.store.protocol.message.event import (
+    SignalEventAction,
+    SignalRowEventAction,
+    SubscriptionEvent,
+)
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
     QuerySubscriptionRequest,
@@ -21,10 +26,35 @@ from kivyfn.store.protocol.message.responses import (
 from kivyfn.store.query import Query
 from kivyfn.store.schema import ManySchema, SingleSchema
 
-
 SubscriptionSource: TypeAlias = (
     type[SingleSchema] | type[ManySchema] | Query[Any]
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionPublication:
+    """Retained notifications and ordered occurrences for one staged view."""
+
+    publish: Callable[[], None]
+    signals: tuple[tuple[int | None, Callable[[], None]], ...] = ()
+
+    def __call__(self) -> None:
+        publish_subscriptions((self,))
+
+
+def publish_subscriptions(
+    publications: Iterable[SubscriptionPublication],
+) -> None:
+    """Publish retained changes, then signals in original commit order."""
+    signals: list[tuple[int | None, Callable[[], None]]] = []
+    for publication in publications:
+        publication.publish()
+        signals.extend(publication.signals)
+    # An occurrence ID is shared across subscription fan-out. Stable sorting
+    # retains row/collection dispatch order within the same occurrence.
+    signals.sort(key=lambda item: (item[0] is None, item[0] or 0))
+    for _, emit in signals:
+        emit()
 
 
 class SubscriptionManager(Protocol):
@@ -120,6 +150,12 @@ class ClientSubscription:
             raise StoreProtocolError(
                 "Subscription event contains an unknown dependency"
             )
+
+        if not event.revisions and any(
+            not isinstance(action, (SignalEventAction, SignalRowEventAction))
+            for action in event.actions
+        ):
+            raise StoreProtocolError("Retained changes require a revision")
 
         revisions = dict(current)
 
@@ -252,7 +288,7 @@ class ClientSubscriptions:
         return subscription
 
     def disconnect(self) -> None:
-        for subscription in self._by_source.values():
+        for subscription in tuple(self._by_source.values()):
             self._unbind(subscription)
 
         self._by_id.clear()

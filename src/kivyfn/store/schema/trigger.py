@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, Protocol, TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Optional, Protocol, TypeVar
 
 from kivyfn.store.operations import OpCode
 
@@ -30,17 +30,18 @@ class Trigger:
 
 class TriggerFunc(Protocol):
     def __call__(
-        self,
-        schema: Schema,
-        builder: Transaction,
-        context: TriggerContext,
+        self, schema: Schema, builder: Transaction, context: TriggerContext
     ) -> Any: ...
 
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
-def trigger(opcode: OpCode, *, field: Optional[str] = None):
+def trigger(opcode: OpCode, *, field: str | None = None) -> Callable[[F], F]:
+    opcode = OpCode(opcode)
+    if field is not None and (not isinstance(field, str) or not field):
+        raise ValueError("Trigger field must be a non-empty string")
+
     def decorator(fn: F) -> F:
         trigger_meta = getattr(fn, "_trigger_meta", None)
 
@@ -48,13 +49,7 @@ def trigger(opcode: OpCode, *, field: Optional[str] = None):
             trigger_meta = []
             setattr(fn, "_trigger_meta", trigger_meta)
 
-        trigger_meta.append(
-            Trigger(
-                opcode=opcode,
-                field=field,
-                fn=fn,
-            )
-        )
+        trigger_meta.append(Trigger(opcode=opcode, field=field, fn=fn))
 
         return fn
 

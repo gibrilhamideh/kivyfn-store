@@ -9,7 +9,6 @@ from kivyfn.store.query.query import JoinKind, Query
 from kivyfn.store.schema import ManySchema, Schema
 from kivyfn.store.schema.fields import BaseField, ForeignKeyField
 
-
 SchemaResolver = Callable[[str], Schema]
 
 
@@ -72,6 +71,12 @@ class QueryShape:
                 raise ValueError(
                     "Query joins must declare their parent relationship "
                     f"first: {join.path!s}"
+                )
+
+            if join.alias in owner.fields():
+                raise ValueError(
+                    f"Query join alias {join.alias!r} shadows a field "
+                    f"on {owner.name}"
                 )
 
             field_name, relation = _foreign_key(owner, requested[-1])

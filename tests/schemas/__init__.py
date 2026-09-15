@@ -2,11 +2,9 @@
 from pathlib import Path
 
 from kivyfn.store.builder import Branch, Builder
-
 from tests.schemas.root import RootSchema
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema
-
 
 TEST_STORE_PATH = Path("~/Data/kivyfn-store/tests").expanduser()
 

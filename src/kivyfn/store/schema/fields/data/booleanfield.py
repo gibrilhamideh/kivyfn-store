@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from kivyfn.store.error import (
-    FieldErrorDetail,
-    FieldValidationError,
-)
+from kivyfn.store.error import FieldErrorDetail, FieldValidationError
 from kivyfn.store.schema.fields.data.datafield import DataField
 
 
@@ -17,10 +14,7 @@ class BooleanField(DataField[bool]):
     Accepts bool only. No coercion or normalization is performed.
     """
 
-    def challenge(
-        self,
-        value: Any,
-    ) -> None:
+    def challenge(self, value: Any) -> None:
         super().challenge(value)
 
         if value is None:
@@ -30,9 +24,6 @@ class BooleanField(DataField[bool]):
             raise FieldValidationError(
                 "Expected a boolean value",
                 detail=FieldErrorDetail(
-                    field=self.name,
-                    value=value,
-                    rule="type",
-                    expected="bool",
+                    field=self.name, value=value, rule="type", expected="bool"
                 ),
             )

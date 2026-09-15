@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 from kivyfn.store.address import Address
 from kivyfn.store.query.expression import AndExpression, Expression, FieldPath
 
-
 if TYPE_CHECKING:
     from kivyfn.store.schema import ManySchema
 
@@ -37,7 +36,7 @@ class JoinSpec:
         _validate_alias(self.alias)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class Query(Generic[SchemaT]):
     """
     Immutable relational Query description.
@@ -70,6 +69,20 @@ class Query(Generic[SchemaT]):
             raise TypeError("Query predicate must be a query expression")
 
         object.__setattr__(self, "joins", joins)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Query):
+            return NotImplemented
+        return self._identity() == other._identity()
+
+    def __hash__(self) -> int:
+        return hash(self._identity())
+
+    def _identity(self) -> tuple[object, ...]:
+        # Keep the class for local schema resolution, while class/name forms
+        # share one subscription identity on both sides of the connection.
+        source = self.schema_name or self.source
+        return source, self.joins, self.predicate
 
     def where(self, *expressions: Expression) -> Query[SchemaT]:
         if not expressions:

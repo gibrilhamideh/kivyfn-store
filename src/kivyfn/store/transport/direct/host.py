@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from logging import getLogger as get_logger
 from typing import TYPE_CHECKING, Any, TypeAlias
 from uuid import uuid4
 
-from kivyfn.logging import get_logger
 from kivyfn.store.error import StoreConnectionError, StoreStateError
 from kivyfn.store.protocol.message.event import EventMessage
 from kivyfn.store.protocol.message.requests import RequestBatch
@@ -118,6 +118,15 @@ class DirectHostTransport(HostTransport):
             raise
 
         return client_id
+
+    async def disconnect(self, client_id: str) -> None:
+        handlers = self._clients.pop(client_id, None)
+        if handlers is None:
+            return
+        try:
+            await self.store_host.disconnect(client_id)
+        finally:
+            await handlers[1]()
 
     async def disconnect_client(self, client_id: str) -> None:
         if self._clients.pop(client_id, None) is not None:

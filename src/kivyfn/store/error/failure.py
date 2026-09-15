@@ -10,17 +10,13 @@ from kivyfn.store.error.detail import StoreErrorDetail
 from kivyfn.store.error.status import StoreErrorStatus
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StoreFailure:
     """
     Normalized public representation of a store failure.
 
-    StoreErrorData is transport-independent and is the error type exposed by
-    failed responses from both LocalStore and RemoteStore.
+    StoreFailure is transport-independent and is the error type exposed by
+    failed Store results and Host responses.
 
     Application logic should use `code` for specific handling and `status` or
     `category` for broader fallback behavior. The message is intended for
@@ -37,6 +33,4 @@ class StoreFailure:
 
     def __post_init__(self) -> None:
         if not isinstance(self.message, str) or not self.message:
-            raise ValueError(
-                "Store error message must be a non-empty string"
-            )
+            raise ValueError("Store error message must be a non-empty string")

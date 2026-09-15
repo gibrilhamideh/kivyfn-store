@@ -5,7 +5,9 @@ from enum import Enum
 class BootPolicy(Enum):
     """Control validation and recovery of Store boot data.
 
-    Boot selects snapshots at the highest valid saved Store version.
+    Boot loads the complete generation named by the Store manifest. Legacy
+    per-schema JSON snapshots are imported at their highest valid saved Store
+    version.
     Lower-version snapshots are excluded. Missing or excluded schemas use
     their current defaults, and nonpersistent nodes always start at defaults.
 
@@ -66,12 +68,22 @@ class BootPolicy(Enum):
         The rebuilt Store must pass field and foreign-key validation before
         it can be saved. Invalid defaults still cause boot to fail.
 
-    After successful validation, save new or changed persistent snapshots
-    at the configured target version. Once all required saves succeed,
-    delete obsolete Store snapshots while keeping unrelated files.
+    After successful validation, save all persistent schemas in one complete
+    generation and atomically switch the manifest at the target Store version.
+    Remove imported and obsolete legacy snapshots only after durable success,
+    preserving unrelated files. Retain the current and previous generations.
 
-    Filesystem failures propagate under every policy. A saving failure
-    stops boot without triggering ERASE recovery or obsolete-file cleanup.
+    Corrupt legacy schemas can be recovered independently. An unreadable
+    shared manifest or generation resets the Store under RECOVER/ERASE;
+    RAISE preserves the malformed files and fails. Uncommitted generations
+    and manifest temporary files are ignored.
+
+    Filesystem failures before the manifest switch propagate under every
+    policy without ERASE recovery or cleanup. A directory fsync failure after
+    the switch is logged as uncertain power-loss durability: the new complete
+    generation is already committed and remains active. Both generations and
+    imported legacy files are retained. Post-commit cleanup failures are also
+    logged and cannot turn a successful commit into a failed transaction.
     """
 
     RAISE = "raise"

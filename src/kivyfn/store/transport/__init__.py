@@ -12,7 +12,6 @@ from kivyfn.store.transport.socketio import (
     SocketIOServerTransport,
 )
 
-
 __all__ = [
     "ClientTransport",
     "DirectClientTransport",

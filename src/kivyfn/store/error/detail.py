@@ -4,7 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
-
 ProtocolValue: TypeAlias = (
     None
     | bool
@@ -18,11 +17,7 @@ ProtocolValue: TypeAlias = (
 StoreAddress: TypeAlias = tuple[str, ...]
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class StoreErrorDetail:
     """
     Base type for structured store error details.
@@ -33,11 +28,7 @@ class StoreErrorDetail:
     """
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class InstructionErrorDetail(StoreErrorDetail):
     opcode: str | None = None
     address: StoreAddress | None = None
@@ -47,31 +38,19 @@ class InstructionErrorDetail(StoreErrorDetail):
     source: str | None = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class AddressErrorDetail(StoreErrorDetail):
     address: StoreAddress
     segment: str | None = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class NodeErrorDetail(StoreErrorDetail):
     address: StoreAddress | None = None
     schema: str | None = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FieldErrorDetail(StoreErrorDetail):
     schema: str | None = None
     field: str | None = None
@@ -83,11 +62,7 @@ class FieldErrorDetail(StoreErrorDetail):
     allow_none: bool | None = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RowErrorDetail(StoreErrorDetail):
     schema: str | None = None
     address: StoreAddress | None = None
@@ -96,22 +71,14 @@ class RowErrorDetail(StoreErrorDetail):
     conflicting_operation: str | None = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class IndexErrorDetail(StoreErrorDetail):
     schema: str | None = None
     fields: tuple[str, ...] = ()
     value: ProtocolValue = None
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ConstraintErrorDetail(StoreErrorDetail):
     schema: str | None = None
     fields: tuple[str, ...] = ()
@@ -128,11 +95,7 @@ class ConstraintErrorDetail(StoreErrorDetail):
     referencing_row_ids: tuple[str, ...] = ()
 
 
-@dataclass(
-    frozen=True,
-    slots=True,
-    kw_only=True,
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RuntimeErrorDetail(StoreErrorDetail):
     store: str | None = None
     operation: str | None = None

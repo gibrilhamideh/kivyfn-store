@@ -40,3 +40,8 @@ class HostTransport(ABC):
     async def emit(self, client_id: str, message: EventMessage) -> None:
         """Deliver one EventMessage to one client."""
         raise NotImplementedError
+
+    @abstractmethod
+    async def disconnect(self, client_id: str) -> None:
+        """Disconnect one failed client without stopping other clients."""
+        raise NotImplementedError

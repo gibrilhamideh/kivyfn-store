@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-
+from collections import defaultdict
+from copy import deepcopy
 from typing import Any, Protocol, TypeAlias, cast
 
 from kivyfn.store.client.queue import RequestQueue
@@ -10,7 +11,9 @@ from kivyfn.store.client.subscription import (
     ClientSubscription,
     ClientSubscriptions,
     SubscriptionManager,
+    SubscriptionPublication,
     SubscriptionSource,
+    publish_subscriptions,
 )
 from kivyfn.store.error import StoreConnectionError, StoreProtocolError
 from kivyfn.store.protocol.message.event import EventMessage, SubscriptionEvent
@@ -40,12 +43,17 @@ from kivyfn.store.protocol.message.responses import (
     UnsubscribeResponse,
 )
 from kivyfn.store.query import Query
+from kivyfn.store.transport.client import ClientTransport
 from kivyfn.store.transport.endpoint import create_client_transport
 
-
 TransactionReply: TypeAlias = TransactionResponse | TransactionFailureResponse
-
 QueryReply: TypeAlias = QueryResponse | FailureResponse
+
+SUBSCRIPTIONS = (
+    SingleSubscriptionRequest,
+    CollectionSubscriptionRequest,
+    QuerySubscriptionRequest,
+)
 
 
 class ClientSubscriptionManager(SubscriptionManager, Protocol):
@@ -53,7 +61,9 @@ class ClientSubscriptionManager(SubscriptionManager, Protocol):
         self, source: SubscriptionSource, response: SubscriptionResponse
     ) -> None: ...
 
-    def on_subscription_event(self, event: SubscriptionEvent) -> None: ...
+    def prepare_subscription_message(
+        self, message: EventMessage
+    ) -> SubscriptionPublication: ...
 
     def on_subscription_status(
         self, source: SubscriptionSource, synced: bool
@@ -61,43 +71,37 @@ class ClientSubscriptionManager(SubscriptionManager, Protocol):
 
 
 class StoreClient:
-    """Coordinate client batching, subscriptions, and transport events."""
+    """Batch requests and own subscription synchronization.
 
-    def __init__(
-        self, endpoint: str, *, max_buffered_messages: int = 1000
-    ) -> None:
-        self._endpoint = endpoint
-        self._transport = create_client_transport(endpoint, self)
+    An interrupted request is never automatically replayed. Its outcome may
+    be unknown, so callers reconnect to obtain current canonical snapshots.
+    """
 
+    def __init__(self, *, max_buffered_messages: int = 1000) -> None:
+        if max_buffered_messages < 1:
+            raise ValueError("max_buffered_messages must be positive")
+        self._endpoint: str | None = None
+        self._transport: ClientTransport | None = None
         self._max_buffered_messages = max_buffered_messages
-
         self._online = False
+        self._generation = 0
         self._resubscribing = False
-
         self._subscriptions = ClientSubscriptions()
         self._queue = RequestQueue()
-
         self._loop: asyncio.AbstractEventLoop | None = None
-
         self._batch_handle: asyncio.Handle | None = None
         self._flush_task: asyncio.Task[None] | None = None
-
-        self._sync_batch: RequestBatch | None = None
+        self._connect_task: asyncio.Task[None] | None = None
         self._sync_future: asyncio.Future[None] | None = None
-
         self._messages: list[EventMessage] = []
-
         self._store_instance_id: str | None = None
         self._connection_instance_id: str | None = None
-
         self._subscription_requests: dict[int, SubscriptionSource] = {}
-
         self._transactions: dict[str, asyncio.Future[TransactionReply]] = {}
-
         self._queries: dict[int, asyncio.Future[QueryReply]] = {}
 
     @property
-    def endpoint(self) -> str:
+    def endpoint(self) -> str | None:
         return self._endpoint
 
     @property
@@ -107,518 +111,390 @@ class StoreClient:
     @property
     def synced(self) -> bool:
         return (
-            self._online
+            self.online
             and not self._resubscribing
+            and not self._subscription_requests
             and self._subscriptions.synced
         )
 
-    async def connect(self) -> None:
-        self._loop = asyncio.get_running_loop()
+    async def connect(self, endpoint: str | None = None) -> None:
+        """Connect and synchronize, reusing the last endpoint when omitted."""
+        loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeError("StoreClient belongs to another event loop")
+        if endpoint is None:
+            endpoint = self._endpoint
+        if endpoint is None:
+            raise StoreConnectionError("An endpoint is required to connect")
+        if endpoint != self._endpoint:
+            if self._loop is not None:
+                raise StoreConnectionError(
+                    "Disconnect before changing the Store endpoint"
+                )
+            transport = create_client_transport(endpoint, self)
+            self._transport = transport
+            self._endpoint = endpoint
+        self._loop = loop
+        if self._connect_task is None:
+            if self.online:
+                if self._sync_future is not None:
+                    await asyncio.shield(self._sync_future)
+                return
+            self._connect_task = loop.create_task(self._connect())
+            self._connect_task.add_done_callback(self._connect_done)
+        await asyncio.shield(self._connect_task)
 
-        if self.online:
-            return
+    def _connect_done(self, task: asyncio.Task[None]) -> None:
+        # A cancelled waiter does not own the shared connection attempt.
+        if self._connect_task is task:
+            self._connect_task = None
+        if not task.cancelled():
+            task.exception()
 
-        self._sync_future = self._loop.create_future()
-
-        await self._transport.connect()
-
-        sync = self._sync_future
-
-        if sync is not None:
+    async def _connect(self) -> None:
+        transport = self._require_transport()
+        assert self._loop is not None
+        sync = self._loop.create_future()
+        sync.add_done_callback(_observe_completion)
+        self._sync_future = sync
+        try:
+            await transport.connect()
             await asyncio.shield(sync)
+        except BaseException:
+            self._reset(StoreConnectionError("Store connection failed"))
+            if sync.done() and not sync.cancelled():
+                sync.exception()
+            await transport.disconnect()
+            raise
 
     async def disconnect(self) -> None:
-        flush = self._flush_task
-
-        if self._batch_handle is not None:
-            self._batch_handle.cancel()
-            self._batch_handle = None
-
-        if flush is not None:
-            flush.cancel()
-
-        await self._transport.disconnect()
-
-        if flush is not None:
-            await asyncio.gather(flush, return_exceptions=True)
-
-        self._online = False
-        self._resubscribing = False
-        self._sync_batch = None
+        error = StoreConnectionError(
+            "Store client disconnected; in-flight outcomes may be unknown"
+        )
+        self._reset(error)
+        tasks = tuple(
+            task
+            for task in (self._flush_task, self._connect_task)
+            if task is not None and task is not asyncio.current_task()
+        )
+        for task in tasks:
+            task.cancel()
+        transport = self._transport
+        if transport is not None:
+            await transport.disconnect()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._flush_task = None
-
-        self._messages.clear()
-        self._queue.clear()
-
-        self._subscriptions.disconnect()
-
-        self._set_subscription_status(False)
-
-        error = StoreConnectionError("Store client disconnected")
-
-        for future in self._transactions.values():
-            if not future.done():
-                future.set_exception(error)
-
-        for future in self._queries.values():
-            if not future.done():
-                future.set_exception(error)
-
-        self._transactions.clear()
-        self._queries.clear()
-        self._subscription_requests.clear()
-
-        sync = self._sync_future
-
-        if sync is not None and not sync.done():
-            sync.set_exception(error)
-
+        self._connect_task = None
         self._sync_future = None
         self._loop = None
 
     def on_connect(self) -> None:
-        """Handle a transport connection event."""
+        self._generation += 1
         self._online = True
         self._resubscribing = True
         self._connection_instance_id = None
+        for subscription in self._subscriptions.desired():
+            self._subscribe(subscription)
+        self._finish_sync()
 
-        if self._loop is None:
-            self._loop = asyncio.get_running_loop()
+    def on_disconnect(self, error: Exception | None = None) -> None:
+        if error is None:
+            error = StoreConnectionError(
+                "Store connection lost; in-flight outcomes may be unknown"
+            )
+        self._reset(error)
 
-        if self._sync_future is None or self._sync_future.done():
-            self._sync_future = self._loop.create_future()
-
-        subscriptions = self._subscriptions.desired()
-
-        if not subscriptions:
-            self._finish_resubscribe()
-            return
-
-        requests: list[RequestItem] = []
-
-        for subscription in subscriptions:
-            request = subscription.request(self._store_instance_id)
-
-            self._subscription_requests[id(request)] = subscription.source
-
-            requests.append(request)
-
-        batch = RequestBatch(items=tuple(requests))
-
-        self._sync_batch = batch
-
-        self._queue.appendleft(batch)
-
-        self._schedule_flush()
-
-    def on_disconnect(self) -> None:
-        """Handle an unexpected transport disconnect event."""
-        if not self._online:
-            return
-
+    def _reset(self, error: Exception) -> None:
+        self._generation += 1
         self._online = False
         self._resubscribing = False
         self._connection_instance_id = None
-        self._sync_batch = None
-
+        if self._batch_handle is not None:
+            self._batch_handle.cancel()
+            self._batch_handle = None
+        self._queue.clear()
         self._messages.clear()
-
+        self._subscription_requests.clear()
         self._subscriptions.disconnect()
-
         self._set_subscription_status(False)
+        futures = (*self._transactions.values(), *self._queries.values())
+        self._transactions.clear()
+        self._queries.clear()
+        for future in futures:
+            if not future.done():
+                future.set_exception(error)
+        sync = self._sync_future
+        if sync is not None and not sync.done():
+            sync.set_exception(error)
 
     def on_message(self, message: EventMessage) -> None:
-        """Handle one EventMessage received by the transport."""
-        if not self._online:
+        if not self.online:
             return
-
-        if self._resubscribing:
+        if self._resubscribing or self._subscription_requests:
             if len(self._messages) >= self._max_buffered_messages:
                 raise StoreProtocolError("Store message buffer is full")
-
             self._messages.append(message)
-
-            return
-
-        self._deliver(message)
+        else:
+            self._deliver(message)
 
     def subscribe(
         self, source: SubscriptionSource, manager: ClientSubscriptionManager
     ) -> ClientSubscription:
         existing = self._subscriptions.get(source)
-
         subscription = self._subscriptions.get_or_create(source, manager)
-
-        if existing is not None:
-            return subscription
-
-        manager.on_subscription_status(source, False)
-
-        if not self.online:
-            return subscription
-
-        request = subscription.request(self._store_instance_id)
-
-        self._subscription_requests[id(request)] = source
-
-        if self._resubscribing:
-            self._queue.appendleft(RequestBatch(items=(request,)))
-
-            self._schedule_flush()
-
-            return subscription
-
-        self._enqueue(request)
-
+        if existing is None:
+            manager.on_subscription_status(source, False)
+            if self.online:
+                self._subscribe(subscription)
         return subscription
+
+    def _subscribe(self, subscription: ClientSubscription) -> None:
+        if self._sync_future is None or self._sync_future.done():
+            assert self._loop is not None
+            self._sync_future = self._loop.create_future()
+            self._sync_future.add_done_callback(_observe_completion)
+        request = subscription.request(self._store_instance_id)
+        self._subscription_requests[id(request)] = subscription.source
+        self._enqueue(request)
 
     def unsubscribe(
         self, source: SubscriptionSource, manager: ClientSubscriptionManager
     ) -> None:
         subscription = self._subscriptions.get(source)
-
         if subscription is None:
             return
-
         if subscription.manager is not manager:
             raise RuntimeError("Subscription belongs to another StateManager")
-
         subscription_id = subscription.subscription_id
-
         self._subscriptions.remove(source)
-
+        manager.on_subscription_status(source, False)
         if self.online and subscription_id is not None:
-            self._enqueue(UnsubscribeRequest(subscription_id=subscription_id))
+            self._enqueue(UnsubscribeRequest(subscription_id))
 
     def transaction(
         self, *, transaction_id: str, actions: tuple[RequestAction, ...]
     ) -> asyncio.Future[TransactionReply]:
+        self._require_online()
         if transaction_id in self._transactions:
-            raise RuntimeError(
-                f"Transaction already exists: {transaction_id!r}"
-            )
-
+            raise RuntimeError(f"Transaction already exists: {transaction_id}")
+        request = TransactionRequest(transaction_id, deepcopy(actions))
         future: asyncio.Future[TransactionReply] = self._future()
-
         self._transactions[transaction_id] = future
-
-        self._enqueue(
-            TransactionRequest(transaction_id=transaction_id, actions=actions)
-        )
-
+        self._enqueue(request)
         return future
 
     def query(self, query: Query[Any]) -> asyncio.Future[QueryReply]:
-        request = QueryRequest(query=query)
-
+        self._require_online()
+        request = QueryRequest(query)
         future: asyncio.Future[QueryReply] = self._future()
-
         self._queries[id(request)] = future
-
         self._enqueue(request)
-
         return future
 
     def _enqueue(self, request: RequestItem) -> None:
         self._queue.append(request)
-
-        self._schedule_batch()
-
-    def _schedule_batch(self) -> None:
-        if self._loop is None:
-            raise RuntimeError("StoreClient is not running")
-
-        if self._batch_handle is not None:
-            return
-
-        self._batch_handle = self._loop.call_soon(self._batch)
+        if self._batch_handle is None:
+            assert self._loop is not None
+            self._batch_handle = self._loop.call_soon(self._batch)
 
     def _batch(self) -> None:
         self._batch_handle = None
-
         self._queue.batch()
-
         self._schedule_flush()
 
     def _schedule_flush(self) -> None:
-        if not self._online:
-            return
-
-        if not self._queue.has_batches:
-            return
-
-        if self._loop is None:
-            return
-
-        if self._flush_task is not None:
-            return
-
-        self._flush_task = self._loop.create_task(self._flush())
+        if (
+            self.online
+            and self._queue.has_batches
+            and self._flush_task is None
+        ):
+            assert self._loop is not None
+            self._flush_task = self._loop.create_task(self._flush())
 
     async def _flush(self) -> None:
+        transport = self._require_transport()
         try:
-            while self._online:
+            while self.online:
                 batch = self._queue.popleft()
-
                 if batch is None:
                     return
-
-                if self._resubscribing and batch is not self._sync_batch:
-                    self._queue.appendleft(batch)
-
-                    return
-
+                generation = self._generation
                 try:
-                    response = await self._transport.request(batch)
-
-                except asyncio.CancelledError:
-                    self._queue.appendleft(batch)
-
-                    raise
-
-                except Exception:
-                    self._queue.appendleft(batch)
-
-                    return
-
-                try:
-                    self._handle_response_batch(batch, response)
-
-                except Exception as error:
-                    self._fail_batch(batch, error)
-
-                    return
-
-                if batch is self._sync_batch:
-                    self._sync_batch = None
-
-                    if not self._subscriptions.synced:
-                        sync = self._sync_future
-
-                        if sync is not None and not sync.done():
-                            sync.set_exception(
-                                StoreProtocolError(
-                                    "Subscription synchronization failed"
-                                )
-                            )
-
+                    response = await transport.request(batch)
+                    if not self.online or generation != self._generation:
                         return
-
-                    self._finish_resubscribe()
-
+                    self._handle_response_batch(batch, response)
+                    self._finish_sync()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    if generation != self._generation:
+                        return
+                    # Sent work may already have committed. Never replay it.
+                    self._reset(error)
+                    await transport.disconnect()
+                    return
         finally:
             if self._flush_task is asyncio.current_task():
                 self._flush_task = None
-
             self._schedule_flush()
 
     def _handle_response_batch(
         self, request: RequestBatch, response: ResponseBatch
     ) -> None:
         if len(request.items) != len(response.items):
-            raise StoreProtocolError(
-                "Response batch does not match request batch"
-            )
+            raise StoreProtocolError("Response batch does not match requests")
+        pairs = tuple(zip(request.items, response.items))
+        for item, reply in pairs:
+            self._validate_response(item, reply)
+        # Bind every snapshot before delivering messages that overtook replies.
+        for item, reply in pairs:
+            if isinstance(item, SUBSCRIPTIONS):
+                self._handle_subscription_response(item, reply)
+        self._drain_messages()
+        for item, reply in pairs:
+            if isinstance(item, TransactionRequest):
+                future = self._transactions.pop(item.transaction_id, None)
+                if future is not None and not future.done():
+                    future.set_result(cast(TransactionReply, reply))
+            elif isinstance(item, QueryRequest):
+                query_future = self._queries.pop(id(item), None)
+                if query_future is not None and not query_future.done():
+                    query_future.set_result(cast(QueryReply, reply))
 
-        for request_item, response_item in zip(request.items, response.items):
-            self._handle_response(request_item, response_item)
-
-    def _handle_response(
+    def _validate_response(
         self, request: RequestItem, response: ResponseItem
     ) -> None:
         if isinstance(request, TransactionRequest):
-            self._handle_transaction_response(request, response)
-
-            return
-
-        if isinstance(request, QueryRequest):
-            self._handle_query_response(request, response)
-
-            return
-
-        if isinstance(
-            request,
-            (
-                SingleSubscriptionRequest,
-                CollectionSubscriptionRequest,
-                QuerySubscriptionRequest,
-            ),
-        ):
-            self._handle_subscription_response(request, response)
-
-            return
-
-        if isinstance(request, UnsubscribeRequest):
-            self._handle_unsubscribe_response(request, response)
-
-    def _handle_transaction_response(
-        self, request: TransactionRequest, response: ResponseItem
-    ) -> None:
-        if not isinstance(
-            response, (TransactionResponse, TransactionFailureResponse)
-        ):
-            raise StoreProtocolError("Invalid Transaction response")
-
-        if response.transaction_id != request.transaction_id:
-            raise StoreProtocolError("Transaction response ID does not match")
-
-        future = self._transactions.pop(request.transaction_id, None)
-
-        if future is not None and not future.done():
-            future.set_result(response)
-
-    def _handle_query_response(
-        self, request: QueryRequest, response: ResponseItem
-    ) -> None:
-        if not isinstance(response, (QueryResponse, FailureResponse)):
-            raise StoreProtocolError("Invalid Query response")
-
-        future = self._queries.pop(id(request), None)
-
-        if future is not None and not future.done():
-            future.set_result(response)
+            if not isinstance(
+                response, (TransactionResponse, TransactionFailureResponse)
+            ):
+                raise StoreProtocolError("Invalid transaction response")
+            if response.transaction_id != request.transaction_id:
+                raise StoreProtocolError("Transaction response ID mismatch")
+        elif isinstance(request, QueryRequest):
+            if not isinstance(response, (QueryResponse, FailureResponse)):
+                raise StoreProtocolError("Invalid query response")
+        elif isinstance(request, SUBSCRIPTIONS):
+            if isinstance(response, FailureResponse):
+                raise StoreProtocolError(
+                    f"Subscription failed: {response.failure.message}"
+                )
+            expected = {
+                SingleSubscriptionRequest: SingleSubscriptionResponse,
+                CollectionSubscriptionRequest: CollectionSubscriptionResponse,
+                QuerySubscriptionRequest: QuerySubscriptionResponse,
+            }[type(request)]
+            if not isinstance(response, expected):
+                raise StoreProtocolError("Invalid subscription response")
+        elif isinstance(request, UnsubscribeRequest):
+            if isinstance(response, FailureResponse):
+                raise StoreProtocolError(
+                    f"Unsubscribe failed: {response.failure.message}"
+                )
+            if not isinstance(response, UnsubscribeResponse):
+                raise StoreProtocolError("Invalid unsubscribe response")
+            if response.subscription_id != request.subscription_id:
+                raise StoreProtocolError("Unsubscribe response ID mismatch")
 
     def _handle_subscription_response(
         self, request: SubscriptionRequest, response: ResponseItem
     ) -> None:
         source = self._subscription_requests.pop(id(request), None)
-
         if source is None:
             raise StoreProtocolError("Unknown subscription request")
-
-        if isinstance(response, FailureResponse):
-            return
-
-        if not isinstance(
-            response,
-            (
-                SingleSubscriptionResponse,
-                CollectionSubscriptionResponse,
-                QuerySubscriptionResponse,
-            ),
-        ):
-            raise StoreProtocolError("Invalid Subscription response")
-
-        self._check_connection_instance(response.store_instance_id)
-
+        reply = cast(SubscriptionResponse, response)
+        self._check_connection_instance(reply.store_instance_id)
         subscription = self._subscriptions.get(source)
-
         if subscription is None:
-            self._enqueue(
-                UnsubscribeRequest(subscription_id=response.subscription_id)
-            )
-
+            self._enqueue(UnsubscribeRequest(reply.subscription_id))
             return
-
         if subscription.active:
-            if response.subscription_id != subscription.subscription_id:
-                self._enqueue(
-                    UnsubscribeRequest(
-                        subscription_id=response.subscription_id
-                    )
-                )
-
+            if reply.subscription_id != subscription.subscription_id:
+                self._enqueue(UnsubscribeRequest(reply.subscription_id))
             return
-
         revisions = subscription.response_revisions(
-            response, store_instance_id=request.store_instance_id
+            reply, store_instance_id=request.store_instance_id
         )
-
         manager = _subscription_manager(subscription)
+        self._subscriptions.bind(subscription, reply, revisions)
+        self._store_instance_id = reply.store_instance_id
+        manager.on_subscription_snapshot(source, reply)
 
-        manager.on_subscription_snapshot(subscription.source, response)
-
-        self._subscriptions.bind(subscription, response, revisions)
-
-        self._store_instance_id = response.store_instance_id
-
-        if not self._resubscribing:
-            manager.on_subscription_status(subscription.source, True)
-
-    def _handle_unsubscribe_response(
-        self, request: UnsubscribeRequest, response: ResponseItem
-    ) -> None:
-        if isinstance(response, FailureResponse):
-            return
-
-        if not isinstance(response, UnsubscribeResponse):
-            raise StoreProtocolError("Invalid Unsubscribe response")
-
-        if response.subscription_id != request.subscription_id:
-            raise StoreProtocolError("Unsubscribe response ID does not match")
-
-    def _finish_resubscribe(self) -> None:
-        messages = tuple(self._messages)
-
-        self._messages.clear()
-
+    def _drain_messages(self) -> None:
+        messages, self._messages = self._messages, []
         for message in messages:
             self._deliver(message)
 
+    def _finish_sync(self) -> None:
+        if self._subscription_requests or not self._subscriptions.synced:
+            return
+        self._drain_messages()
         self._resubscribing = False
-
         self._set_subscription_status(True)
-
         sync = self._sync_future
-
         if sync is not None and not sync.done():
             sync.set_result(None)
 
-        self._schedule_flush()
-
     def _deliver(self, message: EventMessage) -> None:
         self._check_connection_instance(message.store_instance_id)
-
+        prepared: list[tuple[ClientSubscription, dict[str, int]]] = []
+        grouped: dict[int, list[SubscriptionEvent]] = defaultdict(list)
+        managers: dict[int, ClientSubscriptionManager] = {}
+        seen: set[str] = set()
         for event in message.events:
+            if event.subscription_id in seen:
+                raise StoreProtocolError("Duplicate subscription in message")
+            seen.add(event.subscription_id)
             subscription = self._subscriptions.get_by_id(event.subscription_id)
-
             if subscription is None:
                 continue
-
             revisions = subscription.next_revisions(event)
-
+            prepared.append((subscription, revisions))
             manager = _subscription_manager(subscription)
-
-            manager.on_subscription_event(event)
-
+            managers[id(manager)] = manager
+            grouped[id(manager)].append(event)
+        # Validate the entire envelope before changing any manager's state.
+        publish = []
+        for identity, events in grouped.items():
+            publish.append(
+                managers[identity].prepare_subscription_message(
+                    EventMessage(
+                        store_instance_id=message.store_instance_id,
+                        events=tuple(events),
+                        transaction_id=message.transaction_id,
+                    )
+                )
+            )
+        for subscription, revisions in prepared:
             subscription.advance(revisions)
+        publish_subscriptions(publish)
 
     def _check_connection_instance(self, store_instance_id: str) -> None:
         current = self._connection_instance_id
-
         if current is not None and current != store_instance_id:
-            raise StoreProtocolError(
-                "Store instance changed on one connection"
-            )
-
+            raise StoreProtocolError("Store instance changed on connection")
         self._connection_instance_id = store_instance_id
 
     def _set_subscription_status(self, synced: bool) -> None:
         for subscription in self._subscriptions.desired():
-            manager = _subscription_manager(subscription)
+            _subscription_manager(subscription).on_subscription_status(
+                subscription.source, synced and subscription.active
+            )
 
-            manager.on_subscription_status(subscription.source, synced)
+    def _require_online(self) -> None:
+        if not self.online:
+            raise StoreConnectionError("Store client is disconnected")
 
-    def _fail_batch(self, batch: RequestBatch, error: Exception) -> None:
-        for request in batch.items:
-            if isinstance(request, TransactionRequest):
-                future = self._transactions.pop(request.transaction_id, None)
-
-                if future is not None and not future.done():
-                    future.set_exception(error)
-
-                continue
-
-            if isinstance(request, QueryRequest):
-                future = self._queries.pop(id(request), None)
-
-                if future is not None and not future.done():
-                    future.set_exception(error)
+    def _require_transport(self) -> ClientTransport:
+        transport = self._transport
+        if transport is None:
+            raise StoreConnectionError("Store client has no transport")
+        return transport
 
     def _future(self) -> asyncio.Future[Any]:
-        if self._loop is None:
-            raise RuntimeError("StoreClient is not running")
-
+        assert self._loop is not None
         return self._loop.create_future()
 
 
@@ -626,3 +502,10 @@ def _subscription_manager(
     subscription: ClientSubscription,
 ) -> ClientSubscriptionManager:
     return cast(ClientSubscriptionManager, subscription.manager)
+
+
+def _observe_completion(future: asyncio.Future[None]) -> None:
+    # Incremental subscriptions may have no connect() waiter. Preserve the
+    # exception for future awaiters without an unobserved-Future warning.
+    if not future.cancelled():
+        future.exception()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Generic, Self, TypeVar, overload
 
-
 ValueT = TypeVar("ValueT")
 
 
@@ -17,41 +16,21 @@ class BaseField(Generic[ValueT]):
     def __init__(self) -> None:
         self.name = ""
 
-    def __set_name__(
-        self,
-        owner: type[Any],
-        name: str,
-    ) -> None:
+    def __set_name__(self, owner: type[Any], name: str) -> None:
+        if self.name and self.name != name:
+            raise ValueError("A field declaration cannot have multiple names")
         self.name = name
 
     @overload
-    def __get__(
-        self,
-        instance: None,
-        owner: type[Any],
-    ) -> Self:
-        ...
+    def __get__(self, instance: None, owner: type[Any]) -> Self: ...
 
     @overload
-    def __get__(
-        self,
-        instance: object,
-        owner: type[Any],
-    ) -> ValueT:
-        ...
+    def __get__(self, instance: object, owner: type[Any]) -> ValueT: ...
 
-    def __get__(
-        self,
-        instance: object | None,
-        owner: type[Any],
-    ) -> Any:
+    def __get__(self, instance: object | None, owner: type[Any]) -> Any:
         return self
 
-    def __set__(
-        self,
-        instance: object,
-        value: ValueT,
-    ) -> None:
+    def __set__(self, instance: object, value: ValueT) -> None:
         raise AttributeError(
             "Schema field metadata cannot be assigned directly"
         )
