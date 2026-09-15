@@ -16,10 +16,10 @@ from kivyfn.store.schema import ManySchema, Schema
 from kivyfn.store.schema.fields import BaseField
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.property import state_property
+from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State, StateManagerProtocol
 
 if TYPE_CHECKING:
-    from kivyfn.store.state.reactive.query import QueryCollectionState
     from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
@@ -32,23 +32,32 @@ SchemaResolver = Callable[[str], Schema]
 class StateFactory:
     """Build and cache reactive State and collection types."""
 
-    _schema_types: dict[type[Schema], type[State[Any]]] = {}
+    _schema_types: dict[
+        tuple[type[Schema], type[State[Any]]], type[State[Any]]
+    ] = {}
 
     _query_types: WeakValueDictionary[
-        tuple[type[Schema], QueryShape], type[State[Any]]
+        tuple[type[Schema], QueryShape, type[State[Any]]], type[State[Any]]
     ] = WeakValueDictionary()
 
-    _collection_types: dict[type[ManySchema], type[CollectionState[Any]]] = {}
+    _collection_types: dict[
+        tuple[type[ManySchema], type[CollectionState[Any]]],
+        type[CollectionState[Any]],
+    ] = {}
 
-    _query_collection_types: dict[type[ManySchema], type[Any]] = {}
+    _query_collection_types: dict[
+        tuple[type[ManySchema], type[QueryCollectionState[Any]]],
+        type[QueryCollectionState[Any]],
+    ] = {}
 
     def create(
         self,
         manager: StateManagerProtocol,
         schema: SchemaT,
         row_id: str | None,
+        base_type: type[State[Any]] = State,
     ) -> State[SchemaT]:
-        state_type = self.type_for(type(schema))
+        state_type = self.type_for(type(schema), base_type)
 
         return state_type(manager=manager, schema=schema, row_id=row_id)
 
@@ -59,13 +68,19 @@ class StateFactory:
         row_id: str,
         shape: QueryShape,
         resolve_schema: SchemaResolver,
+        base_type: type[State[Any]] = State,
     ) -> State[SchemaT]:
-        state_type = self.query_type_for(type(schema), shape, resolve_schema)
+        state_type = self.query_type_for(
+            type(schema), shape, resolve_schema, base_type
+        )
 
         return state_type(manager=manager, schema=schema, row_id=row_id)
 
-    def type_for(self, schema_type: type[SchemaT]) -> type[State[SchemaT]]:
-        cached = self._schema_types.get(schema_type)
+    def type_for(
+        self, schema_type: type[SchemaT], base_type: type[State[Any]] = State
+    ) -> type[State[SchemaT]]:
+        key = (schema_type, base_type)
+        cached = self._schema_types.get(key)
 
         if cached is not None:
             return cast(type[State[SchemaT]], cached)
@@ -78,9 +93,10 @@ class StateFactory:
             schema=schema,
             fields=fields,
             query_shape=None,
+            base_type=base_type,
         )
 
-        self._schema_types[schema_type] = generated
+        self._schema_types[key] = generated
 
         return cast(type[State[SchemaT]], generated)
 
@@ -89,8 +105,9 @@ class StateFactory:
         schema_type: type[SchemaT],
         shape: QueryShape,
         resolve_schema: SchemaResolver,
+        base_type: type[State[Any]] = State,
     ) -> type[State[SchemaT]]:
-        key = (cast(type[Schema], schema_type), shape)
+        key = (cast(type[Schema], schema_type), shape, base_type)
         cached = self._query_types.get(key)
 
         if cached is not None:
@@ -110,6 +127,7 @@ class StateFactory:
             schema=root,
             fields=fields,
             query_shape=shape,
+            base_type=base_type,
         )
 
         self._query_types[key] = generated
@@ -117,9 +135,11 @@ class StateFactory:
         return cast(type[State[SchemaT]], generated)
 
     def collection_type_for(
-        self, schema_type: type[ManySchemaT]
+        self,
+        schema_type: type[ManySchemaT],
+        base_type: type[CollectionState[Any]] = CollectionState,
     ) -> type[CollectionState[ManySchemaT]]:
-        key = cast(type[ManySchema], schema_type)
+        key = (cast(type[ManySchema], schema_type), base_type)
         cached = self._collection_types.get(key)
 
         if cached is not None:
@@ -130,7 +150,8 @@ class StateFactory:
         generated = self._build_collection_type(
             name=f"{_schema_stem(schema_type)}CollectionState",
             schema=schema,
-            base_type=CollectionState,
+            base_type=base_type,
+            reserved_type=CollectionState,
         )
 
         self._collection_types[key] = cast(
@@ -140,11 +161,11 @@ class StateFactory:
         return cast(type[CollectionState[ManySchemaT]], generated)
 
     def query_collection_type_for(
-        self, schema_type: type[ManySchemaT]
+        self,
+        schema_type: type[ManySchemaT],
+        base_type: type[QueryCollectionState[Any]] = QueryCollectionState,
     ) -> type[QueryCollectionState[ManySchemaT]]:
-        from kivyfn.store.state.reactive.query import QueryCollectionState
-
-        key = cast(type[ManySchema], schema_type)
+        key = (cast(type[ManySchema], schema_type), base_type)
         cached = self._query_collection_types.get(key)
 
         if cached is not None:
@@ -155,7 +176,8 @@ class StateFactory:
         generated = self._build_collection_type(
             name=f"{_schema_stem(schema_type)}QueryCollectionState",
             schema=schema,
-            base_type=QueryCollectionState,
+            base_type=base_type,
+            reserved_type=QueryCollectionState,
         )
 
         self._query_collection_types[key] = generated
@@ -169,6 +191,7 @@ class StateFactory:
         schema: Schema,
         fields: Mapping[str, BaseField[Any]],
         query_shape: QueryShape | None,
+        base_type: type[State[Any]],
     ) -> type[State[Any]]:
         field_metadata = MappingProxyType(dict(fields))
 
@@ -191,21 +214,22 @@ class StateFactory:
         used_names = set(fields)
 
         for field_name, field in fields.items():
-            _validate_state_name(schema, field_name)
+            _validate_state_name(schema, field_name, base_type)
 
             namespace[field_name] = state_property(field)
 
         signal_names = _signal_names(schema)
 
-        namespace["__events__"] = (
-            *State.__events__,
-            *(f"on_{signal_name}" for signal_name in signal_names),
+        namespace["__events__"] = tuple(
+            dict.fromkeys(
+                (*_event_names(base_type), *(f"on_{s}" for s in signal_names))
+            )
         )
 
         for signal_name in signal_names:
             event_name = f"on_{signal_name}"
 
-            _validate_state_name(schema, signal_name)
+            _validate_state_name(schema, signal_name, base_type)
             _validate_state_name(schema, event_name)
 
             if signal_name in used_names:
@@ -224,33 +248,43 @@ class StateFactory:
             used_names.add(event_name)
 
             namespace[signal_name] = _signal_method(signal_name)
-            namespace[event_name] = _signal_event
+            _add_signal_handler(
+                namespace, base_type, event_name, _signal_event
+            )
 
-        return cast(type[State[Any]], type(name, (State,), namespace))
+        return cast(type[State[Any]], type(name, (base_type,), namespace))
 
     def _build_collection_type(
-        self, *, name: str, schema: ManySchema, base_type: type[Any]
+        self,
+        *,
+        name: str,
+        schema: ManySchema,
+        base_type: type[Any],
+        reserved_type: type[Any],
     ) -> type[Any]:
         signal_names = _signal_names(schema)
-        base_events = tuple(getattr(base_type, "__events__", ()))
+        base_events = _event_names(base_type)
 
         namespace: dict[str, Any] = {
-            "__events__": (
-                *base_events,
-                *(f"on_{signal_name}" for signal_name in signal_names),
+            "__events__": tuple(
+                dict.fromkeys(
+                    (*base_events, *(f"on_{s}" for s in signal_names))
+                )
             )
         }
 
         for signal_name in signal_names:
             event_name = f"on_{signal_name}"
 
-            if hasattr(base_type, event_name):
+            if hasattr(reserved_type, event_name):
                 raise StoreStateError(
                     f"Signal event {event_name!r} conflicts with "
                     f"{base_type.__name__} in {schema.name}"
                 )
 
-            namespace[event_name] = _collection_signal_event
+            _add_signal_handler(
+                namespace, base_type, event_name, _collection_signal_event
+            )
 
         return type(name, (base_type,), namespace)
 
@@ -286,10 +320,13 @@ def _signal_names(schema: Schema) -> tuple[str, ...]:
     return signal_names
 
 
-def _validate_state_name(schema: Schema, name: str) -> None:
-    if name.startswith("_") or hasattr(State, name):
+def _validate_state_name(
+    schema: Schema, name: str, base_type: type[State[Any]] = State
+) -> None:
+    if name.startswith("_") or hasattr(base_type, name):
         raise StoreStateError(
-            f"State name {name!r} is reserved in {schema.name}"
+            f"State name {name!r} is reserved or conflicts with "
+            f"{base_type.__name__} in {schema.name}"
         )
 
 
@@ -312,3 +349,28 @@ def _collection_signal_event(
     _collection: Any, row_id: str, data: Any = None
 ) -> None:
     pass
+
+
+def _event_names(base_type: type[Any]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            name
+            for parent in reversed(base_type.__mro__)
+            for name in parent.__dict__.get("__events__", ())
+        )
+    )
+
+
+def _add_signal_handler(
+    namespace: dict[str, Any],
+    base_type: type[Any],
+    event_name: str,
+    default: Callable[..., None],
+) -> None:
+    if not hasattr(base_type, event_name):
+        namespace[event_name] = default
+    elif not callable(getattr(base_type, event_name)):
+        raise StoreStateError(
+            f"Signal event {event_name!r} must be a method on "
+            f"{base_type.__name__}"
+        )

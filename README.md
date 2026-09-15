@@ -205,12 +205,23 @@ stop the Host separately when their application lifetime ends.
 
 ## Typing and ownership
 
-The public generic types distinguish singleton, collection and query State.
-Kivy properties, signal methods and joined aliases are generated at runtime;
-Pyright cannot infer every generated attribute from `State[FanSchema]`.
-Use `.get("field")` and `.set(field=value)` where an explicit dynamic access
-is useful. Schema descriptor annotations are not a promise of full generated
-State-property autocompletion.
+Use `StateType`, `CollectionStateType[Row]`, and `QueryStateType[Row]` to
+add typed field declarations, methods, local Kivy properties, and event
+handlers. Define a reusable template with `state_template(source,
+state_type=RowClass, collection_type=ContainerClass)`, then call
+`manager.create(template)` to obtain the correctly typed managed instance.
+Customization arguments belong on the template; `create()` still accepts
+plain schemas and Queries.
+
+Schemas remain shared data contracts. Custom State classes describe
+client-side behavior; their local properties are not persisted or sent over
+transports. Choose those classes before first creating the source in each
+manager. Conflicting types are rejected to preserve stable row identity.
+
+See [custom states and typed templates](docs/state-templates.md) for the
+application layout, complete examples, query shapes, identity rules, and
+typing limits. Generated fields need explicit application annotations;
+`State[FanSchema]` alone does not infer their names.
 
 Node and Engine are internal implementation interfaces. Direct Node mutation
 bypasses Store constraints, persistence, revisions and event delivery.

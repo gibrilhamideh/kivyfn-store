@@ -57,6 +57,7 @@ from kivyfn.store.state.reactive.dispatch import (
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State
 from kivyfn.store.state.registry import StateRegistry
+from kivyfn.store.state.template import StateTemplate, TargetT
 from kivyfn.store.state.transaction.action import (
     InsertAction,
     RemoveAction,
@@ -98,6 +99,9 @@ class StateManager:
         return self._client
 
     @overload
+    def create(self, source: StateTemplate[TargetT]) -> TargetT: ...
+
+    @overload
     def create(self, source: type[SingleSchemaT]) -> State[SingleSchemaT]: ...
 
     @overload
@@ -110,8 +114,12 @@ class StateManager:
         self, source: Query[ManySchemaT]
     ) -> QueryCollectionState[ManySchemaT]: ...
 
-    def create(self, source: SubscriptionSource) -> ReactiveTarget:
+    def create(
+        self, source: SubscriptionSource | StateTemplate[Any]
+    ) -> ReactiveTarget:
         target = self._registry.create(source)
+        if isinstance(source, StateTemplate):
+            source = source.source
 
         self._targets[source] = target
 
@@ -119,8 +127,10 @@ class StateManager:
 
         return target
 
-    def release(self, source: SubscriptionSource) -> None:
+    def release(self, source: SubscriptionSource | StateTemplate[Any]) -> None:
         """Release a subscription and its synchronization ownership."""
+        if isinstance(source, StateTemplate):
+            source = source.source
         target = self._targets.pop(source, None)
         if target is None:
             return

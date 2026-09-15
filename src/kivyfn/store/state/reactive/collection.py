@@ -120,7 +120,7 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def _get_rows(self) -> Mapping[str, State[SchemaT]]:
         return self._rows_view
 
-    rows = AliasProperty(_get_rows, None, bind=("_rows_version",), cache=True)
+    rows = AliasProperty(_get_rows, None, bind=("_rows_version",))
 
     def __getitem__(self, row_id: str) -> State[SchemaT]:
         return self._rows[row_id]

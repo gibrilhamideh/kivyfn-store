@@ -5,6 +5,8 @@ reactive Kivy State API over Direct or Socket.IO transport.
 
 - [README and runnable example](../README.md): installation, connection,
   mutations, transactions, queries, signals, cleanup and development checks.
+- [Custom states and templates](state-templates.md): typed application states,
+  local properties, callbacks, source identity, and reusable templates.
 - [Architecture](architecture.md): ownership boundaries, staging, constraints,
   ordered triggers, revisions, subscriptions, query writes and persistence.
 - [Error handling](errors.md): the actual Store, Client and State result
@@ -16,6 +18,7 @@ Applications normally create a `StateManager` around a `StoreClient`.
 `StateManager.create(SingleSchemaType)` returns a State;
 `create(ManySchemaType)` returns a CollectionState;
 `create(Query(...))` returns a QueryCollectionState.
+`create(StateTemplate[T])` returns the configured custom type `T`.
 
 `StoreHost` exposes an already booted `Store`. Connect its client with
 `await client.connect(endpoint)`: `direct://name` in-process, or an HTTP
