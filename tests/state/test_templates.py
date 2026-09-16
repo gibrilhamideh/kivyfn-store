@@ -12,13 +12,12 @@ import pytest
 from kivy.properties import AliasProperty, BooleanProperty, StringProperty
 
 from kivyfn.store import StateTemplate, state_template
+from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.protocol.message.event import (
-    EventMessage,
     InsertEventAction,
     SetEventAction,
     SignalRowEventAction,
-    SubscriptionEvent,
 )
 from kivyfn.store.query import Query, field
 from kivyfn.store.schema import ManySchema
@@ -164,8 +163,7 @@ def test_local_kivy_properties_and_derived_bindings_stay_local(query: bool):
     assert not rows["two"].selected
     assert not client.requests
     assert not row.is_pending
-    changed = row.set_canonical({"label": "Room", "value": 7})
-    row.publish(changed)
+    row.set_canonical({"label": "Room", "value": 7})
     assert row.caption == "Room: 7"
     assert captions and all(value == "Room: 7" for value in captions)
     assert "selected" not in row.fields
@@ -413,12 +411,13 @@ def test_custom_events_and_inherited_signal_handlers_survive_generation():
     row.dispatch("on_local", "yes")
     row.dispatch("on_child")
     rows.dispatch("on_local")
-    manager.bind_subscription(StateUnitRows, "rows")
-    manager.on_subscription_event(
-        SubscriptionEvent(
-            "rows", {}, (SignalRowEventAction("one", "ping", 5),)
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                StateUnitRows, (SignalRowEventAction("one", "ping", 5),)
+            ),
         )
-    )
+    )()
     assert observed == [
         ("local", "yes"),
         ("child", None),
@@ -447,32 +446,21 @@ def test_custom_enter_callbacks_observe_all_staged_targets_and_rows():
             StateUnitRows, state_type=TemplateRow, collection_type=Container
         )
     )
-    manager.bind_subscription(StateUnitSingle, "single")
-    manager.bind_subscription(StateUnitRows, "rows")
-    manager.on_subscription_message(
-        EventMessage(
-            "test",
-            (
-                SubscriptionEvent(
-                    "rows",
-                    {},
-                    (
-                        InsertEventAction(
-                            "one", (("label", "A"), ("value", 4))
-                        ),
-                        InsertEventAction(
-                            "two", (("label", "B"), ("value", 5))
-                        ),
-                    ),
-                ),
-                SubscriptionEvent(
-                    "single",
-                    {},
-                    (SetEventAction((("value", 8), ("other", 9))),),
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                StateUnitRows,
+                (
+                    InsertEventAction("one", (("label", "A"), ("value", 4))),
+                    InsertEventAction("two", (("label", "B"), ("value", 5))),
                 ),
             ),
+            SubscriptionUpdate(
+                StateUnitSingle,
+                (SetEventAction((("value", 8), ("other", 9))),),
+            ),
         )
-    )
+    )()
     assert rows.labels() == ("A", "B")
     assert observed == [("one", 4, ("A", "B"), 17), ("two", 5, ("A", "B"), 17)]
 
@@ -636,7 +624,7 @@ def test_subclass_can_bind_fields_in_constructor_and_keeps_instance_identity():
     rows = manager.create(state_template(StateUnitRows, state_type=BoundRow))
     rows.enter("one")
     row = rows["one"]
-    row.publish(row.set_canonical({"label": "Changed"}))
+    row.set_canonical({"label": "Changed"})
     rows.leave("one")
     rows.enter("one")
     assert rows["one"] is row
@@ -688,7 +676,7 @@ def test_custom_singleton_local_properties_and_factory_cache_isolation():
         state_template(StateUnitSingle, state_type=TemplateSingle)
     )
     a.selected = True
-    a.publish(a.set_canonical({"value": 3, "other": 4}))
+    a.set_canonical({"value": 3, "other": 4})
     assert a.total() == 7
     assert b.total() == 0
     assert not isinstance(b, SelectedSingle)

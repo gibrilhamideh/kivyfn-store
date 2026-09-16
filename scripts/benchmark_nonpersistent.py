@@ -38,6 +38,16 @@ from kivyfn.store.state.reactive.state import State
 from kivyfn.store.state.transaction.transaction import StateTransaction
 
 
+# NOTE:
+# uv run python scripts/benchmark_nonpersistent.py \
+#     --transport all \
+#     --rates 60 120 240 1000 0 \
+#     --observers 1 3 \
+#     --duration 3 \
+#     --repeat 2 \
+#     --json benchmark-results.json
+
+
 class MouseSchema(SingleSchema):
     persistent = False
     track_history = False

@@ -10,6 +10,7 @@ from kivyfn.logging import get_logger
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.transaction.action import (
     InsertAction,
+    RemovalOutcome,
     RemoveAction,
     SetAction,
     SetRowAction,
@@ -76,7 +77,6 @@ class StateTransaction(EventDispatcher):
 
         self._actions: list[TransactionAction] = []
 
-        self._sets: dict[State[Any], SetAction] = {}
         self._setrows: dict[State[Any], SetRowAction] = {}
         self._inserts: dict[State[Any], InsertAction] = {}
         self._removes: dict[State[Any], RemoveAction] = {}
@@ -181,21 +181,19 @@ class StateTransaction(EventDispatcher):
         return self._failure
 
     def add_set(self, state: State[Any], values: dict[str, Any]) -> None:
+        """Merge adjacent sets while preserving intervening operations."""
         self._require_open()
 
         if state.row_id is not None:
             raise ValueError("SetAction requires a State without a row ID")
 
         copied = StateData.copy_values(values)
-        action = self._sets.get(state)
-
-        if action is None or self._actions[-1] is not action:
-            action = SetAction(state=state, values=copied)
-            self._sets[state] = action
-            self._actions.append(action)
+        previous = self._actions[-1] if self._actions else None
+        if isinstance(previous, SetAction) and previous.state is state:
+            previous.values.update(copied)
             return
 
-        action.values.update(copied)
+        self._actions.append(SetAction(state=state, values=copied))
 
     def add_setrow(
         self,
@@ -268,7 +266,13 @@ class StateTransaction(EventDispatcher):
 
     def add_remove(
         self, collection: CollectionState[Any], state: State[Any]
-    ) -> bool:
+    ) -> RemovalOutcome:
+        """Record a removal or cancel a trailing insert without reordering.
+
+        Cancelling a replacement preserves the row's earlier removal. An
+        intervening action prevents cancellation because it may observe the
+        inserted row. The manager uses this outcome to update overlays.
+        """
         self._require_open()
 
         if state.row_id is None:
@@ -284,7 +288,9 @@ class StateTransaction(EventDispatcher):
 
         if inserted is not None and self._actions[-1] is inserted:
             self._actions.pop()
-            return True
+            if state in self._removes:
+                return RemovalOutcome.CANCELLED_REPLACEMENT
+            return RemovalOutcome.CANCELLED_INSERT
 
         if state in self._removes and inserted is None:
             raise RuntimeError(
@@ -299,7 +305,7 @@ class StateTransaction(EventDispatcher):
         self._removes[state] = action
         self._actions.append(action)
 
-        return False
+        return RemovalOutcome.RECORDED
 
     def add_signal(self, state: State[Any], signal: str, data: Any) -> None:
         self._require_open()

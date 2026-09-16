@@ -29,6 +29,7 @@ from kivyfn.store.protocol.message.requests import (
     RequestBatch,
     SetRequestAction,
     SetRowRequestAction,
+    SignalRequestAction,
 )
 from kivyfn.store.protocol.message.responses import (
     ResponseBatch,
@@ -37,7 +38,7 @@ from kivyfn.store.protocol.message.responses import (
     TransactionResponse,
     UnsubscribeResponse,
 )
-from kivyfn.store.schema import ManySchema, NumericField, SingleSchema
+from kivyfn.store.schema import ManySchema, NumericField, Signal, SingleSchema
 from kivyfn.store.state.manager import StateManager
 from kivyfn.store.transport.socketio.client import SocketIOClientTransport
 from tests.conftest import TransportKind
@@ -46,10 +47,12 @@ from tests.helpers import intercept_client_requests
 
 class BoundaryFirst(SingleSchema):
     value = NumericField(default=0)
+    changed = Signal()
 
 
 class BoundarySecond(SingleSchema):
     value = NumericField(default=0)
+    changed = Signal()
 
 
 class BoundaryRows(ManySchema):
@@ -108,10 +111,52 @@ def assert_client_work_cleared(client: StoreClient) -> None:
     assert not client.online
     assert not client.synced
     assert client._queue.empty
-    assert client._transactions == {}
-    assert client._queries == {}
+    assert client._futures.empty
     assert client._subscription_requests == {}
     assert client._messages == []
+
+
+@pytest.mark.asyncio
+async def test_commit_stages_all_managers_before_callbacks_and_reply(
+    boundary_stack: BoundaryStack,
+) -> None:
+    stack = boundary_stack
+    other_manager = StateManager(stack.client)
+    first: Any = stack.state.create(BoundaryFirst)
+    second: Any = other_manager.create(BoundarySecond)
+    await stack.client.connect(stack.endpoint)
+    observed: list[tuple[str, int, int]] = []
+
+    def record(label: str) -> None:
+        observed.append((label, first.value, second.value))
+
+    first.bind(value=lambda *_: record("first value"))
+    second.bind(value=lambda *_: record("second value"))
+    first.bind(on_changed=lambda *_: record("first signal"))
+    second.bind(on_changed=lambda *_: record("second signal"))
+
+    async with asyncio.timeout(5):
+        reply = await stack.client.transaction(
+            transaction_id="two-managers",
+            actions=(
+                SetRequestAction("BoundaryFirst", (("value", 1),)),
+                SignalRequestAction("BoundarySecond", "changed"),
+                SetRequestAction("BoundarySecond", (("value", 2),)),
+                SignalRequestAction("BoundaryFirst", "changed"),
+            ),
+        )
+
+    assert reply == TransactionResponse("two-managers")
+    assert len(observed) == 4
+    assert {label for label, _, _ in observed[:2]} == {
+        "first value",
+        "second value",
+    }
+    assert [label for label, _, _ in observed[2:]] == [
+        "second signal",
+        "first signal",
+    ]
+    assert all((one, two) == (1, 2) for _, one, two in observed)
 
 
 @pytest.mark.asyncio

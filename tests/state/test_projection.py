@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kivyfn.store.protocol.message.event import (
-    EventMessage,
-    SignalRowEventAction,
-    SubscriptionEvent,
-)
+from kivyfn.store.client.subscription import SubscriptionUpdate
+from kivyfn.store.protocol.message.event import SignalRowEventAction
 from kivyfn.store.query import Query, field
 from kivyfn.store.schema import ManySchema
 from kivyfn.store.schema.fields import ForeignKeyField, StringField
@@ -139,8 +136,6 @@ def test_shared_query_row_signal_occurs_once_per_commit_occurrence():
     second_source = Query(StateUnitPost).where(field("label") != "y")
     first = manager.create(first_source)
     second = manager.create(second_source)
-    manager.bind_subscription(first_source, "first")
-    manager.bind_subscription(second_source, "second")
     first.enter("p")
     second.enter("p")
     row = first["p"]
@@ -152,15 +147,12 @@ def test_shared_query_row_signal_occurs_once_per_commit_occurrence():
     actions = tuple(
         SignalRowEventAction("p", "ping", {"x": []}, index) for index in (0, 1)
     )
-    manager.on_subscription_message(
-        EventMessage(
-            "test",
-            (
-                SubscriptionEvent("first", {}, actions),
-                SubscriptionEvent("second", {}, actions),
-            ),
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(first_source, actions),
+            SubscriptionUpdate(second_source, actions),
         )
-    )
+    )()
     assert observed.count("row") == 2
     assert observed.count("first") == observed.count("second") == 2
 

@@ -380,7 +380,7 @@ async def test_invalid_navigation_response_disconnects_and_settles_waiter(
             expected_position=history.page.status.undo_position
         )
     assert not stack.first.online
-    assert stack.first._transactions == {}
+    assert stack.first._futures.empty
     # Protocol failure after commit is ambiguous, never automatically retried.
     assert stack.store.snapshot_by_schema("NavigationSchema")["value"] == 0
 

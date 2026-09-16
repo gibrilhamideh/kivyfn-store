@@ -7,6 +7,7 @@ from typing import Any, Protocol, TypeAlias
 
 from kivyfn.store.error import StoreFailure, StoreProtocolError
 from kivyfn.store.protocol.message.event import (
+    EventAction,
     SignalEventAction,
     SignalRowEventAction,
     SubscriptionEvent,
@@ -29,6 +30,14 @@ from kivyfn.store.schema import ManySchema, SingleSchema
 SubscriptionSource: TypeAlias = (
     type[SingleSchema] | type[ManySchema] | Query[Any]
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionUpdate:
+    """Actions for a source, resolved and validated by the client."""
+
+    source: SubscriptionSource
+    actions: tuple[EventAction, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,11 +67,22 @@ def publish_subscriptions(
 
 
 class SubscriptionManager(Protocol):
-    def bind_subscription(
-        self, source: SubscriptionSource, subscription_id: str
+    """The reactive consumer of client-validated subscription delivery."""
+
+    def on_subscription_snapshot(
+        self, source: SubscriptionSource, response: SubscriptionResponse
     ) -> None: ...
 
-    def unbind_subscription(self, subscription_id: str) -> None: ...
+    def prepare_subscription_updates(
+        self,
+        updates: tuple[SubscriptionUpdate, ...],
+        *,
+        transaction_id: str | None = None,
+    ) -> SubscriptionPublication: ...
+
+    def on_subscription_status(
+        self, source: SubscriptionSource, synced: bool
+    ) -> None: ...
 
 
 @dataclass(slots=True)
@@ -267,17 +287,11 @@ class ClientSubscriptions:
         if old_id is not None and old_id != subscription_id:
             self._by_id.pop(old_id, None)
 
-            subscription.manager.unbind_subscription(old_id)
-
         subscription.subscription_id = subscription_id
         subscription.revisions = dict(revisions)
         subscription.failure = None
 
         self._by_id[subscription_id] = subscription
-
-        subscription.manager.bind_subscription(
-            subscription.source, subscription_id
-        )
 
     def remove(self, source: SubscriptionSource) -> ClientSubscription | None:
         subscription = self._by_source.pop(source, None)
@@ -316,8 +330,6 @@ class ClientSubscriptions:
             return
 
         self._by_id.pop(subscription_id, None)
-
-        subscription.manager.unbind_subscription(subscription_id)
 
         subscription.subscription_id = None
 

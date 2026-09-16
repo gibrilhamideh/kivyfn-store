@@ -6,12 +6,18 @@ import asyncio
 from typing import Any, cast
 
 from kivyfn.store.client.client import StoreClient
-from kivyfn.store.protocol.message.event import EventMessage, SubscriptionEvent
+from kivyfn.store.client.subscription import SubscriptionUpdate
+from kivyfn.store.client.validation import validate_response
+from kivyfn.store.error import StoreProtocolError
 from kivyfn.store.protocol.message.requests import (
     RequestAction,
     SetRowRequestAction,
+    TransactionRequest,
 )
-from kivyfn.store.protocol.message.responses import TransactionResponse
+from kivyfn.store.protocol.message.responses import (
+    ResponseItem,
+    TransactionResponse,
+)
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.schema.fields import DataField, NumericField, StringField
 from kivyfn.store.schema.signal import Signal
@@ -74,14 +80,24 @@ class ControlledClient:
         )
         await asyncio.wait_for(tx.wait(), 1)
 
+    def respond(self, tx: StateTransaction, response: ResponseItem) -> None:
+        """Enforce the same request-matching contract as StoreClient."""
+        request = TransactionRequest(tx.id, self.requests[tx.id])
+        try:
+            validate_response(request, response)
+        except StoreProtocolError as error:
+            self.futures[tx.id].set_exception(error)
+        else:
+            self.futures[tx.id].set_result(response)
+
     async def succeed(
         self,
         manager: StateManager,
         tx: StateTransaction,
-        *events: SubscriptionEvent,
+        *updates: SubscriptionUpdate,
     ) -> None:
-        manager.on_subscription_message(EventMessage("test", events, tx.id))
-        self.futures[tx.id].set_result(TransactionResponse(tx.id))
+        manager.prepare_subscription_updates(updates, transaction_id=tx.id)()
+        self.respond(tx, TransactionResponse(tx.id))
         await asyncio.wait_for(tx.wait(), 1)
 
 

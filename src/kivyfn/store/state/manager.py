@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from contextvars import ContextVar, Token
 from functools import partial
 from typing import Any, TypeVar, cast, overload
@@ -10,6 +11,7 @@ from kivyfn.store.client.client import StoreClient
 from kivyfn.store.client.subscription import (
     SubscriptionPublication,
     SubscriptionSource,
+    SubscriptionUpdate,
 )
 from kivyfn.store.error import (
     StoreErrorCode,
@@ -19,13 +21,8 @@ from kivyfn.store.error import (
     StoreUnavailableError,
 )
 from kivyfn.store.protocol.message.event import (
-    EventMessage,
-    InsertEventAction,
-    RemoveEventAction,
-    SetEventAction,
     SignalEventAction,
     SignalRowEventAction,
-    SubscriptionEvent,
 )
 from kivyfn.store.protocol.message.requests import (
     InsertRequestAction,
@@ -44,15 +41,15 @@ from kivyfn.store.protocol.message.responses import (
     TransactionFailureResponse,
     TransactionResponse,
 )
-from kivyfn.store.query import Query, QueryRow
+from kivyfn.store.query import Query
 from kivyfn.store.query.shape import QueryFieldShape, QueryShape
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.data import StateData
 from kivyfn.store.state.reactive.dispatch import (
-    defer_properties,
+    collect_notifications,
     dispatch,
-    set_property,
+    notification_batch,
 )
 from kivyfn.store.state.reactive.query import QueryCollectionState
 from kivyfn.store.state.reactive.state import State
@@ -60,6 +57,7 @@ from kivyfn.store.state.registry import StateRegistry
 from kivyfn.store.state.template import StateTemplate, TargetT
 from kivyfn.store.state.transaction.action import (
     InsertAction,
+    RemovalOutcome,
     RemoveAction,
     SetAction,
     SetRowAction,
@@ -82,7 +80,12 @@ _active_transaction: ContextVar[
 
 
 class StateManager:
-    """Coordinate reactive State with one StoreClient."""
+    """Route subscription updates and coordinate local transactions.
+
+    Reactive targets own their values, membership, and notifications. This
+    manager owns reactive targets, transaction submission/completion,
+    and resolving projected field writes to canonical records.
+    """
 
     def __init__(self, client: StoreClient) -> None:
         self._client = client
@@ -90,9 +93,21 @@ class StateManager:
 
         self._targets: dict[SubscriptionSource, ReactiveTarget] = {}
 
-        self._subscription_targets: dict[str, ReactiveTarget] = {}
-
         self._transactions: dict[str, TransactionContext] = {}
+        self._snapshot_handlers: dict[type, Callable[..., None]] = {
+            SingleSubscriptionResponse: self._single_snapshot,
+            CollectionSubscriptionResponse: self._collection_snapshot,
+            QuerySubscriptionResponse: self._query_snapshot,
+        }
+        self._request_handlers: dict[
+            type, Callable[..., tuple[RequestAction, ...]]
+        ] = {
+            SetAction: self._set_request_actions,
+            SetRowAction: self._setrow_request_actions,
+            InsertAction: self._insert_request_actions,
+            RemoveAction: self._remove_request_actions,
+            SignalAction: self._signal_request_actions,
+        }
 
     @property
     def client(self) -> StoreClient:
@@ -135,13 +150,7 @@ class StateManager:
         if target is None:
             return
         self._client.unsubscribe(source, self)
-        for key, candidate in tuple(self._subscription_targets.items()):
-            if candidate is target:
-                del self._subscription_targets[key]
-        if isinstance(target, State):
-            set_property(target, "synced", False)
-        else:
-            target.sync_rows(False)
+        target.set_synced(False)
 
     def close(self) -> None:
         """Release subscriptions and finish outstanding local operations."""
@@ -176,6 +185,12 @@ class StateManager:
         )
 
     def request_transaction(self, transaction: StateTransaction) -> None:
+        """Submit recorded intent, then settle participants from the reply.
+
+        Canonical events arrive through subscriptions before the response
+        future completes. The StateTransaction has its own completion future.
+        Pending callbacks may abort it before any request is submitted.
+        """
         actions = tuple(
             request
             for action in transaction.actions
@@ -184,7 +199,8 @@ class StateManager:
 
         context = self._context(transaction)
 
-        self._begin_participants(context)
+        if not self._begin_participants(context):
+            return
 
         future = self._client.transaction(
             transaction_id=transaction.id,
@@ -270,139 +286,49 @@ class StateManager:
             lambda transaction: self._signal(transaction, state, signal, data)
         )
 
-    def bind_subscription(
-        self, source: SubscriptionSource, subscription_id: str
-    ) -> None:
-        target = self._targets.get(source)
-
-        if target is None:
-            raise RuntimeError("Subscription has no reactive target")
-
-        self._subscription_targets[subscription_id] = target
-
-    def unbind_subscription(self, subscription_id: str) -> None:
-        self._subscription_targets.pop(subscription_id, None)
-
     def on_subscription_snapshot(
         self, source: SubscriptionSource, response: SubscriptionResponse
     ) -> None:
         target = self._targets.get(source)
-
         if target is None:
             raise RuntimeError("Subscription has no reactive target")
+        handler = self._snapshot_handlers.get(type(response))
+        if handler is None:
+            raise TypeError("Unsupported subscription response")
+        handler(target, response)
 
-        if isinstance(response, SingleSubscriptionResponse):
-            self._single_snapshot(target, response)
-
-            return
-
-        if isinstance(response, CollectionSubscriptionResponse):
-            self._collection_snapshot(target, response)
-
-            return
-
-        if isinstance(response, QuerySubscriptionResponse):
-            self._query_snapshot(target, response)
-
-            return
-
-        raise TypeError("Unsupported subscription response")
-
-    def on_subscription_event(self, event: SubscriptionEvent) -> None:
-        """Apply one event; transports should deliver complete messages."""
-        self._prepare_events((event,), None)()
-
-    def on_subscription_message(self, message: EventMessage) -> None:
-        self.prepare_subscription_message(message)()
-
-    def prepare_subscription_message(
-        self, message: EventMessage
+    def prepare_subscription_updates(
+        self,
+        updates: tuple[SubscriptionUpdate, ...],
+        *,
+        transaction_id: str | None = None,
     ) -> SubscriptionPublication:
-        return self._prepare_events(message.events, message.transaction_id)
+        """Stage every target and retire the matching optimistic overlays.
 
-    def _prepare_events(
-        self, events: tuple[SubscriptionEvent, ...], transaction_id: str | None
-    ) -> SubscriptionPublication:
-        changed: dict[State[Any], set[str]] = {}
-        notifications: list[Any] = []
+        The client resolves server IDs to sources and checks revisions first.
+        It prepares all affected managers before publishing these callbacks,
+        so bindings and signals see the full commit.
+        """
         signals: list[
             tuple[ReactiveTarget, SignalEventAction | SignalRowEventAction]
         ] = []
-        with defer_properties() as properties:
-            for event in events:
-                target = self._subscription_targets.get(event.subscription_id)
+        with collect_notifications() as batch:
+            for update in updates:
+                target = self._targets.get(update.source)
                 if target is None:
                     continue
-                for action in event.actions:
+                for action in update.actions:
                     if isinstance(
                         action, (SignalEventAction, SignalRowEventAction)
                     ):
                         signals.append((target, action))
-                        continue
-                    if isinstance(action, SetEventAction):
-                        if not isinstance(target, State):
-                            raise TypeError(
-                                "Set event requires a State target"
-                            )
-                        state = target
                     else:
-                        if isinstance(target, State):
-                            raise TypeError("Row event requires a collection")
-                        if isinstance(action, InsertEventAction):
-                            delta = target.enter(action.row_id)
-                        elif isinstance(action, RemoveEventAction):
-                            state = target.canonical_row(action.row_id)
-                            delta = target.leave(action.row_id)
-                        else:
-                            delta = None
-                        if delta is not None:
-                            notifications.append(
-                                lambda t=target, d=delta: t.publish_membership(
-                                    d
-                                )
-                            )
-                        if isinstance(action, RemoveEventAction):
-                            if isinstance(target, CollectionState) and state:
-                                notifications.append(
-                                    lambda t=target, a=action, r=state: (
-                                        t.publish_remove(a.row_id, r)
-                                    )
-                                )
-                            continue
-                        state = target.canonical_row(action.row_id)
-                        if state is None:
-                            raise RuntimeError(
-                                "Canonical event references an unknown row: "
-                                f"{action.row_id!r}"
-                            )
-                        if isinstance(
-                            action, InsertEventAction
-                        ) and isinstance(target, CollectionState):
-                            notifications.append(
-                                lambda t=target, a=action, r=state: (
-                                    t.publish_insert(a.row_id, r)
-                                )
-                            )
-                    changed.setdefault(state, set()).update(
-                        state.set_canonical(dict(action.values))
-                    )
+                        target.apply_event(action)
 
-            # Remove only this transaction's optimistic contribution.
-            # Install all committed values before the first user callback.
             if transaction_id is not None:
                 context = self._transactions.get(transaction_id)
                 if context is not None:
-                    self._discard_overlays(
-                        context.transaction, changed, notifications
-                    )
-
-        def publish() -> None:
-            for (target, name), value in properties.items():
-                set_property(target, name, value)
-            for state, fields in changed.items():
-                state.publish(fields)
-            for notify in notifications:
-                notify()
+                    self._discard_transaction_overlays(context.transaction)
 
         occurrences = []
         seen: set[tuple[State[Any], int]] = set()
@@ -428,7 +354,7 @@ class StateManager:
                     self._publish_row_signal, target, state, action, seen
                 )
             occurrences.append((action.occurrence_id, emit))
-        return SubscriptionPublication(publish, tuple(occurrences))
+        return SubscriptionPublication(batch.publish, tuple(occurrences))
 
     def _publish_row_signal(
         self,
@@ -452,15 +378,13 @@ class StateManager:
     def on_subscription_status(
         self, source: SubscriptionSource, synced: bool
     ) -> None:
+        """Reflect subscription readiness while retaining stored values."""
         target = self._targets.get(source)
 
         if target is None:
             return
 
-        if isinstance(target, State):
-            set_property(target, "synced", synced)
-        else:
-            target.sync_rows(synced)
+        target.set_synced(synced)
 
     def _request(self, callback: Any) -> StateTransaction:
         active = _active_transaction.get()
@@ -512,14 +436,10 @@ class StateManager:
         else:
             transaction.add_set(state, copied)
 
-        fields = frozenset(copied)
-
         if optimistic:
-            changed = state.set_overlay(transaction.id, copied)
+            state.set_overlay(transaction.id, copied)
         else:
-            changed = state.discard_overlay(transaction.id, fields)
-
-        state.publish(changed)
+            state.discard_overlay(transaction.id, frozenset(copied))
 
     def _insert(
         self,
@@ -539,13 +459,7 @@ class StateManager:
         if not optimistic:
             return
 
-        delta = collection.set_membership_overlay(transaction.id, row_id, True)
-
-        changed = state.set_overlay(transaction.id, prepared)
-
-        state.publish(changed)
-
-        collection.publish_membership(delta)
+        collection.apply_insert_overlay(transaction.id, state, prepared)
 
     def _remove(
         self,
@@ -556,38 +470,14 @@ class StateManager:
         optimistic: bool,
     ) -> None:
         state = collection[row_id]
+        outcome = transaction.add_remove(collection, state)
 
-        cancelled_insert = transaction.add_remove(collection, state)
-
-        changed = state.discard_overlay(transaction.id)
-
-        state.publish(changed)
-
-        if cancelled_insert:
-            if any(
-                isinstance(action, RemoveAction) and action.state is state
-                for action in transaction.actions
-            ):
-                delta = collection.set_membership_overlay(
-                    transaction.id, row_id, False
-                )
-            else:
-                delta = collection.discard_membership_overlay(
-                    transaction.id, row_id
-                )
-
-            collection.publish_membership(delta)
-
-            return
-
-        if not optimistic:
-            return
-
-        delta = collection.set_membership_overlay(
-            transaction.id, row_id, False
-        )
-
-        collection.publish_membership(delta)
+        with notification_batch():
+            state.discard_overlay(transaction.id)
+            if outcome is RemovalOutcome.CANCELLED_INSERT:
+                collection.discard_overlay(transaction.id, (row_id,))
+            elif outcome is RemovalOutcome.CANCELLED_REPLACEMENT or optimistic:
+                collection.set_overlay(transaction.id, {row_id: None})
 
     def _signal(
         self,
@@ -629,88 +519,89 @@ class StateManager:
 
         return context
 
-    def _begin_participants(self, context: TransactionContext) -> None:
+    def _begin_participants(self, context: TransactionContext) -> bool:
+        """Start participants and report whether submission may proceed.
+
+        A callback can close the manager while a participant starts. Check
+        completion before each next participant and before client submission.
+        """
         transaction = context.transaction
-
-        for state in context.states:
-            state.begin_transaction(transaction)
-
-        for collection in context.collections:
-            collection.begin_transaction(transaction)
+        for participant in (*context.states, *context.collections):
+            if transaction.done:
+                return False
+            participant.begin_transaction(transaction)
+        return not transaction.done
 
     def _succeed_participants(self, context: TransactionContext) -> None:
-        transaction = context.transaction
-
-        for state in context.states:
-            state.succeed_transaction(transaction)
-
-        for collection in context.collections:
-            collection.succeed_transaction(transaction)
+        for participant in (*context.states, *context.collections):
+            participant.succeed_transaction(context.transaction)
 
     def _fail_participants(
         self, context: TransactionContext, failure: TransactionFailure
     ) -> None:
-        transaction = context.transaction
-
-        for state in context.states:
-            state.fail_transaction(transaction, failure)
-
-        for collection in context.collections:
-            collection.fail_transaction(transaction, failure)
+        for participant in (*context.states, *context.collections):
+            participant.fail_transaction(context.transaction, failure)
 
     def _request_actions(
         self, action: TransactionAction
     ) -> tuple[RequestAction, ...]:
-        if isinstance(action, SetAction):
+        """Encode local intent, expanding projected writes into requests."""
+        handler = self._request_handlers.get(type(action))
+        if handler is None:
+            raise TypeError("Unsupported State transaction action")
+        return handler(action)
+
+    def _set_request_actions(
+        self, action: SetAction
+    ) -> tuple[RequestAction, ...]:
+        return (
+            SetRequestAction(
+                schema=action.state.schema.name,
+                values=tuple(action.values.items()),
+            ),
+        )
+
+    def _insert_request_actions(
+        self, action: InsertAction
+    ) -> tuple[RequestAction, ...]:
+        return (
+            InsertRequestAction(
+                schema=action.collection.schema.name,
+                row_id=_row_id(action.state),
+                values=tuple(action.values.items()),
+            ),
+        )
+
+    def _remove_request_actions(
+        self, action: RemoveAction
+    ) -> tuple[RequestAction, ...]:
+        return (
+            RemoveRequestAction(
+                schema=action.collection.schema.name,
+                row_id=_row_id(action.state),
+            ),
+        )
+
+    def _signal_request_actions(
+        self, action: SignalAction
+    ) -> tuple[RequestAction, ...]:
+        row_id = action.state.row_id
+        if row_id is None:
             return (
-                SetRequestAction(
+                SignalRequestAction(
                     schema=action.state.schema.name,
-                    values=tuple(action.values.items()),
-                ),
-            )
-
-        if isinstance(action, SetRowAction):
-            return self._setrow_request_actions(action)
-
-        if isinstance(action, InsertAction):
-            return (
-                InsertRequestAction(
-                    schema=action.collection.schema.name,
-                    row_id=_row_id(action.state),
-                    values=tuple(action.values.items()),
-                ),
-            )
-
-        if isinstance(action, RemoveAction):
-            return (
-                RemoveRequestAction(
-                    schema=action.collection.schema.name,
-                    row_id=_row_id(action.state),
-                ),
-            )
-
-        if isinstance(action, SignalAction):
-            row_id = action.state.row_id
-
-            if row_id is None:
-                return (
-                    SignalRequestAction(
-                        schema=action.state.schema.name,
-                        signal=action.signal,
-                        data=action.data,
-                    ),
-                )
-
-            return (
-                SignalRowRequestAction(
-                    schema=action.state.schema.name,
-                    row_id=row_id,
                     signal=action.signal,
                     data=action.data,
                 ),
             )
-
-        raise TypeError("Unsupported State transaction action")
+        return (
+            SignalRowRequestAction(
+                schema=action.state.schema.name,
+                row_id=row_id,
+                signal=action.signal,
+                data=action.data,
+            ),
+        )
 
     def _setrow_request_actions(
         self, action: SetRowAction
@@ -731,6 +622,8 @@ class StateManager:
         state: State[Any],
         values: dict[str, Any],
     ) -> dict[tuple[str, str, str], Any]:
+        # Resolve now, while the transaction's relationship writes are known.
+        # Re-resolving at response time could target a different joined row.
         shape = cast(QueryShape | None, getattr(type(state), "_query_shape"))
         if shape is None:
             return {
@@ -806,12 +699,15 @@ class StateManager:
             TransactionResponse | TransactionFailureResponse
         ],
     ) -> None:
+        """Settle local lifecycle from the client's matched reply or error.
+
+        The client validates response types and IDs before resolving futures.
+        Canonical events have already been delivered when success arrives.
+        """
         context = self._transactions.pop(transaction_id, None)
 
         if context is None:
             return
-
-        transaction = context.transaction
 
         if future.cancelled():
             self._fail_transaction(
@@ -837,28 +733,6 @@ class StateManager:
 
             return
 
-        if not isinstance(response, TransactionResponse):
-            self._fail_transaction(
-                context,
-                TransactionFailure(
-                    type="internal",
-                    message="Store returned an invalid transaction response",
-                ),
-            )
-
-            return
-
-        if response.transaction_id != transaction.id:
-            self._fail_transaction(
-                context,
-                TransactionFailure(
-                    type="internal",
-                    message="Store transaction ID does not match",
-                ),
-            )
-
-            return
-
         self._succeed_transaction(context)
 
     def _succeed_transaction(self, context: TransactionContext) -> None:
@@ -873,38 +747,21 @@ class StateManager:
         context.transaction._fail(failure)
         self._fail_participants(context, failure)
 
-    def _discard_overlays(
-        self,
-        transaction: StateTransaction,
-        changed: dict[State[Any], set[str]],
-        notifications: list[Any],
+    def _discard_transaction_overlays(
+        self, transaction: StateTransaction
     ) -> None:
+        """Retire only this transaction after commit, failure, or abort."""
         states: set[State[Any]] = set()
         collections: set[CollectionState[Any]] = set()
         for action in transaction.actions:
             states.add(action.state)
             if isinstance(action, (InsertAction, RemoveAction)):
                 collections.add(action.collection)
-        for state in states:
-            changed.setdefault(state, set()).update(
+        with notification_batch():
+            for state in states:
                 state.discard_overlay(transaction.id)
-            )
-        for collection in collections:
-            delta = collection.discard_membership_overlay(transaction.id)
-            notifications.append(
-                lambda t=collection, d=delta: t.publish_membership(d)
-            )
-
-    def _discard_transaction_overlays(
-        self, transaction: StateTransaction
-    ) -> None:
-        changed: dict[State[Any], set[str]] = {}
-        notifications: list[Any] = []
-        self._discard_overlays(transaction, changed, notifications)
-        for state, fields in changed.items():
-            state.publish(fields)
-        for notify in notifications:
-            notify()
+            for collection in collections:
+                collection.discard_overlay(transaction.id)
 
     def _single_snapshot(
         self, target: ReactiveTarget, response: SingleSubscriptionResponse
@@ -915,9 +772,7 @@ class StateManager:
         if response.values is None:
             return
 
-        changed = target.set_canonical(dict(response.values))
-
-        target.publish(changed)
+        target.set_canonical(dict(response.values))
 
     def _collection_snapshot(
         self, target: ReactiveTarget, response: CollectionSubscriptionResponse
@@ -930,7 +785,7 @@ class StateManager:
         if response.rows is None:
             return
 
-        self._rows_snapshot(target, response.rows)
+        target.apply_snapshot(response.rows)
 
     def _query_snapshot(
         self, target: ReactiveTarget, response: QuerySubscriptionResponse
@@ -943,28 +798,7 @@ class StateManager:
         if response.rows is None:
             return
 
-        self._rows_snapshot(target, response.rows)
-
-    def _rows_snapshot(
-        self,
-        target: CollectionState[Any] | QueryCollectionState[Any],
-        rows: tuple[QueryRow, ...],
-    ) -> None:
-        delta = target.set_membership(tuple(row.id for row in rows))
-
-        changes: list[tuple[State[Any], frozenset[str]]] = []
-        for row in rows:
-            state = target.canonical_row(row.id)
-            if state is None:
-                raise RuntimeError("Snapshot row is missing")
-
-            changed = state.set_canonical(row.to_dict())
-
-            changes.append((state, changed))
-
-        for state, changed in changes:
-            state.publish(changed)
-        target.publish_membership(delta)
+        target.apply_snapshot(response.rows)
 
 
 def _insert_values(

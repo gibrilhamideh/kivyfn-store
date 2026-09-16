@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kivyfn.store.protocol.message.event import (
-    SetEventAction,
-    SubscriptionEvent,
-)
+from kivyfn.store.client.subscription import SubscriptionUpdate
+from kivyfn.store.protocol.message.event import SetEventAction
 from kivyfn.store.protocol.message.requests import SetRequestAction
 from tests.state.helpers import StateUnitSingle, manager_pair
 
@@ -31,7 +29,6 @@ async def test_failed_earlier_overlay_keeps_later_optimistic_value():
 async def test_later_strict_commit_is_retained_under_earlier_overlay():
     manager, client = manager_pair()
     state = manager.create(StateUnitSingle)
-    manager.bind_subscription(StateUnitSingle, "single")
     with manager.transaction() as first:
         state.value = 1
     second = state.set(value=2)
@@ -39,7 +36,9 @@ async def test_later_strict_commit_is_retained_under_earlier_overlay():
     await client.succeed(
         manager,
         second,
-        SubscriptionEvent("single", {}, (SetEventAction((("value", 2),)),)),
+        SubscriptionUpdate(
+            StateUnitSingle, (SetEventAction((("value", 2),)),)
+        ),
     )
     assert state.get("value") == 1
     await client.fail(first)
@@ -69,7 +68,6 @@ async def test_committed_overlay_removed_before_signal_callback():
 
     manager, client = manager_pair()
     state = manager.create(StateUnitSingle)
-    manager.bind_subscription(StateUnitSingle, "single")
     observed = []
     state.bind(on_ping=lambda *_: observed.append(state.get("value")))
     with manager.transaction() as tx:
@@ -79,9 +77,8 @@ async def test_committed_overlay_removed_before_signal_callback():
     await client.succeed(
         manager,
         tx,
-        SubscriptionEvent(
-            "single",
-            {},
+        SubscriptionUpdate(
+            StateUnitSingle,
             (SignalEventAction("ping"), SetEventAction((("value", 3),))),
         ),
     )

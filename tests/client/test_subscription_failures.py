@@ -210,7 +210,7 @@ async def test_subscription_failure_does_not_discard_batched_mutation_or_query(
     assert healthy.synced and healthy.value == 17
     assert not failed.synced
     assert stack.client.online and not stack.client.synced
-    assert stack.client._transactions == {} and stack.client._queries == {}
+    assert stack.client._futures.empty
 
 
 @pytest.mark.asyncio

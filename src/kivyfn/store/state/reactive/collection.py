@@ -1,31 +1,36 @@
 # src/kivyfn/store/state/reactive/collection.py
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass
-from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
+from collections.abc import Iterable, Mapping
+from functools import partial
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from kivy.event import EventDispatcher
-from kivy.properties import AliasProperty, BooleanProperty, NumericProperty
-from kivyfn.logging import get_logger
+from kivy.properties import BooleanProperty, NumericProperty
 
-from kivyfn.store.error import StoreStateError
+from kivyfn.store.protocol.message.event import (
+    InsertEventAction,
+    RemoveEventAction,
+)
 from kivyfn.store.schema import ManySchema
-from kivyfn.store.state.reactive.data import StateData
-from kivyfn.store.state.reactive.dispatch import dispatch, set_property
+from kivyfn.store.state.reactive.base import (
+    BaseCollection,
+    RowFactory,
+    TransactionStatus,
+)
+from kivyfn.store.state.reactive.data import CollectionData, StateData
+from kivyfn.store.state.reactive.dispatch import (
+    dispatch,
+    notification_batch,
+    notify,
+    set_property,
+)
 from kivyfn.store.state.reactive.state import State
 
 if TYPE_CHECKING:
     from kivyfn.store.state.transaction.failure import TransactionFailure
     from kivyfn.store.state.transaction.transaction import StateTransaction
 
-
-logger = get_logger(__name__)
-
 SchemaT = TypeVar("SchemaT", bound=ManySchema)
-
-RowFactory = Callable[[str], State[SchemaT]]
 
 
 class CollectionManagerProtocol(Protocol):
@@ -47,36 +52,12 @@ class CollectionManagerProtocol(Protocol):
     ) -> StateTransaction: ...
 
 
-@dataclass(frozen=True, slots=True)
-class MembershipDelta(Generic[SchemaT]):
-    """Visible membership changes for one collection."""
-
-    entered: tuple[tuple[str, State[SchemaT]], ...] = ()
-    left: tuple[tuple[str, State[SchemaT]], ...] = ()
-
-    @property
-    def changed(self) -> bool:
-        return bool(self.entered or self.left)
-
-
-class CollectionState(EventDispatcher, Generic[SchemaT]):
+class CollectionState(BaseCollection[SchemaT]):
     """Editable reactive keyed collection of State objects."""
 
-    _row_version = NumericProperty(0)
-    synced = BooleanProperty(False)
     is_pending = BooleanProperty(False)
     pending_count = NumericProperty(0)
-
-    __events__ = (
-        "on_pending",
-        "on_success",
-        "on_failed",
-        "on_done",
-        "on_insert",
-        "on_remove",
-        "on_enter",
-        "on_leave",
-    )
+    __events__ = (*TransactionStatus.events, "on_insert", "on_remove")
 
     def __init__(
         self,
@@ -84,49 +65,24 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         schema: SchemaT,
         row_factory: RowFactory[SchemaT],
     ) -> None:
-        super().__init__()
-
+        data: CollectionData[State[SchemaT]] = CollectionData()
+        super().__init__(schema, row_factory, data.visible_view)
+        self._transaction_status = TransactionStatus()
         self._manager = manager
-        self._schema = schema
-        self._row_factory = row_factory
-
-        self._canonical_rows: dict[str, State[SchemaT]] = {}
-        self._membership_overlays: dict[str, dict[str, bool]] = {}
-        self._rows: dict[str, State[SchemaT]] = {}
-        self._rows_view: Mapping[str, State[SchemaT]] = MappingProxyType(
-            self._rows
-        )
-
-        self._pending_transactions: set[str] = set()
+        self._data = data
 
     def __getattribute__(self, name: str) -> Any:
         if name in {"pending_count", "is_pending"}:
             try:
-                pending = object.__getattribute__(
-                    self, "_pending_transactions"
-                )
+                status = object.__getattribute__(self, "_transaction_status")
             except AttributeError:
                 pass
             else:
-                return (
-                    len(pending) if name == "pending_count" else bool(pending)
-                )
+                return len(status) if name == "pending_count" else bool(status)
         return super().__getattribute__(name)
 
-    @property
-    def schema(self) -> SchemaT:
-        return self._schema
-
-    def _get_rows(self) -> Mapping[str, State[SchemaT]]:
-        return self._rows_view
-
-    rows = AliasProperty(_get_rows, None, bind=("_row_version",))
-
-    def __getitem__(self, row_id: str) -> State[SchemaT]:
-        return self._rows[row_id]
-
     def __setitem__(self, row_id: str, values: Mapping[str, Any]) -> None:
-        if row_id in self._rows:
+        if row_id in self:
             raise ValueError(f"Collection row already exists: {row_id!r}")
 
         self._manager.request_insert(
@@ -134,34 +90,13 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         )
 
     def __delitem__(self, row_id: str) -> None:
-        if row_id not in self._rows:
+        if row_id not in self:
             raise KeyError(row_id)
 
         self._manager.request_remove(self, row_id, optimistic=True)
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._rows)
-
-    def __len__(self) -> int:
-        return len(self._rows)
-
-    def __contains__(self, row_id: object) -> bool:
-        return row_id in self._rows
-
-    def get(self, row_id: str) -> State[SchemaT] | None:
-        return self._rows.get(row_id)
-
-    def keys(self) -> tuple[str, ...]:
-        return tuple(self._rows)
-
-    def values(self) -> tuple[State[SchemaT], ...]:
-        return tuple(self._rows.values())
-
-    def items(self) -> tuple[tuple[str, State[SchemaT]], ...]:
-        return tuple(self._rows.items())
-
     def insert(self, row_id: str, **values: Any) -> StateTransaction:
-        if row_id in self._rows:
+        if row_id in self:
             raise ValueError(f"Collection row already exists: {row_id!r}")
 
         return self._manager.request_insert(
@@ -169,132 +104,89 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
         )
 
     def remove(self, row_id: str) -> StateTransaction:
-        if row_id not in self._rows:
+        if row_id not in self:
             raise KeyError(row_id)
 
         return self._manager.request_remove(self, row_id, optimistic=False)
 
     def canonical_row(self, row_id: str) -> State[SchemaT] | None:
-        """Find a canonical row even when an optimistic remove hides it."""
-        return self._canonical_rows.get(row_id)
+        """Find a confirmed row even when an optimistic removal hides it."""
+        return self._data.canonical(row_id)
 
     def sync_rows(self, synced: bool) -> None:
-        for state in self._canonical_rows.values():
+        for state in self._data.canonical_snapshot().values():
             state.set_owner_synced(self, synced)
         set_property(self, "synced", synced)
 
-    def enter(self, row_id: str) -> MembershipDelta[SchemaT]:
-        if row_id not in self._canonical_rows:
-            self._canonical_rows[row_id] = self._create_row(row_id)
-        return self._refresh_membership()
+    def set_canonical(
+        self, values: Mapping[str, State[SchemaT] | None]
+    ) -> None:
+        """Patch confirmed rows and own sync and notification effects."""
+        self._require_rows(values)
+        with notification_batch():
+            previous = self._data.canonical_snapshot()
+            delta = self._data.set_canonical(values)
+            self._sync_owners(previous)
+            notify(partial(self.publish, delta))
 
-    def leave(self, row_id: str) -> MembershipDelta[SchemaT]:
-        state = self._canonical_rows.pop(row_id, None)
-        if state is not None:
-            state.set_owner_synced(self, False)
-        return self._refresh_membership()
+    def replace_canonical(self, values: Mapping[str, State[SchemaT]]) -> None:
+        """Replace confirmed rows while retaining transaction overlays."""
+        self._require_rows(values)
+        with notification_batch():
+            previous = self._data.canonical_snapshot()
+            delta = self._data.replace_canonical(values)
+            self._sync_owners(previous)
+            notify(partial(self.publish, delta))
 
-    def set_membership(
-        self, row_ids: Iterable[str]
-    ) -> MembershipDelta[SchemaT]:
-        row_ids = tuple(row_ids)
-        target_ids = set(row_ids)
-        for row_id in tuple(self._canonical_rows):
-            if row_id not in target_ids:
-                state = self._canonical_rows.pop(row_id)
-                state.set_owner_synced(self, False)
-        for row_id in row_ids:
-            if row_id not in self._canonical_rows:
-                self._canonical_rows[row_id] = self._create_row(row_id)
-        return self._refresh_membership()
+    def set_overlay(
+        self, transaction_id: str, values: Mapping[str, State[SchemaT] | None]
+    ) -> None:
+        """Store temporary row entries while preserving State identity."""
+        self._require_rows(values)
+        delta = self._data.set_overlay(transaction_id, values)
+        notify(partial(self.publish, delta))
 
-    def set_membership_overlay(
-        self, transaction_id: str, row_id: str, present: bool
-    ) -> MembershipDelta[SchemaT]:
-        overlay = self._membership_overlays.setdefault(transaction_id, {})
-        overlay[row_id] = present
-        return self._refresh_membership()
+    def discard_overlay(
+        self, transaction_id: str, keys: Iterable[str] | None = None
+    ) -> None:
+        """Remove only this transaction's contribution, then notify changes."""
+        delta = self._data.discard_overlay(transaction_id, keys)
+        notify(partial(self.publish, delta))
 
-    def discard_membership_overlay(
-        self, transaction_id: str, row_id: str | None = None
-    ) -> MembershipDelta[SchemaT]:
-        overlay = self._membership_overlays.get(transaction_id)
-        if overlay is not None:
-            if row_id is None:
-                del self._membership_overlays[transaction_id]
-            else:
-                overlay.pop(row_id, None)
-                if not overlay:
-                    del self._membership_overlays[transaction_id]
-        return self._refresh_membership()
-
-    def _refresh_membership(self) -> MembershipDelta[SchemaT]:
-        rows = dict(self._canonical_rows)
-        for overlay in self._membership_overlays.values():
-            for row_id, present in overlay.items():
-                if present:
-                    state = rows.get(row_id)
-                    rows[row_id] = (
-                        state
-                        or self._rows.get(row_id)
-                        or self._create_row(row_id)
-                    )
-                else:
-                    rows.pop(row_id, None)
-        delta = MembershipDelta(
-            entered=tuple(
-                (key, row)
-                for key, row in rows.items()
-                if key not in self._rows
-            ),
-            left=tuple(
-                (key, row)
-                for key, row in self._rows.items()
-                if key not in rows
-            ),
-        )
-        self._rows.clear()
-        self._rows.update(rows)
-        for state in self._canonical_rows.values():
-            state.set_owner_synced(self, bool(self.synced))
-        return delta
-
-    def publish_membership(self, delta: MembershipDelta[SchemaT]) -> None:
-        if not delta.changed:
-            return
-
-        set_property(self, "_row_version", self._row_version + 1)
-
-        for row_id, state in delta.left:
-            self._dispatch_membership("on_leave", row_id, state)
-
-        for row_id, state in delta.entered:
-            self._dispatch_membership("on_enter", row_id, state)
+    def apply_insert_overlay(
+        self,
+        transaction_id: str,
+        state: State[SchemaT],
+        values: Mapping[str, Any],
+    ) -> None:
+        """Expose an optimistic row and its values in one update."""
+        if state.row_id is None:
+            raise ValueError("Insert overlay requires a row ID")
+        with notification_batch():
+            self.set_overlay(transaction_id, {state.row_id: state})
+            state.set_overlay(transaction_id, values)
 
     def begin_transaction(self, transaction: StateTransaction) -> None:
-        if transaction.id in self._pending_transactions:
-            return
-
-        self._pending_transactions.add(transaction.id)
-        self._sync_pending()
-
-        dispatch(self, "on_pending", transaction)
+        self._transaction_status.begin(self, transaction)
 
     def succeed_transaction(self, transaction: StateTransaction) -> None:
-        if not self._finish_transaction(transaction.id):
-            return
-
-        dispatch(self, "on_success", transaction)
-        dispatch(self, "on_done", transaction, None)
+        self._transaction_status.succeed(self, transaction)
 
     def fail_transaction(
         self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
-        if not self._finish_transaction(transaction.id):
-            return
+        self._transaction_status.fail(self, transaction, failure)
 
-        dispatch(self, "on_failed", transaction, failure)
-        dispatch(self, "on_done", transaction, failure)
+    def _apply_insert(self, action: InsertEventAction) -> None:
+        super()._apply_insert(action)
+        state = self._require_row(action.row_id)
+        notify(partial(self.publish_insert, action.row_id, state))
+
+    def _apply_remove(self, action: RemoveEventAction) -> None:
+        state = self.canonical_row(action.row_id)
+        super()._apply_remove(action)
+        if state is not None:
+            notify(partial(self.publish_remove, action.row_id, state))
 
     def publish_insert(self, row_id: str, state: State[SchemaT]) -> None:
         dispatch(self, "on_insert", row_id, state)
@@ -307,6 +199,15 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     ) -> None:
         dispatch(self, f"on_{signal}", row_id, StateData.copy(data))
 
+    def _sync_owners(self, previous: Mapping[str, State[SchemaT]]) -> None:
+        """Track canonical ownership even when overlays hide membership."""
+        current = self._data.canonical_snapshot()
+        for row_id, state in previous.items():
+            if current.get(row_id) is not state:
+                state.set_owner_synced(self, False)
+        for state in current.values():
+            state.set_owner_synced(self, bool(self.synced))
+
     def _prepare_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
         copied = StateData.copy_values(values)
 
@@ -314,51 +215,6 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
             self._schema.challenge_field(key, value)
 
         return copied
-
-    def _create_row(self, row_id: str) -> State[SchemaT]:
-        self._validate_row_id(row_id)
-
-        state = self._row_factory(row_id)
-
-        if state.row_id != row_id:
-            raise StoreStateError(
-                "State row ID does not match collection membership"
-            )
-
-        return state
-
-    def _validate_row_id(self, row_id: str) -> None:
-        if not row_id:
-            raise ValueError("Collection row ID must be a non-empty string")
-
-    def _dispatch_membership(
-        self, event: str, row_id: str, state: State[SchemaT]
-    ) -> None:
-        try:
-            self.dispatch(event, row_id, state)
-        except Exception:
-            logger.exception(
-                "Collection membership callback failed: "
-                "schema=%s event=%s row_id=%s",
-                self._schema.name,
-                event,
-                row_id,
-            )
-
-    def _finish_transaction(self, transaction_id: str) -> bool:
-        if transaction_id not in self._pending_transactions:
-            return False
-
-        self._pending_transactions.remove(transaction_id)
-        self._sync_pending()
-
-        return True
-
-    def _sync_pending(self) -> None:
-        count = len(self._pending_transactions)
-
-        set_property(self, "pending_count", count)
-        set_property(self, "is_pending", count > 0)
 
     def on_pending(self, transaction: StateTransaction) -> None:
         pass
@@ -382,16 +238,10 @@ class CollectionState(EventDispatcher, Generic[SchemaT]):
     def on_remove(self, row_id: str, state: State[SchemaT]) -> None:
         pass
 
-    def on_enter(self, row_id: str, state: State[SchemaT]) -> None:
-        pass
-
-    def on_leave(self, row_id: str, state: State[SchemaT]) -> None:
-        pass
-
     def __repr__(self) -> str:
         return (
             f"{type(self).__name__}("
             f"schema={self._schema.name!r}, "
-            f"rows={len(self._rows)}"
+            f"rows={len(self)}"
             ")"
         )

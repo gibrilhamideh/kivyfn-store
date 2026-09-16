@@ -4,21 +4,32 @@ from __future__ import annotations
 import asyncio
 from asyncio import sleep
 from collections import defaultdict
+from collections.abc import Callable
 from copy import deepcopy
 from math import isfinite
-from typing import Any, Protocol, TypeAlias, cast
+from typing import Any, cast
 from uuid import uuid4
 
 from kivyfn.logging import get_logger
 
+from kivyfn.store.client.future import (
+    HistoryReply,
+    QueryReply,
+    RequestFutures,
+    TransactionReply,
+)
 from kivyfn.store.client.queue import RequestQueue
 from kivyfn.store.client.subscription import (
     ClientSubscription,
     ClientSubscriptions,
     SubscriptionManager,
-    SubscriptionPublication,
     SubscriptionSource,
+    SubscriptionUpdate,
     publish_subscriptions,
+)
+from kivyfn.store.client.validation import (
+    ResponsePairs,
+    validate_response_batch,
 )
 from kivyfn.store.error import (
     StoreConnectionError,
@@ -26,7 +37,7 @@ from kivyfn.store.error import (
     StoreStateError,
     StoreSubscriptionError,
 )
-from kivyfn.store.protocol.message.event import EventMessage, SubscriptionEvent
+from kivyfn.store.protocol.message.event import EventMessage
 from kivyfn.store.protocol.message.requests import (
     CollectionSubscriptionRequest,
     HistoryRequest,
@@ -43,49 +54,18 @@ from kivyfn.store.protocol.message.requests import (
     UnsubscribeRequest,
 )
 from kivyfn.store.protocol.message.responses import (
-    CollectionSubscriptionResponse,
     FailureResponse,
-    HistoryResponse,
-    QueryResponse,
-    QuerySubscriptionResponse,
     ResponseBatch,
     ResponseItem,
-    SingleSubscriptionResponse,
     SubscriptionResponse,
     TransactionFailureResponse,
-    TransactionResponse,
-    UnsubscribeResponse,
 )
 from kivyfn.store.query import Query
 from kivyfn.store.store.history import HistoryPosition
 from kivyfn.store.transport.client import ClientTransport
 from kivyfn.store.transport.endpoint import create_client_transport
 
-TransactionReply: TypeAlias = TransactionResponse | TransactionFailureResponse
-QueryReply: TypeAlias = QueryResponse | FailureResponse
-HistoryReply: TypeAlias = HistoryResponse | FailureResponse
-
-SUBSCRIPTIONS = (
-    SingleSubscriptionRequest,
-    CollectionSubscriptionRequest,
-    QuerySubscriptionRequest,
-)
-
 logger = get_logger(__name__)
-
-
-class ClientSubscriptionManager(SubscriptionManager, Protocol):
-    def on_subscription_snapshot(
-        self, source: SubscriptionSource, response: SubscriptionResponse
-    ) -> None: ...
-
-    def prepare_subscription_message(
-        self, message: EventMessage
-    ) -> SubscriptionPublication: ...
-
-    def on_subscription_status(
-        self, source: SubscriptionSource, synced: bool
-    ) -> None: ...
 
 
 class StoreClient:
@@ -133,9 +113,13 @@ class StoreClient:
         self._store_instance_id: str | None = None
         self._connection_instance_id: str | None = None
         self._subscription_requests: dict[int, ClientSubscription] = {}
-        self._transactions: dict[str, asyncio.Future[TransactionReply]] = {}
-        self._queries: dict[int, asyncio.Future[QueryReply]] = {}
-        self._history: dict[int, asyncio.Future[HistoryReply]] = {}
+        self._futures = RequestFutures()
+        self._subscription_handlers: dict[type, Callable[..., None]] = {
+            SingleSubscriptionRequest: self._handle_subscription_response,
+            CollectionSubscriptionRequest: self._handle_subscription_response,
+            QuerySubscriptionRequest: self._handle_subscription_response,
+            UnsubscribeRequest: self._handle_unsubscribe_response,
+        }
 
     @property
     def endpoint(self) -> str | None:
@@ -352,17 +336,7 @@ class StoreClient:
         self._subscription_requests.clear()
         self._subscriptions.disconnect()
         self._set_subscription_status(False)
-        futures = (
-            *self._transactions.values(),
-            *self._queries.values(),
-            *self._history.values(),
-        )
-        self._transactions.clear()
-        self._queries.clear()
-        self._history.clear()
-        for future in futures:
-            if not future.done():
-                future.set_exception(error)
+        self._futures.fail_all(error)
         sync = self._sync_future
         if sync is not None and not sync.done():
             sync.set_exception(error)
@@ -378,7 +352,7 @@ class StoreClient:
             self._deliver(message)
 
     def subscribe(
-        self, source: SubscriptionSource, manager: ClientSubscriptionManager
+        self, source: SubscriptionSource, manager: SubscriptionManager
     ) -> ClientSubscription:
         existing = self._subscriptions.get(source)
         subscription = self._subscriptions.get_or_create(source, manager)
@@ -404,7 +378,7 @@ class StoreClient:
         self._enqueue(request)
 
     def unsubscribe(
-        self, source: SubscriptionSource, manager: ClientSubscriptionManager
+        self, source: SubscriptionSource, manager: SubscriptionManager
     ) -> None:
         subscription = self._subscriptions.get(source)
         if subscription is None:
@@ -429,8 +403,6 @@ class StoreClient:
         expected_revisions: dict[str, int] | None = None,
     ) -> asyncio.Future[TransactionReply]:
         self._require_online()
-        if transaction_id in self._transactions:
-            raise RuntimeError(f"Transaction already exists: {transaction_id}")
         request = TransactionRequest(
             transaction_id,
             deepcopy(actions),
@@ -439,8 +411,7 @@ class StoreClient:
             expected_store_instance_id,
             deepcopy(expected_revisions),
         )
-        future: asyncio.Future[TransactionReply] = self._future()
-        self._transactions[transaction_id] = future
+        future = self._futures.create_transaction(request)
         self._enqueue(request)
         return future
 
@@ -449,8 +420,7 @@ class StoreClient:
     ) -> asyncio.Future[HistoryReply]:
         self._require_online()
         request = HistoryRequest(limit, offset)
-        future: asyncio.Future[HistoryReply] = self._future()
-        self._history[id(request)] = future
+        future = self._futures.create_history(request)
         self._enqueue(request)
         return future
 
@@ -495,15 +465,14 @@ class StoreClient:
             # A mutation may have been submitted while status was in flight.
             self._require_navigation_ready()
         request = request_type(command_id, expected_position)
-        future: asyncio.Future[TransactionReply] = self._future()
-        self._transactions[command_id] = future
+        future = self._futures.create_transaction(request)
         self._enqueue(request)
         return await future
 
     def _require_navigation_ready(self) -> None:
         self._require_online()
         # A cancelled waiter still has unresolved queued or in-flight work.
-        if self._transactions:
+        if self._futures.has_pending_transactions:
             raise StoreStateError(
                 "Await pending local mutations before undo or redo"
             )
@@ -511,8 +480,7 @@ class StoreClient:
     def query(self, query: Query[Any]) -> asyncio.Future[QueryReply]:
         self._require_online()
         request = QueryRequest(query)
-        future: asyncio.Future[QueryReply] = self._future()
-        self._queries[id(request)] = future
+        future = self._futures.create_query(request)
         self._enqueue(request)
         return future
 
@@ -569,73 +537,32 @@ class StoreClient:
     def _handle_response_batch(
         self, request: RequestBatch, response: ResponseBatch
     ) -> None:
-        if len(request.items) != len(response.items):
-            raise StoreProtocolError("Response batch does not match requests")
-        pairs = tuple(zip(request.items, response.items))
-        for item, reply in pairs:
-            self._validate_response(item, reply)
-        # Bind every snapshot before delivering messages that overtook replies.
-        for item, reply in pairs:
-            if isinstance(item, SUBSCRIPTIONS):
-                self._handle_subscription_response(item, reply)
-            elif isinstance(item, UnsubscribeRequest) and isinstance(
-                reply, FailureResponse
-            ):
-                logger.warning(
-                    "Store unsubscribe %s failed: %s",
-                    item.subscription_id,
-                    reply.failure.message,
-                )
+        """Install subscription replies and buffered events before completion.
+
+        Validate the whole batch first so a malformed later reply cannot
+        complete an earlier request. Snapshots must precede buffered events.
+        """
+        pairs = validate_response_batch(request, response)
+        self._apply_subscription_responses(pairs)
         self._drain_messages()
         for item, reply in pairs:
-            if isinstance(
-                item, (TransactionRequest, UndoRequest, RedoRequest)
-            ):
-                future = self._transactions.pop(item.transaction_id, None)
-                if future is not None and not future.done():
-                    future.set_result(cast(TransactionReply, reply))
-            elif isinstance(item, HistoryRequest):
-                history_future = self._history.pop(id(item), None)
-                if history_future is not None and not history_future.done():
-                    history_future.set_result(cast(HistoryReply, reply))
-            elif isinstance(item, QueryRequest):
-                query_future = self._queries.pop(id(item), None)
-                if query_future is not None and not query_future.done():
-                    query_future.set_result(cast(QueryReply, reply))
+            self._futures.resolve(item, reply)
 
-    def _validate_response(
-        self, request: RequestItem, response: ResponseItem
+    def _apply_subscription_responses(self, pairs: ResponsePairs) -> None:
+        for item, reply in pairs:
+            handler = self._subscription_handlers.get(type(item))
+            if handler is not None:
+                handler(item, reply)
+
+    def _handle_unsubscribe_response(
+        self, request: UnsubscribeRequest, response: ResponseItem
     ) -> None:
-        if isinstance(request, (TransactionRequest, UndoRequest, RedoRequest)):
-            if not isinstance(
-                response, (TransactionResponse, TransactionFailureResponse)
-            ):
-                raise StoreProtocolError("Invalid transaction response")
-            if response.transaction_id != request.transaction_id:
-                raise StoreProtocolError("Transaction response ID mismatch")
-        elif isinstance(request, HistoryRequest):
-            if not isinstance(response, (HistoryResponse, FailureResponse)):
-                raise StoreProtocolError("Invalid history response")
-        elif isinstance(request, QueryRequest):
-            if not isinstance(response, (QueryResponse, FailureResponse)):
-                raise StoreProtocolError("Invalid query response")
-        elif isinstance(request, SUBSCRIPTIONS):
-            if isinstance(response, FailureResponse):
-                return
-            expected = {
-                SingleSubscriptionRequest: SingleSubscriptionResponse,
-                CollectionSubscriptionRequest: CollectionSubscriptionResponse,
-                QuerySubscriptionRequest: QuerySubscriptionResponse,
-            }[type(request)]
-            if not isinstance(response, expected):
-                raise StoreProtocolError("Invalid subscription response")
-        elif isinstance(request, UnsubscribeRequest):
-            if isinstance(response, FailureResponse):
-                return
-            if not isinstance(response, UnsubscribeResponse):
-                raise StoreProtocolError("Invalid unsubscribe response")
-            if response.subscription_id != request.subscription_id:
-                raise StoreProtocolError("Unsubscribe response ID mismatch")
+        if isinstance(response, FailureResponse):
+            logger.warning(
+                "Store unsubscribe %s failed: %s",
+                request.subscription_id,
+                response.failure.message,
+            )
 
     def _handle_subscription_response(
         self, request: SubscriptionRequest, response: ResponseItem
@@ -649,9 +576,7 @@ class StoreClient:
             # Ignore failures belonging to a released or replaced subscription.
             if subscription is requested and not requested.active:
                 requested.failure = response.failure
-                _subscription_manager(requested).on_subscription_status(
-                    source, False
-                )
+                requested.manager.on_subscription_status(source, False)
             return
         reply = cast(SubscriptionResponse, response)
         self._check_connection_instance(reply.store_instance_id)
@@ -665,7 +590,7 @@ class StoreClient:
         revisions = subscription.response_revisions(
             reply, store_instance_id=request.store_instance_id
         )
-        manager = _subscription_manager(subscription)
+        manager = subscription.manager
         self._subscriptions.bind(subscription, reply, revisions)
         self._store_instance_id = reply.store_instance_id
         manager.on_subscription_snapshot(source, reply)
@@ -705,10 +630,15 @@ class StoreClient:
             sync.set_result(None)
 
     def _deliver(self, message: EventMessage) -> None:
+        """Resolve server IDs, stage all managers, then publish one commit.
+
+        Check every subscription revision before staging any manager. Advance
+        revisions after staging, before bindings can submit follow-up work.
+        """
         self._check_connection_instance(message.store_instance_id)
         prepared: list[tuple[ClientSubscription, dict[str, int]]] = []
-        grouped: dict[int, list[SubscriptionEvent]] = defaultdict(list)
-        managers: dict[int, ClientSubscriptionManager] = {}
+        grouped: dict[int, list[SubscriptionUpdate]] = defaultdict(list)
+        managers: dict[int, SubscriptionManager] = {}
         seen: set[str] = set()
         for event in message.events:
             if event.subscription_id in seen:
@@ -719,19 +649,17 @@ class StoreClient:
                 continue
             revisions = subscription.next_revisions(event)
             prepared.append((subscription, revisions))
-            manager = _subscription_manager(subscription)
+            manager = subscription.manager
             managers[id(manager)] = manager
-            grouped[id(manager)].append(event)
+            grouped[id(manager)].append(
+                SubscriptionUpdate(subscription.source, event.actions)
+            )
         # Validate the entire envelope before changing any manager's state.
         publish = []
-        for identity, events in grouped.items():
+        for identity, updates in grouped.items():
             publish.append(
-                managers[identity].prepare_subscription_message(
-                    EventMessage(
-                        store_instance_id=message.store_instance_id,
-                        events=tuple(events),
-                        transaction_id=message.transaction_id,
-                    )
+                managers[identity].prepare_subscription_updates(
+                    tuple(updates), transaction_id=message.transaction_id
                 )
             )
         for subscription, revisions in prepared:
@@ -746,7 +674,7 @@ class StoreClient:
 
     def _set_subscription_status(self, synced: bool) -> None:
         for subscription in self._subscriptions.desired():
-            _subscription_manager(subscription).on_subscription_status(
+            subscription.manager.on_subscription_status(
                 subscription.source, synced and subscription.active
             )
 
@@ -763,12 +691,6 @@ class StoreClient:
     def _future(self) -> asyncio.Future[Any]:
         assert self._loop is not None
         return self._loop.create_future()
-
-
-def _subscription_manager(
-    subscription: ClientSubscription,
-) -> ClientSubscriptionManager:
-    return cast(ClientSubscriptionManager, subscription.manager)
 
 
 def _observe_completion(future: asyncio.Future[None]) -> None:

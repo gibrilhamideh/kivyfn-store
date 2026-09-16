@@ -1,11 +1,17 @@
 # tests/client/test_subscription_revisions.py
 from __future__ import annotations
 
-from kivyfn.store.client.subscription import ClientSubscription
+from kivyfn.store.client.subscription import (
+    ClientSubscription,
+    SubscriptionPublication,
+    SubscriptionSource,
+    SubscriptionUpdate,
+)
 from kivyfn.store.protocol.message.event import (
     SignalRowEventAction,
     SubscriptionEvent,
 )
+from kivyfn.store.protocol.message.responses import SubscriptionResponse
 from kivyfn.store.schema import ManySchema
 
 
@@ -14,11 +20,23 @@ class DemoSchema(ManySchema):
 
 
 class DemoManager:
-    def bind_subscription(self, source: object, subscription_id: str) -> None:
+    def on_subscription_snapshot(
+        self, source: SubscriptionSource, response: SubscriptionResponse
+    ) -> None:
         pass
 
-    def unbind_subscription(self, subscription_id: str) -> None:
+    def on_subscription_status(
+        self, source: SubscriptionSource, synced: bool
+    ) -> None:
         pass
+
+    def prepare_subscription_updates(
+        self,
+        updates: tuple[SubscriptionUpdate, ...],
+        *,
+        transaction_id: str | None = None,
+    ) -> SubscriptionPublication:
+        return SubscriptionPublication(lambda: None)
 
 
 def test_signal_only_event_keeps_current_revision() -> None:

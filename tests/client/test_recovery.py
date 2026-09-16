@@ -332,7 +332,7 @@ async def test_recovery_does_not_replay_interrupted_committed_mutation(
         tick.set_result(None)
         await asyncio.wait_for(asyncio.shield(retry), 3)
         assert client.synced and state.value == 9
-        assert client._transactions == {}
+        assert client._futures.empty
         assert calls == 1
         assert stack.store.schema_revisions["BoundaryFirst"] == 1
     finally:

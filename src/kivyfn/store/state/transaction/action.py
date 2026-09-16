@@ -2,10 +2,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Any, TypeAlias
 
 from kivyfn.store.state.reactive.collection import CollectionState
 from kivyfn.store.state.reactive.state import State
+
+
+class RemovalOutcome(Enum):
+    """The effect of recording a removal on the ordered row instructions."""
+
+    RECORDED = auto()
+    CANCELLED_INSERT = auto()
+    CANCELLED_REPLACEMENT = auto()
 
 
 @dataclass(slots=True)

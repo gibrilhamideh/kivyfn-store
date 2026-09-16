@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.protocol.message.event import (
     SignalEventAction,
     SignalRowEventAction,
-    SubscriptionEvent,
 )
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.schema.signal import Signal
@@ -34,21 +34,22 @@ def test_single_signal_dispatches_to_state() -> None:
     manager = create_manager()
     controller = manager.create(ControllerSchema)
 
-    manager.bind_subscription(ControllerSchema, "controller")
-
     received: list[Any] = []
 
     controller.bind(on_restart=lambda _, data: received.append(data))
 
-    manager.on_subscription_event(
-        SubscriptionEvent(
-            subscription_id="controller",
-            revisions={},
-            actions=(
-                SignalEventAction(signal="restart", data={"source": "test"}),
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                ControllerSchema,
+                (
+                    SignalEventAction(
+                        signal="restart", data={"source": "test"}
+                    ),
+                ),
             ),
         )
-    )
+    )()
 
     assert received == [{"source": "test"}]
 
@@ -56,8 +57,6 @@ def test_single_signal_dispatches_to_state() -> None:
 def test_row_signal_dispatches_row_before_collection() -> None:
     manager = create_manager()
     scales = manager.create(ScaleSchema)
-
-    manager.bind_subscription(ScaleSchema, "scales")
 
     scales.enter("scale-1")
     scale = scales["scale-1"]
@@ -72,17 +71,20 @@ def test_row_signal_dispatches_row_before_collection() -> None:
         )
     )
 
-    manager.on_subscription_event(
-        SubscriptionEvent(
-            subscription_id="scales",
-            revisions={},
-            actions=(
-                SignalRowEventAction(
-                    row_id="scale-1", signal="tare", data={"source": "button"}
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                ScaleSchema,
+                (
+                    SignalRowEventAction(
+                        row_id="scale-1",
+                        signal="tare",
+                        data={"source": "button"},
+                    ),
                 ),
             ),
         )
-    )
+    )()
 
     assert events == [
         ("row", "scale-1", {"source": "button"}),

@@ -4,12 +4,11 @@ import asyncio
 
 import pytest
 
+from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.protocol.message.event import (
-    EventMessage,
     SetEventAction,
     SetRowEventAction,
     SignalEventAction,
-    SubscriptionEvent,
 )
 from kivyfn.store.protocol.message.responses import TransactionResponse
 from tests.state.helpers import StateUnitRows, StateUnitSingle, manager_pair
@@ -100,7 +99,7 @@ async def test_wrong_response_transaction_id_cleans_up_overlay() -> None:
     state = manager.create(StateUnitSingle)
     with manager.transaction() as tx:
         state.value = 3
-    client.futures[tx.id].set_result(TransactionResponse("wrong"))
+    client.respond(tx, TransactionResponse("wrong"))
     await tx
     assert tx.failed
     assert state.get("value") == 0
@@ -122,6 +121,55 @@ async def test_close_finishes_pending_work_and_releases_subscriptions():
     assert not client.sources
     manager.close()
     client.futures[tx.id].set_result(TransactionResponse(tx.id))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event", ["on_pending", "pending_count", "is_pending"]
+)
+@pytest.mark.parametrize("close_on_collection", [False, True])
+async def test_close_during_startup_stops_submission_and_later_participants(
+    event, close_on_collection
+):
+    manager, client = manager_pair()
+    state = manager.create(StateUnitSingle)
+    rows = manager.create(StateUnitRows)
+    pending, failed = [], []
+    closing_target = rows if close_on_collection else state
+
+    def on_pending(target, transaction):
+        pending.append(target)
+        if event == "on_pending" and target is closing_target:
+            manager.close()
+
+    def on_property(target, value):
+        if value and target is closing_target:
+            manager.close()
+
+    for target in (state, rows):
+        target.bind(on_pending=on_pending)
+        target.bind(on_failed=lambda target, *_: failed.append(target))
+        if event != "on_pending":
+            target.bind(**{event: on_property})
+
+    with manager.transaction() as tx:
+        state.value = 7
+        rows["new"] = {"value": 8}
+        inserted = rows["new"]
+    await tx
+
+    assert tx.failed
+    expected_pending: list[object] = [state] if close_on_collection else []
+    if event == "on_pending":
+        expected_pending.append(closing_target)
+    assert pending == expected_pending
+    assert failed == ([state, rows] if close_on_collection else [state])
+    assert state.pending_count == rows.pending_count == 0
+    assert not state.is_pending and not rows.is_pending
+    assert state.get("value") == inserted.get("value") == 0
+    assert "new" not in rows
+    assert not client.requests
+    assert not manager._transactions
 
 
 def test_rows_track_owning_subscription_sync_and_release() -> None:
@@ -185,32 +233,26 @@ def test_all_fields_and_schemas_are_staged_before_bindings_and_signals():
     rows = manager.create(StateUnitRows)
     rows.enter("x")
     row = rows["x"]
-    manager.bind_subscription(StateUnitSingle, "single")
-    manager.bind_subscription(StateUnitRows, "rows")
     observed = []
 
     def observe(*args):
         observed.append((state.get("value"), state.get("other"), row.value))
 
     state.bind(value=observe, other=observe, on_ping=observe)
-    manager.on_subscription_message(
-        EventMessage(
-            "test",
-            (
-                SubscriptionEvent(
-                    "single",
-                    {},
-                    (
-                        SignalEventAction("ping"),
-                        SetEventAction((("value", 1), ("other", 2))),
-                    ),
-                ),
-                SubscriptionEvent(
-                    "rows", {}, (SetRowEventAction("x", (("value", 3),)),)
+    manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                StateUnitSingle,
+                (
+                    SignalEventAction("ping"),
+                    SetEventAction((("value", 1), ("other", 2))),
                 ),
             ),
+            SubscriptionUpdate(
+                StateUnitRows, (SetRowEventAction("x", (("value", 3),)),)
+            ),
         )
-    )
+    )()
     assert observed == [(1, 2, 3)] * 3
 
 
@@ -250,20 +292,16 @@ def test_prepare_defers_sync_callbacks_until_all_canonical_values_are_ready():
 
     manager, _ = manager_pair()
     rows = manager.create(StateUnitRows)
-    manager.bind_subscription(StateUnitRows, "rows")
     rows.enter("x")
     row = rows["x"]
     rows.leave("x")
     manager.on_subscription_status(StateUnitRows, True)
     observed = []
     row.bind(synced=lambda *_: observed.append(row.get("value")))
-    publish = manager.prepare_subscription_message(
-        EventMessage(
-            "test",
-            (
-                SubscriptionEvent(
-                    "rows", {}, (InsertEventAction("x", (("value", 4),)),)
-                ),
+    publish = manager.prepare_subscription_updates(
+        (
+            SubscriptionUpdate(
+                StateUnitRows, (InsertEventAction("x", (("value", 4),)),)
             ),
         )
     )

@@ -1,19 +1,21 @@
 # src/kivyfn/store/state/reactive/state.py
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeVar
-from weakref import WeakKeyDictionary
+from weakref import WeakSet
 
 from kivy.event import EventDispatcher
 from kivy.properties import BooleanProperty, NumericProperty
 from kivyfn.logging import get_logger
 
 from kivyfn.store.error import StoreStateError
+from kivyfn.store.protocol.message.event import EventAction, SetEventAction
 from kivyfn.store.schema import Schema
 from kivyfn.store.schema.fields import BaseField
+from kivyfn.store.state.reactive.base import TransactionStatus
 from kivyfn.store.state.reactive.data import StateData
-from kivyfn.store.state.reactive.dispatch import dispatch, set_property
+from kivyfn.store.state.reactive.dispatch import notify_fields, set_property
 
 if TYPE_CHECKING:
     from kivyfn.store.state.transaction.failure import TransactionFailure
@@ -45,8 +47,7 @@ class State(EventDispatcher, Generic[SchemaT]):
     synced = BooleanProperty(False)
     is_pending = BooleanProperty(False)
     pending_count = NumericProperty(0)
-
-    __events__ = ("on_pending", "on_success", "on_failed", "on_done")
+    __events__ = TransactionStatus.events
 
     _state_field_names: frozenset[str] = frozenset()
     _state_field_metadata: Mapping[str, BaseField[Any]] = {}
@@ -59,33 +60,29 @@ class State(EventDispatcher, Generic[SchemaT]):
     ) -> None:
         super().__init__()
 
+        self._transaction_status = TransactionStatus()
         self._manager = manager
         self._schema = schema
         self._row_id = row_id
         self._data = StateData(schema.defaults())
-        self._pending_transactions: set[str] = set()
-        self._sync_owners: WeakKeyDictionary[Any, bool] = WeakKeyDictionary()
+        self._synced_owners: WeakSet[object] = WeakSet()
 
         self.publish(self._state_field_names)
 
     def __getattribute__(self, name: str) -> Any:
-        # Properties notify Kivy; StateData is the authoritative read view.
-        # Copying here also prevents in-place edits escaping request routing.
         if name in {"pending_count", "is_pending"}:
             try:
-                pending = object.__getattribute__(
-                    self, "_pending_transactions"
-                )
+                status = object.__getattribute__(self, "_transaction_status")
             except AttributeError:
                 pass
             else:
-                return (
-                    len(pending) if name == "pending_count" else bool(pending)
-                )
+                return len(status) if name == "pending_count" else bool(status)
+        # Properties notify Kivy; StateData is the authoritative read view.
+        # Copying here also prevents in-place edits escaping request routing.
         if name == "synced":
             try:
                 row_id = object.__getattribute__(self, "_row_id")
-                owners = object.__getattribute__(self, "_sync_owners")
+                owners = object.__getattribute__(self, "_synced_owners")
             except AttributeError:
                 pass
             else:
@@ -102,16 +99,20 @@ class State(EventDispatcher, Generic[SchemaT]):
                     return data.visible(name)
         return super().__getattribute__(name)
 
+    def set_synced(self, synced: bool) -> None:
+        set_property(self, "synced", synced)
+
     def set_owner_synced(self, owner: object, synced: bool) -> None:
+        """Stay synced while any owning collection keeps this row current."""
         if synced:
-            self._sync_owners[owner] = True
+            self._synced_owners.add(owner)
         else:
-            self._sync_owners.pop(owner, None)
-        set_property(self, "synced", bool(self._sync_owners))
+            self._synced_owners.discard(owner)
+        set_property(self, "synced", bool(self._synced_owners))
 
     def get(self, name: str) -> Any:
         """Read a named field, including dynamically projected query fields."""
-        self._require_fields({name: None})
+        self._require_fields((name,))
         return self._data.visible(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -147,7 +148,11 @@ class State(EventDispatcher, Generic[SchemaT]):
         return self._row_id
 
     def set(self, **values: Any) -> StateTransaction:
-        """Start one non-optimistic State transaction."""
+        """Record a write without changing the visible value optimistically.
+
+        Joins the active transaction, or submits a new one immediately.
+        Await the returned transaction to observe completion.
+        """
         if not values:
             raise ValueError("set() requires at least one field")
 
@@ -164,22 +169,29 @@ class State(EventDispatcher, Generic[SchemaT]):
         for key, value in values.items():
             fields[key].challenge(value)
 
-    def set_canonical(self, values: Mapping[str, Any]) -> frozenset[str]:
+    def set_canonical(self, values: Mapping[str, Any]) -> None:
+        """Install host values and notify visible changes after the batch."""
         self._require_fields(values)
-        return self._data.set_canonical(values)
+        notify_fields(self, self._data.set_canonical(values))
 
     def set_overlay(
         self, transaction_id: str, values: Mapping[str, Any]
-    ) -> frozenset[str]:
+    ) -> None:
+        """Apply this transaction's optimistic values and own notification."""
         self._require_fields(values)
-        return self._data.set_overlay(transaction_id, values)
+        notify_fields(self, self._data.set_overlay(transaction_id, values))
 
     def discard_overlay(
-        self,
-        transaction_id: str,
-        fields: set[str] | frozenset[str] | None = None,
-    ) -> frozenset[str]:
-        return self._data.remove_overlay(transaction_id, fields)
+        self, transaction_id: str, keys: Iterable[str] | None = None
+    ) -> None:
+        """Remove only this transaction's contribution, then notify changes."""
+        notify_fields(self, self._data.discard_overlay(transaction_id, keys))
+
+    def apply_event(self, action: EventAction) -> None:
+        """Apply singleton host values; collections handle row membership."""
+        if not isinstance(action, SetEventAction):
+            raise TypeError("State target requires a Set event")
+        self.set_canonical(dict(action.values))
 
     def publish(self, fields: set[str] | frozenset[str]) -> None:
         for key in fields:
@@ -196,29 +208,15 @@ class State(EventDispatcher, Generic[SchemaT]):
         return self._data.canonical_snapshot(fields)
 
     def begin_transaction(self, transaction: StateTransaction) -> None:
-        if transaction.id in self._pending_transactions:
-            return
-
-        self._pending_transactions.add(transaction.id)
-        self._sync_pending()
-
-        dispatch(self, "on_pending", transaction)
+        self._transaction_status.begin(self, transaction)
 
     def succeed_transaction(self, transaction: StateTransaction) -> None:
-        if not self._finish_transaction(transaction.id):
-            return
-
-        dispatch(self, "on_success", transaction)
-        dispatch(self, "on_done", transaction, None)
+        self._transaction_status.succeed(self, transaction)
 
     def fail_transaction(
         self, transaction: StateTransaction, failure: TransactionFailure
     ) -> None:
-        if not self._finish_transaction(transaction.id):
-            return
-
-        dispatch(self, "on_failed", transaction, failure)
-        dispatch(self, "on_done", transaction, failure)
+        self._transaction_status.fail(self, transaction, failure)
 
     def _request_set(
         self, values: dict[str, Any], *, optimistic: bool
@@ -254,22 +252,7 @@ class State(EventDispatcher, Generic[SchemaT]):
                 key,
             )
 
-    def _finish_transaction(self, transaction_id: str) -> bool:
-        if transaction_id not in self._pending_transactions:
-            return False
-
-        self._pending_transactions.remove(transaction_id)
-        self._sync_pending()
-
-        return True
-
-    def _sync_pending(self) -> None:
-        count = len(self._pending_transactions)
-
-        set_property(self, "pending_count", count)
-        set_property(self, "is_pending", count > 0)
-
-    def _require_fields(self, values: Mapping[str, Any]) -> None:
+    def _require_fields(self, values: Iterable[str]) -> None:
         for name in values:
             if name not in self._state_field_names:
                 raise StoreStateError(

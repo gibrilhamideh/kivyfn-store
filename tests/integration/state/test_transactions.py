@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+from kivyfn.store.query import Query
 from tests.conftest import StateStack
 from tests.helpers import set_state_value, state_value
 from tests.schemas.settings import UserSettingsSchema
@@ -138,3 +139,41 @@ async def test_nested_transactions_are_rejected(
 
     await outer
     assert outer.success
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event", ["on_pending", "pending_count", "is_pending"]
+)
+async def test_close_from_pending_callback_never_sends_transaction(
+    state_stack: StateStack, event: str
+) -> None:
+    stack = state_stack
+    users = stack.state.create(UserSchema)
+    await stack.client.connect(stack.endpoint)
+    await users.insert("user-1", **USER)
+    user = users["user-1"]
+    before = dict(stack.store.schema_revisions)
+
+    def close_manager(target, value):
+        if event == "on_pending" or value:
+            stack.state.close()
+
+    user.bind(**{event: close_manager})
+    with stack.state.transaction() as tx:
+        set_state_value(user, "age", 31)
+        users["new-user"] = {**USER, "username": "new-user"}
+    await tx
+
+    # This reply follows any work that startup might have wrongly submitted.
+    await stack.client.query(Query(UserSchema))
+
+    assert tx.failed
+    assert user.pending_count == users.pending_count == 0
+    assert not user.is_pending and not users.is_pending
+    assert state_value(user, "age") == 30
+    assert "new-user" not in users
+    canonical = stack.store.snapshot_by_schema("UserSchema")
+    assert canonical["user-1"]["age"] == 30
+    assert "new-user" not in canonical
+    assert stack.store.schema_revisions == before

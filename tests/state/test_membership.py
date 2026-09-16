@@ -2,25 +2,28 @@ from __future__ import annotations
 
 import pytest
 
+from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.protocol.message.event import (
     InsertEventAction,
     RemoveEventAction,
     SetRowEventAction,
     SignalRowEventAction,
-    SubscriptionEvent,
 )
-from kivyfn.store.protocol.message.requests import InsertRequestAction
+from kivyfn.store.protocol.message.requests import (
+    InsertRequestAction,
+    RemoveRequestAction,
+)
+from kivyfn.store.query import QueryRow
 from tests.state.helpers import StateUnitRows, manager_pair
 
 
 def event(*actions):
-    return SubscriptionEvent("rows", {}, actions)
+    return SubscriptionUpdate(StateUnitRows, actions)
 
 
 def rows_pair():
     manager, client = manager_pair()
     rows = manager.create(StateUnitRows)
-    manager.bind_subscription(StateUnitRows, "rows")
     return manager, client, rows
 
 
@@ -56,7 +59,7 @@ async def test_failed_optimistic_remove_preserves_remote_delete() -> None:
     tx = manager.transaction()
     with tx:
         del rows["x"]
-    manager.on_subscription_event(event(RemoveEventAction("x")))
+    manager.prepare_subscription_updates((event(RemoveEventAction("x")),))()
     await client.fail(tx)
     assert "x" not in rows
 
@@ -71,12 +74,14 @@ async def test_hidden_row_receives_update_and_signal_before_remove_failure():
     tx = manager.transaction()
     with tx:
         del rows["x"]
-    manager.on_subscription_event(
-        event(
-            SetRowEventAction("x", (("value", 7),)),
-            SignalRowEventAction("x", "ping"),
+    manager.prepare_subscription_updates(
+        (
+            event(
+                SetRowEventAction("x", (("value", 7),)),
+                SignalRowEventAction("x", "ping"),
+            ),
         )
-    )
+    )()
     assert "x" not in rows
     assert received == [7]
     await client.fail(tx)
@@ -91,23 +96,61 @@ async def test_snapshot_updates_hidden_canonical_membership() -> None:
     tx = manager.transaction()
     with tx:
         del rows["x"]
-    rows.set_membership(("y",))
+    rows.apply_snapshot(tuple(QueryRow(key, {}) for key in ("y",)))
     await client.fail(tx)
     assert rows.keys() == ("y",)
 
 
 @pytest.mark.asyncio
-async def test_remove_insert_remove_keeps_final_removal_overlay() -> None:
+@pytest.mark.parametrize("strict_remove", [False, True])
+async def test_cancelled_insert_clears_overlays_without_submitting(
+    strict_remove: bool,
+) -> None:
+    manager, client, rows = rows_pair()
+    with manager.transaction() as tx:
+        rows["x"] = {"value": 2}
+        row = rows["x"]
+        row.value = 3
+        if strict_remove:
+            rows.remove("x")
+        else:
+            del rows["x"]
+        assert "x" not in rows
+        assert row.get("value") == 0
+    await tx
+    assert tx.success
+    assert not client.requests
+    assert rows.canonical_row("x") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strict_remove", [False, True])
+@pytest.mark.parametrize("succeeds", [False, True])
+async def test_remove_insert_remove_keeps_final_removal_overlay(
+    strict_remove: bool, succeeds: bool
+) -> None:
     manager, client, rows = rows_pair()
     rows.enter("x")
+    row = rows["x"]
     tx = manager.transaction()
     with tx:
         del rows["x"]
         rows["x"] = {"value": 2}
-        del rows["x"]
+        if strict_remove:
+            rows.remove("x")
+        else:
+            del rows["x"]
         assert "x" not in rows
-    await client.succeed(manager, tx, event(RemoveEventAction("x")))
-    assert "x" not in rows
+    assert client.requests[tx.id] == (
+        RemoveRequestAction("StateUnitRows", "x"),
+    )
+    if succeeds:
+        await client.succeed(manager, tx, event(RemoveEventAction("x")))
+        assert "x" not in rows
+    else:
+        await client.fail(tx)
+        assert rows["x"] is row
+        assert row.get("value") == 0
 
 
 @pytest.mark.asyncio
@@ -143,15 +186,15 @@ async def test_defaults_only_insert_is_valid_and_owned() -> None:
 
 def test_membership_overlay_precedence_and_read_only_mapping() -> None:
     _, _, rows = rows_pair()
-    rows.set_membership(("a", "b"))
+    rows.apply_snapshot(tuple(QueryRow(key, {}) for key in ("a", "b")))
     first = rows["a"]
-    rows.set_membership_overlay("first", "a", False)
-    rows.set_membership_overlay("second", "a", True)
+    rows.set_overlay("first", {"a": None})
+    rows.set_overlay("second", {"a": first})
     assert rows["a"] is first
     rows.leave("a")
-    rows.discard_membership_overlay("first")
+    rows.discard_overlay("first")
     assert rows["a"] is first
-    rows.discard_membership_overlay("second")
+    rows.discard_overlay("second")
     assert rows.keys() == ("b",)
     with pytest.raises(TypeError):
         rows.rows["x"] = first
