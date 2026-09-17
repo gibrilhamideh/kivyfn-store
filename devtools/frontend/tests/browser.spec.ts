@@ -1,5 +1,15 @@
 import { test, expect } from "./fixtures";
 
+// Existing protocol checks use the dictionary view; views.spec exercises the
+// structured defaults against the same real backends.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    for (const name of ["State", "History", "Query", "Activity"])
+      localStorage.setItem("kivyfn.view." + name, "dictionary");
+  });
+  page.on("dialog", (dialog) => void dialog.accept());
+});
+
 test("guarded edits preserve dirty input, then undo and redo the shared head", async ({
   page,
   backend,
@@ -27,12 +37,18 @@ test("guarded edits preserve dirty input, then undo and redo the shared head", a
   await expect(page.getByRole("alert")).toContainText(/stale|revision/i);
   await page.getByRole("button", { name: "Use current revisions" }).click();
   await page.getByRole("button", { name: "Apply new mutation" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 42');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 42',
+  );
   await page.getByRole("button", { name: "Close draft" }).click();
   await page.getByRole("button", { name: "Undo last" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
   await page.getByRole("button", { name: "Redo next" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 42');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 42',
+  );
 });
 
 test("captured preview stays isolated during application writes", async ({
@@ -43,7 +59,9 @@ test("captured preview stays isolated during application writes", async ({
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 7 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 7');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 7',
+  );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.getByRole("button", { name: "Preview captured state" }).click();
   await expect(page.locator(".preview-banner")).toContainText(
@@ -56,9 +74,13 @@ test("captured preview stays isolated during application writes", async ({
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 9 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 7');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 7',
+  );
   await page.getByRole("button", { name: "Return to live" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 9');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 9',
+  );
 });
 
 test("integer-like row IDs remain selectable after structural undo", async ({
@@ -99,16 +121,22 @@ test("display and recording pauses keep canonical State live, reconnect replaces
     { type: "set", schema: "BrowserModel", values: { x: 12 } },
   ]);
   await page.getByRole("button", { name: "State", exact: true }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 12');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 12',
+  );
   await backend.disconnectBrowsers();
   await expect(page.locator(".connection")).toContainText("Disconnected");
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 14 } },
   ]);
   await expect(page.locator(".connection")).toHaveText("Live");
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 14');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 14',
+  );
   await page.getByRole("button", { name: "Undo last" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 12');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 12',
+  );
 });
 
 test("signals, live query rerun, and copy use original requests", async ({
@@ -134,10 +162,10 @@ test("signals, live query rerun, and copy use original requests", async ({
   );
   await page.getByRole("button", { name: "Close draft" }).click();
   await page.getByRole("button", { name: "State", exact: true }).click();
-  await page.getByText("Run a live query", { exact: true }).click();
+  await page.getByText("Run a query", { exact: true }).click();
   await page.getByRole("button", { name: "Run query", exact: true }).click();
   await expect(
-    page.locator("details").filter({ hasText: "Run a live query" }),
+    page.locator("details").filter({ hasText: "Run a query" }),
   ).toContainText('"type": "query"');
 });
 
@@ -154,7 +182,9 @@ test("large integers and captured markup are inert in a narrow layout", async ({
       values: { title: '<img src=x onerror="window.hacked=true">' },
     },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText("onerror");
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    "onerror",
+  );
   expect(await page.evaluate(() => "hacked" in window)).toBe(false);
   await page.getByRole("button", { name: "Edit as new mutation" }).click();
   await page
@@ -163,7 +193,7 @@ test("large integers and captured markup are inert in a narrow layout", async ({
       '[{"type":"set","schema":"BrowserModel","values":{"x":9007199254740993}}]',
     );
   await page.getByRole("button", { name: "Apply new mutation" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"$integer": "9007199254740993"',
   );
   expect(
@@ -194,7 +224,9 @@ test("lost HTTP response retries the same ID after the real commit arrives", asy
     { times: 1 },
   );
   await page.getByRole("button", { name: "Apply new mutation" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 23');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 23',
+  );
   await expect(
     page.getByRole("button", { name: "Retry same command ID" }),
   ).toBeVisible();
@@ -210,7 +242,9 @@ test("lost HTTP response retries the same ID after the real commit arrives", asy
   ).not.toBeVisible();
   await page.getByRole("button", { name: "Close draft" }).click();
   await page.getByRole("button", { name: "Undo last" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
   await expect(page.getByRole("button", { name: "Undo last" })).toBeDisabled();
 });
 
@@ -240,7 +274,7 @@ test("prototype-like row IDs remain ordinary rows through remove and undo", asyn
   await page.getByRole("button", { name: "Undo last" }).click();
   await expect(rows.locator("option")).toHaveText(["toString", "__proto__"]);
   await rows.selectOption("__proto__");
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"title": "__proto__"',
   );
 });
@@ -276,13 +310,17 @@ test("keyboard applies and live synchronization tolerates both HTTP and WebSocke
   );
   await input.press("Control+Enter");
   await responseFirst;
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
   releaseCommits();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 31');
-  await page.getByRole("button", { name: "Use current revisions" }).click();
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 31',
+  );
   await input.fill(
     '[{"type":"set","schema":"BrowserModel","values":{"x":32}}]',
   );
+  await page.getByRole("button", { name: "Use current revisions" }).click();
   let releaseResponse: () => void = () => undefined;
   const responseGate = new Promise<void>((resolve) => {
     releaseResponse = resolve;
@@ -297,14 +335,19 @@ test("keyboard applies and live synchronization tolerates both HTTP and WebSocke
     { times: 1 },
   );
   await input.press("Control+Enter");
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 32');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 32',
+  );
   await expect(
     page.getByRole("button", { name: "Apply new mutation" }),
   ).toBeDisabled();
   releaseResponse();
   await expect(
+    page.getByText("Transaction confirmed.", { exact: false }),
+  ).toBeVisible();
+  await expect(
     page.getByRole("button", { name: "Apply new mutation" }),
-  ).toBeEnabled();
+  ).toBeDisabled();
 });
 
 test("empty and loading controls stay disabled; selecting old history never changes the undo target", async ({
@@ -338,23 +381,27 @@ test("empty and loading controls stay disabled; selecting old history never chan
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 2 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 2');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 2',
+  );
   await page.getByRole("button", { name: "History", exact: true }).click();
   const entries = page
     .getByRole("complementary", { name: "History entries" })
     .locator(".list-item");
   await expect(entries).toHaveCount(2);
   await entries.last().click();
-  await expect(page.locator(".details > .inspector").first()).toContainText(
-    '"after": 1',
-  );
+  await expect(
+    page.locator('[data-view="History"] > .dictionary'),
+  ).toContainText('"after": 1');
   await page.getByRole("button", { name: "Undo last" }).click();
   await page.getByRole("button", { name: "State", exact: true }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 1');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 1',
+  );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.getByRole("button", { name: "Preview captured state" }).click();
   await expect(page.locator(".preview-banner")).toBeVisible();
-  await page.getByText("Run a live query", { exact: true }).click();
+  await page.getByText("Run a query", { exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Run query", exact: true }),
   ).toBeDisabled();
@@ -475,7 +522,9 @@ test("closing a delayed preview prevents it from replacing live State", async ({
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 4 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 4');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 4',
+  );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -503,7 +552,9 @@ test("closing a delayed preview prevents it from replacing live State", async ({
   await expect(
     page.getByRole("button", { name: "Edit as new mutation" }),
   ).toBeEnabled();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 4');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 4',
+  );
 });
 
 test("a newer preview wins over an earlier delayed response", async ({
@@ -514,7 +565,9 @@ test("a newer preview wins over an earlier delayed response", async ({
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 5 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 5');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 5',
+  );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -542,13 +595,17 @@ test("a newer preview wins over an earlier delayed response", async ({
   );
   await records.locator(".list-item").first().click();
   await page.getByRole("button", { name: "Preview captured state" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 6');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 6',
+  );
   const response = page.waitForResponse((item) =>
     item.url().includes("/api/preview?"),
   );
   release();
   await response;
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 6');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 6',
+  );
 });
 
 test("shared recording controls synchronize tabs and partial identity filters", async ({
@@ -624,10 +681,10 @@ test("reserved tag row IDs and tagged field values survive snapshot, live edit a
     .getByRole("button", { name: "BrowserRows", exact: false })
     .click();
   await expect(page.getByLabel("Row ID")).toHaveValue("$integer");
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"$integer": "9007199254740993"',
   );
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"literal"',
   );
   await backend.mutate([
@@ -638,17 +695,17 @@ test("reserved tag row IDs and tagged field values survive snapshot, live edit a
       values: { title: "updated" },
     },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"updated"',
   );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   await page.getByLabel("Category").selectOption("commit");
-  await expect(page.locator(".details > .inspector")).toContainText(
-    '"updated"',
-  );
+  await expect(
+    page.locator('[data-view="Activity"] > .dictionary'),
+  ).toContainText('"updated"');
   await page.getByRole("button", { name: "Preview captured state" }).click();
   await expect(page.getByLabel("Row ID")).toHaveValue("$integer");
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"$integer": "9007199254740993"',
   );
 });
@@ -726,7 +783,9 @@ test("oversized mixed-command response stays unresolved after commit and retries
     { times: 1 },
   );
   await page.getByRole("button", { name: "Apply new mutation" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 83');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 83',
+  );
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Unresolved command");
   await expect(
@@ -742,7 +801,9 @@ test("oversized mixed-command response stays unresolved after commit and retries
   await expect(dialog).not.toContainText("Unresolved command");
   await page.getByRole("button", { name: "Close draft" }).click();
   await page.getByRole("button", { name: "Undo last" }).click();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
 });
 
 test("a Store restart invalidates an outstanding preview response", async ({
@@ -753,7 +814,9 @@ test("a Store restart invalidates an outstanding preview response", async ({
   await backend.mutate([
     { type: "set", schema: "BrowserModel", values: { x: 9 } },
   ]);
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 9');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 9',
+  );
   await page.getByRole("button", { name: "Activity", exact: true }).click();
   let release: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -782,7 +845,9 @@ test("a Store restart invalidates an outstanding preview response", async ({
   await response;
   await page.getByRole("button", { name: "State", exact: true }).click();
   await expect(page.locator(".preview-banner")).not.toBeVisible();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
   await expect(
     page.getByRole("button", { name: "Edit as new mutation" }),
   ).toBeEnabled();
@@ -829,7 +894,7 @@ test("schema selection loads live rows and signals without recording controls", 
   await page
     .getByRole("button", { name: "BrowserExtra02", exact: false })
     .click();
-  await expect(page.locator(".details > .inspector")).toContainText(
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
     '"value": 2',
   );
   await page
@@ -904,7 +969,9 @@ test("rapid schema selections wait for the latest snapshot while the session sta
   await expect(
     page.getByRole("button", { name: "Edit as new mutation" }),
   ).toBeEnabled();
-  await expect(page.locator(".details > .inspector")).toContainText('"x": 0');
+  await expect(page.locator(".state-data > .dictionary")).toContainText(
+    '"x": 0',
+  );
   expect(scopes).toEqual([["BrowserRows"], ["BrowserModel"]]);
   expect(sessions.size).toBe(1);
 });

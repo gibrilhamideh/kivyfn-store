@@ -1,6 +1,16 @@
+import { useView } from "../view";
 import { useState } from "react";
 import { format, object, parseEditor } from "../model";
-import { Empty, Inspector } from "../components/Inspector";
+import {
+  Empty,
+  Inspector,
+  DataView,
+  ViewSwitch,
+} from "../components/Inspector";
+import Dictionary from "../components/Dictionary";
+import Table from "../components/Table";
+import Record from "../components/Record";
+import { queryRows, queryOrder } from "../display";
 import type {
   Checkpoint,
   Json,
@@ -19,6 +29,11 @@ interface Props {
   connected: boolean;
   preview: boolean;
   onSelect: (schema: string) => void;
+  rowId: string;
+  onRow: (row: string) => void;
+  onRelated: (schema: string, row: string) => void;
+  onField: (schema: string, row: string, field: string) => void;
+  onEdit: (schema: SchemaInfo, data: Values) => void;
   onDraft: (title: string, actions: Values[]) => void;
   onQuery: (batch: RequestBatch) => Promise<ResponseBatch | null>;
 }
@@ -32,10 +47,17 @@ export default function StateView({
   connected,
   preview,
   onSelect,
+  rowId,
+  onRow,
+  onRelated,
+  onField,
+  onEdit,
   onDraft,
   onQuery,
 }: Props) {
-  const [rowId, setRowId] = useState("");
+  const [view, setView] = useView("State");
+  const [schemaSearch, setSchemaSearch] = useState("");
+  const [queryTime, setQueryTime] = useState("");
   const [query, setQuery] = useState("");
   const [queryResult, setQueryResult] = useState<Json | null>(null);
   const [queryError, setQueryError] = useState("");
@@ -46,8 +68,12 @@ export default function StateView({
       : undefined;
   const many = schema?.kind === "many" || schema?.kind === "collection";
   const ids = many && values ? Object.keys(values) : [];
-  const activeRow = ids.includes(rowId) ? rowId : (ids[0] ?? "");
-  const current = many ? object(values?.[activeRow]) : values;
+  const activeRow = rowId || (ids[0] ?? "");
+  const current = many
+    ? values && Object.hasOwn(values, activeRow)
+      ? object(values[activeRow])
+      : null
+    : values;
   const queryText =
     query ||
     format({
@@ -69,7 +95,10 @@ export default function StateView({
       const response = await onQuery({
         requests: [{ type: "query", query: parsed }],
       });
-      if (response) setQueryResult(response.responses);
+      if (response) {
+        setQueryResult(response as unknown as Json);
+        setQueryTime(new Date().toLocaleTimeString());
+      }
     } catch (error) {
       setQueryError(error instanceof Error ? error.message : String(error));
     }
@@ -81,23 +110,35 @@ export default function StateView({
         <div className="list-heading">
           SCHEMAS <span>{schemas.length}</span>
         </div>
-        {schemas.map((item) => (
-          <button
-            className={`list-item ${item.name === selected ? "selected" : ""}`}
-            key={item.name}
-            onClick={() => {
-              onSelect(item.name);
-              setRowId("");
-              setQuery("");
-              setQueryResult(null);
-            }}
-          >
-            <span className="item-title">{item.name}</span>
-            <span className="item-meta">
-              {item.kind} · {item.track_history ? "tracked" : "untracked"}
-            </span>
-          </button>
-        ))}
+        <label className="schema-search">
+          Find schema
+          <input
+            value={schemaSearch}
+            onChange={(event) => setSchemaSearch(event.target.value)}
+          />
+        </label>
+        {schemas
+          .filter((item) =>
+            item.name.toLowerCase().includes(schemaSearch.toLowerCase()),
+          )
+          .map((item) => (
+            <button
+              className={`list-item ${item.name === selected ? "selected" : ""}`}
+              key={item.name}
+              onClick={() => {
+                onSelect(item.name);
+                onRow("");
+                setQuery("");
+                setQueryResult(null);
+                setQueryTime("");
+              }}
+            >
+              <span className="item-title">{item.name}</span>
+              <span className="item-meta">
+                {item.kind} · {item.track_history ? "tracked" : "untracked"}
+              </span>
+            </button>
+          ))}
         {!schemas.length && <Empty>No schemas in this Store.</Empty>}
       </aside>
       <div className="details">
@@ -125,9 +166,13 @@ export default function StateView({
                   <label>
                     Row ID
                     <select
+                      aria-label="Row ID"
                       value={activeRow}
-                      onChange={(event) => setRowId(event.target.value)}
+                      onChange={(event) => onRow(event.target.value)}
                     >
+                      {rowId && !ids.includes(rowId) && (
+                        <option value={rowId}>{rowId} (removed)</option>
+                      )}
                       {!ids.length && (
                         <option value="">Empty collection</option>
                       )}
@@ -140,6 +185,14 @@ export default function StateView({
                 </div>
               )}
               <div className="toolbar">
+                <button
+                  className="primary"
+                  disabled={disabled || !values}
+                  onClick={() => values && onEdit(schema, values)}
+                >
+                  Edit values
+                </button>
+                <ViewSwitch value={view} onChange={setView} />
                 <button
                   disabled={disabled || !current}
                   onClick={() =>
@@ -201,13 +254,55 @@ export default function StateView({
                     ? `Loading ${selected}…`
                     : "Waiting for the Store connection…"}
               </div>
-            ) : current ? (
-              <Inspector value={current} />
             ) : (
-              <Empty>
-                This collection is empty. Use Insert row to draft its first
-                row.
-              </Empty>
+              <div className="state-data" data-testid="state-data">
+                {view === "dictionary" ? (
+                  <Dictionary value={values} />
+                ) : many ? (
+                  <Table
+                    key={selected}
+                    rows={values}
+                    fields={Object.keys(schema.fields)}
+                    selected={activeRow}
+                    onSelect={onRow}
+                  />
+                ) : (
+                  <Record
+                    values={values}
+                    schema={schema}
+                    onRelated={preview ? undefined : onRelated}
+                    onField={(field) => onField(selected, "", field)}
+                  />
+                )}
+                {many && activeRow && (
+                  <section
+                    className="row-detail"
+                    aria-label="Selected row details"
+                  >
+                    <h2>Row {activeRow}</h2>
+                    {current ? (
+                      <Record
+                        values={current}
+                        schema={schema}
+                        onRelated={preview ? undefined : onRelated}
+                        onField={(field) =>
+                          onField(selected, activeRow, field)
+                        }
+                      />
+                    ) : (
+                      <p className="notice">
+                        The selected row is no longer present. Choose another
+                        row to inspect it.
+                      </p>
+                    )}
+                  </section>
+                )}
+                {many && !ids.length && (
+                  <p className="muted">
+                    Use Edit values or Insert row to draft the first row.
+                  </p>
+                )}
+              </div>
             )}
             <details>
               <summary>Fields and relationships</summary>
@@ -232,7 +327,7 @@ export default function StateView({
                     </p>
                   </div>
                   <button
-                    disabled={disabled || !values || (many && !activeRow)}
+                    disabled={disabled || !values || (many && !current)}
                     onClick={() =>
                       onDraft(`Emit ${name}`, [
                         {
@@ -256,7 +351,7 @@ export default function StateView({
               </p>
             </details>
             <details>
-              <summary>Run a live query</summary>
+              <summary>Run a query</summary>
               <p className="muted">
                 Submit the existing query wire format. New historical queries
                 are unavailable; captured responses are in Activity.
@@ -276,7 +371,26 @@ export default function StateView({
                   {queryError}
                 </pre>
               )}
-              {queryResult && !preview && <Inspector value={queryResult} />}
+              {queryResult && !preview && (
+                <section className="query-result" aria-label="Query results">
+                  <h2>Query result</h2>
+                  <p className="muted">
+                    Fetched at {queryTime} · snapshot result · Run query again
+                    to refresh
+                  </p>
+                  <DataView name="Query" value={queryResult}>
+                    {queryRows(queryResult) ? (
+                      <Table
+                        rows={queryRows(queryResult)!}
+                        order={queryOrder(queryResult)}
+                        label="Query records"
+                      />
+                    ) : (
+                      <Inspector value={queryResult} />
+                    )}
+                  </DataView>
+                </section>
+              )}
             </details>
           </>
         ) : (

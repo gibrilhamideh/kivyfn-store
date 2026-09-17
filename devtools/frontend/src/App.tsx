@@ -9,7 +9,10 @@ import {
 } from "./api";
 import { actionsFromText, applyCommit, format, sourceActions } from "./model";
 import DraftEditor from "./components/DraftEditor";
-import { Inspector } from "./components/Inspector";
+import { Inspector, DataView } from "./components/Inspector";
+import Table from "./components/Table";
+import { formActions, makeForm } from "./draft";
+import { queryRows, queryOrder } from "./display";
 import ActivityView from "./views/ActivityView";
 import HistoryView from "./views/HistoryView";
 import StateView from "./views/StateView";
@@ -29,6 +32,7 @@ import type {
   ResponseBatch,
   Snapshot,
   Values,
+  SchemaInfo,
 } from "./types";
 
 const emptyCheckpoint: Checkpoint = { schemas: {}, schema_revisions: {} };
@@ -58,6 +62,10 @@ export default function App() {
   const [filters, setFilters] = useState<Filters>(emptyFilters);
   const [tab, setTab] = useState<"State" | "History" | "Activity">("State");
   const [selectedSchema, setSelectedSchema] = useState("");
+  const [selectedRow, setSelectedRow] = useState("");
+  const [draftOpen, setDraftOpen] = useState(true);
+  const [queryReply, setQueryReply] = useState<ResponseBatch | null>(null);
+  const [queryFetched, setQueryFetched] = useState("");
   const [schemaReady, setSchemaReady] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewRecord, setPreviewRecord] = useState<Activity | null>(null);
@@ -197,6 +205,7 @@ export default function App() {
     if (!selectedSchema) return;
     const schemas = new Set([selectedSchema]);
     if (draft) {
+      if (draft.form) schemas.add(draft.form.schema.name);
       try {
         for (const action of actionsFromText(draft.text)) {
           if (
@@ -235,6 +244,14 @@ export default function App() {
     try {
       const response = await command(batch, sessionRef.current);
       setAmbiguous(null);
+      if (retry)
+        setDraft((current) =>
+          current?.form
+            ? null
+            : current
+              ? { ...current, completed: true, originalText: current.text }
+              : null,
+        );
       setNotice(
         "Response received. Canonical State follows the diagnostic stream.",
       );
@@ -251,6 +268,7 @@ export default function App() {
   const newDraft = (title: string, actions: Values[]) => {
     if (disabled || !schemaReady) return;
     if (draft) {
+      setDraftOpen(true);
       setNotice(
         "An unfinished draft is open. Close it before starting another.",
       );
@@ -258,12 +276,57 @@ export default function App() {
     }
     setNotice("");
     setError("");
+    setDraftOpen(true);
     setDraft({
       title,
       text: format(actions),
+      originalText: format(actions),
       storeInstanceId: instanceRef.current,
       revisions: { ...checkpoint.schema_revisions },
     });
+  };
+  const edit = (schema: SchemaInfo, data: Values) => {
+    if (disabled || !schemaReady) return;
+    setDraftOpen(true);
+    if (draft) return;
+    const form = makeForm(schema, data);
+    setDraft({
+      title: "Edit " + schema.name,
+      form,
+      text: format(formActions(form)),
+      originalText: format(formActions(form)),
+      storeInstanceId: instanceRef.current,
+      revisions: { [schema.name]: checkpoint.schema_revisions[schema.name] },
+    });
+    setError("");
+    setNotice("");
+  };
+  const submitDraft = async (batch: RequestBatch) => {
+    const result = await execute(batch);
+    if (result)
+      setDraft((current) =>
+        current?.form
+          ? null
+          : current
+            ? { ...current, completed: true, originalText: current.text }
+            : null,
+      );
+    return result;
+  };
+  const related = (schema: string, row: string) => {
+    if (!Object.hasOwn(info?.schemas ?? {}, schema)) {
+      setNotice("Related schema is unavailable: " + schema);
+      return;
+    }
+    leavePreview();
+    if (schema !== selectedSchema) setSchemaReady(false);
+    setSelectedSchema(schema);
+    setSelectedRow(row);
+    setTab("State");
+  };
+  const fieldActivity = (schema: string, row: string, field: string) => {
+    setFilters({ ...emptyFilters, schema, row, field });
+    setTab("Activity");
   };
   const copy = (record: Activity) => {
     const actions = sourceActions(record);
@@ -465,10 +528,66 @@ export default function App() {
                   : `Unavailable: ${preview?.reason || "Captured continuity is incomplete."}`}
             </span>
           </div>
-          <button onClick={leavePreview}>Return to live</button>
+          <div className="toolbar">
+            <button
+              disabled={
+                previewLoading !== null ||
+                !activity.some(
+                  (item) =>
+                    item.category === "commit" &&
+                    !item.truncated &&
+                    item.sequence < (preview?.sequence ?? 0),
+                )
+              }
+              onClick={() => {
+                const item = activity
+                  .filter(
+                    (item) =>
+                      item.category === "commit" &&
+                      !item.truncated &&
+                      item.sequence < (preview?.sequence ?? 0),
+                  )
+                  .sort((a, b) => b.sequence - a.sequence)[0];
+                if (item) void loadPreview(item);
+              }}
+            >
+              Previous commit
+            </button>
+            <button
+              disabled={
+                previewLoading !== null ||
+                !activity.some(
+                  (item) =>
+                    item.category === "commit" &&
+                    !item.truncated &&
+                    item.sequence > (preview?.sequence ?? 0),
+                )
+              }
+              onClick={() => {
+                const item = activity
+                  .filter(
+                    (item) =>
+                      item.category === "commit" &&
+                      !item.truncated &&
+                      item.sequence > (preview?.sequence ?? 0),
+                  )
+                  .sort((a, b) => a.sequence - b.sequence)[0];
+                if (item) void loadPreview(item);
+              }}
+            >
+              Next commit
+            </button>
+            <button onClick={leavePreview}>Return to live</button>
+          </div>
         </div>
       )}
-      {!draft && feedback}
+      {(!draft || !draftOpen) && feedback}
+      {draft && !draftOpen && (
+        <div className="notice resume-draft">
+          <strong>{draft.title}</strong>
+          <button onClick={() => setDraftOpen(true)}>Resume draft</button>
+        </div>
+      )}
       <main>
         {tab === "State" && (
           <StateView
@@ -486,7 +605,13 @@ export default function App() {
               leavePreview();
               setSchemaReady(false);
               setSelectedSchema(schema);
+              setSelectedRow("");
             }}
+            rowId={selectedRow}
+            onRow={setSelectedRow}
+            onRelated={related}
+            onField={fieldActivity}
+            onEdit={edit}
             onDraft={newDraft}
             onQuery={execute}
           />
@@ -497,6 +622,7 @@ export default function App() {
             activity={activity}
             disabled={disabled || !schemaReady}
             onCopy={copy}
+            onPreview={(record) => void loadPreview(record)}
             onPage={(offset) => void loadHistory(offset)}
           />
         )}
@@ -517,16 +643,46 @@ export default function App() {
             onCaptureFilter={() =>
               void setCapture({
                 filters: Object.fromEntries(
-                  Object.entries(filters).filter(([, value]) => value !== ""),
+                  Object.entries(filters).filter(
+                    ([key, value]) =>
+                      value && key !== "row" && key !== "field",
+                  ),
                 ),
               })
             }
             onCopy={copy}
-            onQuery={(query) =>
-              void execute({ requests: [{ type: "query", query }] })
-            }
+            onQuery={(query) => {
+              void execute({ requests: [{ type: "query", query }] }).then(
+                (response) => {
+                  if (response) {
+                    setQueryReply(response);
+                    setQueryFetched(new Date().toLocaleTimeString());
+                  }
+                },
+              );
+            }}
             onPreview={(record) => void loadPreview(record)}
           />
+        )}
+        {queryReply && (
+          <section className="query-drawer" aria-label="Rerun query results">
+            <div className="section-heading">
+              <h2>Query result · snapshot at {queryFetched}</h2>
+              <button onClick={() => setQueryReply(null)}>
+                Close query results
+              </button>
+            </div>
+            <DataView name="Query" value={queryReply}>
+              {queryRows(queryReply) ? (
+                <Table
+                  rows={queryRows(queryReply)!}
+                  order={queryOrder(queryReply)}
+                />
+              ) : (
+                <Inspector value={queryReply} />
+              )}
+            </DataView>
+          </section>
         )}
         {previewRecord && (
           <section className="captured-record">
@@ -536,14 +692,15 @@ export default function App() {
             </details>
           </section>
         )}
-        {draft && (
+        {draft && draftOpen && (
           <DraftEditor
             draft={draft}
             checkpoint={checkpoint}
             storeInstanceId={instanceRef.current}
             disabled={disabled || !schemaReady}
             onChange={setDraft}
-            onSubmit={execute}
+            onSubmit={submitDraft}
+            onMinimize={() => setDraftOpen(false)}
           >
             {feedback}
           </DraftEditor>

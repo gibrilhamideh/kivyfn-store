@@ -1,5 +1,7 @@
 import { useState } from "react";
-import { Empty, Inspector } from "../components/Inspector";
+import { Empty, Inspector, DataView } from "../components/Inspector";
+import Operation from "../components/Operation";
+import { recordMatchesTarget } from "../display";
 import { matches, sourceActions, sourceQuery } from "../model";
 import type { Activity, Filters, Values } from "../types";
 
@@ -37,7 +39,16 @@ export default function ActivityView({
   onPreview,
 }: Props) {
   const [selected, setSelected] = useState("");
-  const visible = records.filter((record) => matches(record, filters));
+  const visible = records.filter(
+    (record) =>
+      matches(record, filters) &&
+      recordMatchesTarget(
+        record,
+        filters.row ?? "",
+        filters.field ?? "",
+        filters.schema,
+      ),
+  );
   const record =
     visible.find((item) => item.id === selected) ?? visible.at(-1);
   const query = record ? sourceQuery(record) : null;
@@ -79,6 +90,7 @@ export default function ActivityView({
         <label>
           Category
           <select
+            aria-label="Category"
             value={filters.category}
             onChange={(event) =>
               onFilters({ ...filters, category: event.target.value })
@@ -123,6 +135,31 @@ export default function ActivityView({
         </label>
       </div>
       <div className="activity-controls toolbar">
+        <label>
+          Row ID filter
+          <input
+            value={filters.row ?? ""}
+            onChange={(event) =>
+              onFilters({ ...filters, row: event.target.value })
+            }
+          />
+        </label>
+        <label>
+          Field filter
+          <input
+            value={filters.field ?? ""}
+            onChange={(event) =>
+              onFilters({ ...filters, field: event.target.value })
+            }
+          />
+        </label>
+        {(filters.row || filters.field) && (
+          <button
+            onClick={() => onFilters({ ...filters, row: "", field: "" })}
+          >
+            Clear row / field filters
+          </button>
+        )}
         <button onClick={onPause}>
           {paused ? "Resume display" : "Pause display"}
         </button>
@@ -267,7 +304,14 @@ export default function ActivityView({
                   unavailable.
                 </div>
               )}
-              <Inspector value={record.detail} />
+              <DataView name="Activity" value={record.detail}>
+                <Operation
+                  key={record.id}
+                  record={record}
+                  records={records}
+                  onPreview={onPreview}
+                />
+              </DataView>
             </>
           ) : (
             <Empty>

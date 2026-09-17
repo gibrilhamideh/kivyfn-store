@@ -48,10 +48,42 @@ Capture step. A loading state distinguishes an awaited snapshot from a loaded,
 empty schema. Mutation and signal controls become available when their live
 source is ready; collection signals also require a selected row.
 
-Edit, Insert row and Remove row are near the schema heading. These and Draft
-signal open the same modal editor, with keyboard focus and internal scrolling.
-Close or Escape returns to the view; clicking the backdrop does not discard a
-draft. Collections are keyed by ID, with no historical row-position guarantee.
+Each main view has **Structured** and **Dictionary** modes. The preference is
+remembered per view in this browser. Dictionary mode expands nested values and
+lets you copy a value or its JSON Pointer path. Large branches reveal 50 children
+at a time; diagnostic integer and unsupported-value tags remain visible.
+
+State shows collections as tables and single schemas as field/value lists.
+Collection tables support local search, sortable columns, column visibility and
+50-row pages. These controls operate on the loaded snapshot. Selecting a row
+opens all of its fields together; selection follows its ID as live data changes.
+A removed selection stays explicitly unavailable until another row is chosen.
+Foreign-key values can open their related schema and row. A field's Activity
+button narrows the retained records to that field and row.
+
+**Edit values** opens a local structured draft. Collections support editing
+several rows, adding rows and marking rows for removal in one transaction.
+Existing row IDs cannot be edited. String and numeric fields have text inputs,
+booleans have checkboxes, enums have choices, and nested/custom values use JSON.
+Unsupported diagnostic objects remain read-only. Null is distinct from an empty
+string. Invalid input stays visible and blocks review/submission.
+
+Choose **Review before applying** to inspect the requested before/after changes
+and generated actions, then **Apply transaction** to submit one ordinary guarded
+transaction. Only changed fields are sent for existing records; the Store still
+validates values and runs triggers. Reverting all changes leaves nothing to
+submit. Confirmed structured drafts close. **Keep draft and browse** preserves
+inputs, validation errors and history labels while you inspect other views;
+**Resume draft** brings them back. Closing an unfinished draft asks before
+discarding it. Drafts live in this tab's memory and do not survive a page reload.
+
+**Edit as new mutation**, **Insert row**, **Remove row**, and **Draft signal**
+keep the advanced ordered-action editor available. **Advanced actions** also
+shows the generated structured actions; changing that JSON switches the draft
+to advanced editing. The modal traps keyboard focus and scrolls internally.
+Ctrl/Command + Enter reviews or submits the active draft. A confirmed advanced
+draft cannot be submitted again unchanged; editing it starts new work.
+Collections are keyed by ID, with no historical row-position guarantee.
 
 State shows canonical Store snapshots and per-schema revisions. It does not show
 client-local Kivy properties, pending optimistic overlays, or individual window
@@ -68,9 +100,19 @@ command guards before applying it. Existing guarded revisions are never silently
 replaced by incoming live data. Malformed JSON, incomplete actions and unknown
 schema names remain editor errors rather than invalid live-scope requests.
 
-A stale draft is rejected atomically. Review the current values, choose
-**Use current revisions** if that is still the intended operation, then submit
-explicitly. Live data never replaces an unfinished draft automatically.
+A stale draft is rejected atomically. Structured drafts offer **Compare with
+current**, showing original, current and proposed values. **Keep draft with
+reviewed revisions** adopts that displayed baseline while preserving explicit
+edits and refreshing untouched fields. Apply remains a separate action. A row
+removed remotely cannot silently become an insertion, and a new row ID collision
+must be resolved. Another live update can make the reviewed baseline stale again.
+Advanced drafts retain **Use current revisions** for explicitly renewing their
+guards. Live data never replaces an unfinished draft automatically.
+
+History shows a before/after table alongside its dictionary representation.
+Activity connects **Request**, **Response**, **Changes**, and **State afterward**
+for retained operations. Missing or truncated payloads remain explicit. Grouped
+history summaries are not treated as a single original request.
 
 History belongs to Store independently of this inspector or Activity recording.
 An entry has a stable identity; an open group has revisioned contents. Inspected
@@ -112,7 +154,8 @@ are applied before payload retention. Filters select a schema, client ID,
 category, status, or transaction/capture identity. They do not remove commits
 from the chronological preview timeline. Client and identity text filters match
 substrings consistently in display and recording; schema, category and status
-filters match exactly. Shared recording pause/filter changes update all browser
+filters match exactly. Row/field filters are local display filters only; they do
+not change recorder retention. Shared recording pause/filter changes update all browser
 tabs; display pause belongs only to the current tab. Recording controls live in
 Activity. Selecting a schema for live inspection does not turn recording or
 history retention on or off.
@@ -121,15 +164,20 @@ Preview reconstructs a detached checkpoint plus complete chronological commit
 deltas. It does not execute requests, triggers, signals, undo, or queries against
 the live Store. Grouped history cannot replace this timeline because independent
 untracked commits can occur between grouped commits. Live cache updates continue
-separately while the preview remains fixed. Return to live exits preview.
+separately while the preview remains fixed. Previous/Next commit steps through
+retained commit positions; mutation controls remain disabled. Return to live
+exits preview.
 
 Preview records all schemas when the baseline fits its budget, then presents
 only the browser's selected scope. If the complete baseline does not fit, a
 selected-scope connection establishes a bounded baseline for that scope.
 Values outside the recorded scope are absent, not filled with current data.
 A recorded query response can be inspected as its original Activity record;
-running it again is a new live query. Evaluating new
-historical joins/queries is unavailable in this release.
+running it again is a new live query. Query responses have table and dictionary
+views and show their fetch time. They are one-shot snapshots, not live-query
+subscriptions; run again to refresh. Query tables initially preserve the host's
+result order. Evaluating new historical joins/queries is unavailable in this
+release.
 
 The diagnostic budget is separate from undo retention. Half of `max_bytes` bounds
 Activity records and half bounds checkpoint/delta retention. Oldest complete

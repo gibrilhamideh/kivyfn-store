@@ -1,5 +1,8 @@
 import { useState } from "react";
-import { Empty, Inspector } from "../components/Inspector";
+import { Empty, Inspector, DataView } from "../components/Inspector";
+import Changes from "../components/Changes";
+import Operation from "../components/Operation";
+import { changesFrom } from "../display";
 import { historySource } from "../model";
 import type { Activity, HistoryPage } from "../types";
 
@@ -9,6 +12,7 @@ interface Props {
   disabled: boolean;
   onCopy: (record: Activity) => void;
   onPage: (offset: number) => void;
+  onPreview: (record: Activity) => void;
 }
 
 export default function HistoryView({
@@ -17,6 +21,7 @@ export default function HistoryView({
   disabled,
   onCopy,
   onPage,
+  onPreview,
 }: Props) {
   const [selected, setSelected] = useState("");
   const entries = page?.entries ?? [];
@@ -152,10 +157,29 @@ export default function HistoryView({
               <dt>Transactions</dt>
               <dd>{entry.transaction_ids.join(", ")}</dd>
             </dl>
-            <h2>Recorded data effects</h2>
-            <Inspector value={entry.records} />
-            <h2>Forward and inverse signals</h2>
-            <Inspector value={entry.signals} />
+            <DataView name="History" value={entry}>
+              <h2>Recorded data effects</h2>
+              <Changes changes={changesFrom(entry.records)} />
+              {entry.transaction_ids.length > 1 && (
+                <p className="muted">
+                  Grouped effect summary; intermediate values are not a
+                  chronological replay.
+                </p>
+              )}
+              <h2>Forward and inverse signals</h2>
+              <Inspector value={entry.signals} />
+            </DataView>
+            {source && (
+              <>
+                <h2>Original operation</h2>
+                <Operation
+                  key={source.id}
+                  record={source}
+                  records={activity}
+                  onPreview={onPreview}
+                />
+              </>
+            )}
             <p className="muted">
               Restoration replays recorded effects, including previous trigger
               results. It does not rerun triggers or recalculate against

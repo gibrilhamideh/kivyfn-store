@@ -734,3 +734,345 @@ footer {
     font-size: 12px;
   }
 }
+
+/* Shared data views */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.view-switch {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 3px;
+}
+.view-switch button {
+  border: 0;
+  background: transparent;
+}
+button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--cyan);
+  border-color: var(--accent);
+}
+.schema-search {
+  margin: 8px 16px 16px;
+}
+.table-scroll {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  margin: 16px 0;
+}
+.data-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  text-align: left;
+  font-size: 12px;
+}
+.data-table th,
+.data-table td {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.data-table th {
+  font-weight: 500;
+  color: var(--muted);
+}
+.data-table thead th {
+  background: var(--subtle);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.data-table thead button {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+}
+.data-table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.data-table tbody tr:hover {
+  background: #192137;
+}
+.data-table small {
+  display: block;
+  color: var(--muted);
+  margin-top: 5px;
+  font-size: 10px;
+}
+.data-table td {
+  min-width: 100px;
+  max-width: 440px;
+}
+.data-table .row-tools {
+  min-width: 0;
+  width: 100px;
+}
+.row-tools button {
+  font-size: 10px;
+  white-space: nowrap;
+}
+.collection-table tbody th {
+  position: sticky;
+  left: 0;
+  background: var(--surface);
+  z-index: 1;
+  min-width: 100px;
+}
+.collection-table tbody th button {
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.collection-table .selected > * {
+  background: var(--accent-soft);
+}
+.table-toolbar {
+  margin-top: 15px;
+}
+.table-toolbar > label {
+  flex: 1;
+  min-width: 140px;
+  max-width: 350px;
+}
+.columns {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  position: relative;
+}
+.columns[open] {
+  max-height: 180px;
+  overflow-y: auto;
+}
+.check-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  margin-top: 8px;
+}
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.pagination {
+  justify-content: flex-end;
+  margin: 12px 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+.row-detail {
+  border-top: 1px solid var(--line);
+  margin-top: 24px;
+}
+.record-table th {
+  width: 160px;
+}
+.value-string {
+  white-space: pre-wrap;
+}
+.value-boolean {
+  color: var(--purple);
+}
+.value-number {
+  color: var(--cyan);
+  font-variant-numeric: tabular-nums;
+}
+.value-undefined {
+  color: var(--muted);
+  font-style: italic;
+}
+.cell-value {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  max-width: 420px;
+}
+.cell-value > summary {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-weight: normal;
+}
+.dictionary {
+  font-size: 11px;
+  max-height: 520px;
+  line-height: 1.8;
+}
+.tree-node {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.tree-node > summary {
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.tree-children {
+  padding-left: 18px;
+  border-left: 1px solid var(--line);
+  margin-left: 3px;
+}
+.tree-key {
+  color: #b5c7f2;
+}
+.tree-leaf {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tree-tools {
+  display: inline-flex;
+  gap: 5px;
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.tree-tools button {
+  font-size: 9px;
+  padding: 0 5px;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.tree-tools > [role="status"]:empty {
+  display: none;
+}
+.before {
+  background: #e06c7510;
+}
+.after {
+  background: #9ece6a0c;
+}
+.operation-tabs,
+.draft-steps {
+  margin: 18px 0;
+}
+.operation h3 {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.operation .dictionary {
+  max-height: 220px;
+  margin: 0;
+  padding: 8px;
+}
+.operation .data-table td:last-child {
+  width: 55%;
+}
+.structured-draft {
+  width: min(1200px, calc(100vw - 32px));
+}
+.editor-fields {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.edit-table td {
+  min-width: 180px;
+}
+.edit-table textarea.field-input {
+  min-height: 38px;
+  height: 38px;
+  margin: 0;
+  padding: 6px;
+  font-size: 12px;
+}
+.field-editor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+.field-editor textarea {
+  flex: 1;
+  min-width: 100px;
+}
+.field-editor button,
+.quiet {
+  font-size: 10px;
+  padding: 3px 5px;
+}
+.dirty-cell {
+  box-shadow: inset 3px 0 #e0af68;
+  background: #e0af680a;
+}
+.field-error {
+  color: #ff9cad;
+  width: 100%;
+  font-size: 11px;
+}
+[aria-invalid="true"] {
+  border-color: #ff9cad;
+}
+.resume-draft {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0;
+  border-radius: 0;
+}
+.query-drawer {
+  flex-shrink: 0;
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 16px 24px;
+  border-top: 2px solid var(--accent);
+}
+.activity-controls label {
+  max-width: 180px;
+}
+@media (min-width: 1200px) {
+  .state-data:has(.records) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 30%);
+    gap: 20px;
+    align-items: start;
+  }
+  .state-data .row-detail {
+    margin-top: 15px;
+    padding-left: 18px;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+  }
+}
+@media (max-width: 760px) {
+  .dictionary {
+    padding: 12px;
+  }
+  .tree-tools {
+    display: none;
+  }
+  .tree-node[open] > .tree-tools {
+    display: inline-flex;
+  }
+  .tree-children {
+    padding-left: 10px;
+  }
+  .data-table th,
+  .data-table td {
+    padding: 8px;
+  }
+  .record-table th {
+    width: auto;
+  }
+  .activity-controls label {
+    max-width: 125px;
+  }
+  .preview-banner {
+    flex-wrap: wrap;
+  }
+}

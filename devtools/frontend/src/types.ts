@@ -148,9 +148,14 @@ export interface ResponseBatch {
 export interface Draft {
   title: string;
   text: string;
+  originalText: string;
   storeInstanceId: string;
   revisions: Record<string, number>;
   sourceTransaction?: string;
+  form?: import("./draft").EditForm;
+  completed?: boolean;
+  historyLabel?: string;
+  historyGroup?: string;
 }
 
 export type Connection = "connecting" | "live" | "disconnected";
@@ -161,4 +166,6 @@ export interface Filters {
   category: string;
   status: string;
   identity: string;
+  row?: string;
+  field?: string;
 }
