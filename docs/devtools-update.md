@@ -21,6 +21,10 @@ browser assets are included, so applying this update does not require Node.
 - Connected request, response, recorded changes and historical preview panels;
   field-to-Activity navigation and related-row navigation.
 - Query result tables and dictionaries, with explicit snapshot timing.
+- Live requests/s in Activity, using every display filter and a rolling
+  one-second arrival window independent of list retention.
+- Visible shared recording filters, clear controls for display and recording
+  filters, and clearer empty/paused Activity messages.
 - Frontend regression tests and updated `docs/devtools.md`.
 
 Changes are confined to frontend code, its tests, bundled browser assets and
@@ -30,8 +34,11 @@ UI are one-shot snapshots; editing is for canonical schema records.
 
 ## Verification
 
-Validation passed: TypeScript, ESLint, Prettier, 26 frontend unit tests, and
-62 Chromium browser tests across direct and Socket.IO backends. The release
+The original view/editing update passed TypeScript, ESLint, Prettier,
+26 frontend unit tests and 62 Chromium browser tests across direct and Socket.IO.
+The request-rate addition passes TypeScript, ESLint, Prettier, 32 unit tests
+and 14 Chromium browser checks across Direct and Socket.IO for filtering,
+timing, display/recording pauses, reconnects and Activity responses. The release
 asset verifier and extraction-over-baseline checks also passed. Browser checks exercise existing synchronization guarantees as
 well as structured draft editing, stale comparisons, row selection, query
 results and historical stepping. Desktop and narrow layouts were inspected.
@@ -66,3 +73,16 @@ The archive retains the previous bundled asset filenames alongside the current
 build so extraction over the supplied repository needs no deletion step. Only
 the current assets are referenced by `index.html`. The normal release build
 cleans and regenerates this directory when you next build the frontend.
+
+## Activity request rate
+
+The counter shows matching captured requests/s, updates every 250 ms and returns
+to zero after one idle second. Each request record (a Host request batch) counts
+once. Replies, commits and restored history never inflate the count. It follows
+all display filters, so selecting responses or commits shows zero requests/s.
+It continues observing while you browse State/History or pause the Activity list.
+Paused recording and disconnections display an unavailable marker.
+
+Only traffic captured and received by this browser can be measured. Shared
+recording filters are now visible with a clear button; excluded earlier traffic
+cannot be recovered. Display filters and recording filters remain independent.

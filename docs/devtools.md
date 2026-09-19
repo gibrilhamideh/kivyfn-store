@@ -132,6 +132,26 @@ When recording was paused, filtered, truncated or evicted, a missing response is
 shown as **Response unavailable**, without asserting that execution is pending.
 A recorded response is still not proof of delivery to an application client.
 
+The Activity toolbar shows **requests/s** for a rolling one-second window,
+refreshed every 250 ms. It counts live request records arriving at this browser,
+using the same client, schema, category, status, identity, row and field filters
+as the list. Each recorded request batch counts once, even when it contains
+multiple actions or touches several schemas; responses and commits do not add
+to the count. Selecting a non-request category therefore shows zero requests/s.
+
+The counter measures browser-observed captured traffic, not total Host throughput
+when recording is filtered or data is missing. It uses local monotonic arrival
+time, so host/browser wall-clock differences do not affect the window. Snapshot
+history loaded at connection or schema selection is not counted as new traffic.
+The window is independent of the list's 500-record limit, decays to zero when
+idle, and stays live while display is paused or another tab is open. Disconnected
+or paused recording shows an unavailable marker instead of a misleading zero;
+reconnects, stream gaps and recording-control changes start a fresh window.
+
+**Clear display filters** restores local browsing. Shared recording filters are
+shown above the list with a separate **Clear recording filters** button. Clearing
+them allows future activity through; it cannot recover records excluded earlier.
+
 Copy as new mutation uses original caller actions retained in Activity. It never
 turns expanded trigger/cascade changes or normalized restoration records into
 new executable intent. Copying is unavailable when the request was filtered,

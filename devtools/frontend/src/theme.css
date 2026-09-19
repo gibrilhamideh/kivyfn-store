@@ -457,6 +457,21 @@ details textarea {
 .activity-controls button {
   font-size: 10px;
 }
+.activity-rate {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding-left: 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.activity-rate strong {
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.activity-rate .muted {
+  display: block;
+  font-size: 10px;
+}
 .notice {
   padding: 12px 17px;
   margin: 13px 0;
@@ -719,7 +734,7 @@ footer {
   .filter-bar label {
     min-width: 130px;
   }
-  .activity-controls .muted,
+  .activity-controls > .muted,
   .context-line > span:last-child,
   footer > span:first-child {
     display: none;

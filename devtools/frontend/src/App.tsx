@@ -14,6 +14,7 @@ import Table from "./components/Table";
 import { formActions, makeForm } from "./draft";
 import { queryRows, queryOrder } from "./display";
 import ActivityView from "./views/ActivityView";
+import { RequestRate } from "./activity";
 import HistoryView from "./views/HistoryView";
 import StateView from "./views/StateView";
 import type {
@@ -51,6 +52,7 @@ export default function App() {
   const checkpointRef = useRef(checkpoint);
   const [history, setHistory] = useState<HistoryPage | null>(null);
   const [activity, setActivity] = useState<Activity[]>([]);
+  const [requestRate] = useState(() => new RequestRate());
   const [frozenActivity, setFrozenActivity] = useState<Activity[] | null>(
     null,
   );
@@ -123,6 +125,7 @@ export default function App() {
         }
         instanceRef.current = envelope.store_instance_id;
         const sameSession = sessionRef.current === snapshot.session_id;
+        if (!sameSession) requestRate.reset();
         sessionRef.current = snapshot.session_id;
         checkpointRef.current = snapshot.checkpoint;
         setCheckpoint(snapshot.checkpoint);
@@ -157,13 +160,16 @@ export default function App() {
         );
       } else if (envelope.kind === "capture") {
         const capture = envelope.payload as ActivityPage;
+        requestRate.reset();
         setCapturePaused(capture.paused);
         setCaptureFilters(capture.filters);
         setDropped(capture.dropped);
       } else if (envelope.kind === "activity") {
         const record = envelope.payload as Activity;
+        requestRate.observe(record);
         setActivity((records) => [...records.slice(-499), record]);
       } else if (envelope.kind === "gap") {
+        requestRate.reset();
         gap(
           "Diagnostic continuity lost. Replacing live State with a fresh checkpoint.",
         );
@@ -184,7 +190,10 @@ export default function App() {
           (live) => {
             if (stopped) return;
             setConnection(live ? "live" : "disconnected");
-            if (!live) sessionRef.current = "";
+            if (!live) {
+              sessionRef.current = "";
+              requestRate.reset();
+            }
           },
           gap,
           selected ? [selected] : [],
@@ -199,7 +208,7 @@ export default function App() {
       connectionStream?.close();
       streamRef.current = null;
     };
-  }, [gap, leavePreview]);
+  }, [gap, leavePreview, requestRate]);
 
   useEffect(() => {
     if (!selectedSchema) return;
@@ -629,8 +638,11 @@ export default function App() {
         {tab === "Activity" && (
           <ActivityView
             records={frozenActivity ?? activity}
+            requestRate={requestRate}
+            connected={connection === "live"}
             paused={frozenActivity !== null}
             capturePaused={capturePaused}
+            captureFilters={captureFilters}
             disabled={disabled || !schemaReady}
             filters={filters}
             schemas={Object.keys(info?.schemas ?? {})}
@@ -640,6 +652,7 @@ export default function App() {
               setFrozenActivity(frozenActivity ? null : [...activity])
             }
             onCapturePause={() => void setCapture({ paused: !capturePaused })}
+            onClearCaptureFilters={() => void setCapture({ filters: {} })}
             onCaptureFilter={() =>
               void setCapture({
                 filters: Object.fromEntries(

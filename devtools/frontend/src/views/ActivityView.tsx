@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Empty, Inspector, DataView } from "../components/Inspector";
 import Operation from "../components/Operation";
-import { recordMatchesTarget } from "../display";
-import { matches, sourceActions, sourceQuery } from "../model";
+import { matchesActivity, RequestRate } from "../activity";
+import { sourceActions, sourceQuery } from "../model";
 import type { Activity, Filters, Values } from "../types";
 
 interface Props {
   records: Activity[];
+  requestRate: RequestRate;
+  connected: boolean;
   paused: boolean;
   capturePaused: boolean;
+  captureFilters: Record<string, string>;
   disabled: boolean;
   filters: Filters;
   schemas: string[];
@@ -16,6 +19,7 @@ interface Props {
   onFilters: (filters: Filters) => void;
   onPause: () => void;
   onCapturePause: () => void;
+  onClearCaptureFilters: () => void;
   onCaptureFilter: () => void;
   onCopy: (record: Activity) => void;
   onQuery: (query: Values) => void;
@@ -24,8 +28,11 @@ interface Props {
 
 export default function ActivityView({
   records,
+  requestRate,
+  connected,
   paused,
   capturePaused,
+  captureFilters,
   disabled,
   filters,
   schemas,
@@ -33,21 +40,16 @@ export default function ActivityView({
   onFilters,
   onPause,
   onCapturePause,
+  onClearCaptureFilters,
   onCaptureFilter,
   onCopy,
   onQuery,
   onPreview,
 }: Props) {
   const [selected, setSelected] = useState("");
-  const visible = records.filter(
-    (record) =>
-      matches(record, filters) &&
-      recordMatchesTarget(
-        record,
-        filters.row ?? "",
-        filters.field ?? "",
-        filters.schema,
-      ),
+  const visible = records.filter((record) => matchesActivity(record, filters));
+  const recordingFilters = Object.entries(captureFilters).filter(
+    ([, value]) => value,
   );
   const record =
     visible.find((item) => item.id === selected) ?? visible.at(-1);
@@ -153,11 +155,21 @@ export default function ActivityView({
             }
           />
         </label>
-        {(filters.row || filters.field) && (
+        {Object.values(filters).some(Boolean) && (
           <button
-            onClick={() => onFilters({ ...filters, row: "", field: "" })}
+            onClick={() =>
+              onFilters({
+                client_id: "",
+                schema: "",
+                category: "",
+                status: "",
+                identity: "",
+                row: "",
+                field: "",
+              })
+            }
           >
-            Clear row / field filters
+            Clear display filters
           </button>
         )}
         <button onClick={onPause}>
@@ -169,11 +181,29 @@ export default function ActivityView({
         <button disabled={disabled} onClick={onCaptureFilter}>
           Use filters for recording
         </button>
+        <RequestRateCounter
+          rate={requestRate}
+          filters={filters}
+          connected={connected}
+          capturePaused={capturePaused}
+        />
         <span className="muted">
           Recording is shared across browsers. State updates and undo history
           remain live.
         </span>
       </div>
+      {recordingFilters.length > 0 && (
+        <div className="notice recording-filters">
+          Recording filters:{" "}
+          {recordingFilters
+            .map(([key, value]) => `${key}=${value}`)
+            .join(", ")}
+          . Activity and its request rate only include captured traffic.
+          <button disabled={disabled} onClick={onClearCaptureFilters}>
+            Clear recording filters
+          </button>
+        </div>
+      )}
       {dropped > 0 && (
         <div className="notice loss-marker" role="status">
           {dropped} captured records dropped or evicted. Historical preview may
@@ -208,7 +238,13 @@ export default function ActivityView({
             </button>
           ))}
           {!visible.length && (
-            <Empty>No Activity matches these filters.</Empty>
+            <Empty>
+              {capturePaused
+                ? "Recording is paused. Resume recording to see new activity."
+                : records.length
+                  ? "No Activity matches these filters."
+                  : "No activity captured yet. New Store requests and changes appear here."}
+            </Empty>
           )}
         </aside>
         <div className="details">
@@ -322,5 +358,44 @@ export default function ActivityView({
         </div>
       </div>
     </section>
+  );
+}
+
+function RequestRateCounter({
+  rate,
+  filters,
+  connected,
+  capturePaused,
+}: {
+  rate: RequestRate;
+  filters: Filters;
+  connected: boolean;
+  capturePaused: boolean;
+}) {
+  const [, refresh] = useState(0);
+  useEffect(() => {
+    if (!connected || capturePaused) return;
+    const timer = setInterval(() => refresh((tick) => tick + 1), 250);
+    return () => clearInterval(timer);
+  }, [connected, capturePaused]);
+  const unavailable = !connected
+    ? "Disconnected"
+    : capturePaused
+      ? "Recording paused"
+      : null;
+  return (
+    <div
+      className="activity-rate"
+      title="Captured request batches received in the last second, matching all display filters. Responses and commits are excluded. The rate stays live when the display is paused."
+    >
+      <strong aria-label="Requests per second">
+        {unavailable ? "—" : rate.count(filters)}
+      </strong>{" "}
+      requests/s
+      <span className="muted">
+        {unavailable ?? "Live · last 1s"}
+        {Object.values(filters).some(Boolean) ? " · filtered" : ""}
+      </span>
+    </div>
   );
 }
