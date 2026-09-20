@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
+[manifest]
+members = [
+    "kivyfn-store",
+    "kivyfn-store-devtools",
+]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -642,6 +648,11 @@ dependencies = [
     { name = "uuid6" },
 ]
 
+[package.optional-dependencies]
+devtools = [
+    { name = "kivyfn-store-devtools" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "kivy-stubs" },
@@ -658,9 +669,11 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.11" },
     { name = "kivy", specifier = ">=2.3.0" },
     { name = "kivyfn", editable = "../kivyfn" },
+    { name = "kivyfn-store-devtools", marker = "extra == 'devtools'", editable = "packages/devtools" },
     { name = "python-socketio", specifier = ">=5.11" },
     { name = "uuid6" },
 ]
+provides-extras = ["devtools"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -672,6 +685,17 @@ dev = [
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "ruff", specifier = ">=0.16.7" },
 ]
+
+[[package]]
+name = "kivyfn-store-devtools"
+version = "0.1.0"
+source = { editable = "packages/devtools" }
+dependencies = [
+    { name = "kivyfn-store" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "kivyfn-store", editable = "." }]
 
 [[package]]
 name = "multidict"

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import Store
+from kivyfn.store.store import Store
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.error import FieldValidationError
 from kivyfn.store.protocol.message.requests import SetRequestAction

@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import Query
+from kivyfn.store.query import Query
 from kivyfn.store.client.subscription import SubscriptionSource
 from kivyfn.store.error import InvalidOperationError, StoreSubscriptionError
 from kivyfn.store.protocol.message.requests import (

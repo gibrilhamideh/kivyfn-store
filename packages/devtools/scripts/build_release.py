@@ -14,7 +14,7 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = Path("src/kivyfn/store/devtools/static")
-FRONTEND = Path("devtools/frontend")
+FRONTEND = Path("frontend")
 MANIFEST = "build-manifest.json"
 
 
@@ -155,6 +155,7 @@ def main() -> None:
     parser.add_argument("--checks", action="store_true")
     parser.add_argument("--outdir", type=Path, default=ROOT / "dist")
     args = parser.parse_args()
+
     if args.check_assets:
         verify_assets(source=True)
         return
@@ -164,12 +165,16 @@ def main() -> None:
     if args.from_wheel:
         import_assets(args.from_wheel)
         return
+
     if not args.skip_install:
         run("npm", "ci", cwd=ROOT / FRONTEND)
+
     run("npm", "run", "build", cwd=ROOT / FRONTEND)
     stamp_assets()
+
     if args.checks:
         check_project()
+
     if not args.assets_only:
         run(sys.executable, "-m", "build", "--outdir", str(args.outdir))
 

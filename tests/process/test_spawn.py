@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import StoreClient
+from kivyfn.store.client.client import StoreClient
 from kivyfn.store.builder.config import HostConfig, StoreConfig
 from kivyfn.store.builder.initializer import Initializer
 from kivyfn.store.process import StoreProcess

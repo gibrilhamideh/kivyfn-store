@@ -6,7 +6,8 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import Query, Store, field
+from kivyfn.store.store import Store
+from kivyfn.store.query import Query, field
 from kivyfn.store.address import Address
 from kivyfn.store.codec.query import (
     decode_query_rows,

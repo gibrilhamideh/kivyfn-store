@@ -11,7 +11,7 @@ from weakref import ref
 import pytest
 from kivy.properties import AliasProperty, BooleanProperty, StringProperty
 
-from kivyfn.store import StateTemplate, state_template
+from kivyfn.store.state.template import StateTemplate, state_template
 from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.error import StoreStateError
 from kivyfn.store.protocol.message.event import (
@@ -589,7 +589,7 @@ def test_server_imports_do_not_load_reactive_kivy_classes():
             sys.executable,
             "-c",
             "import sys\n"
-            "from kivyfn.store import Store\n"
+            "from kivyfn.store.store.store import Store\n"
             "assert 'kivyfn.store.typing' not in sys.modules\n"
             "assert 'kivy.event' not in sys.modules\n",
         ],
@@ -597,6 +597,7 @@ def test_server_imports_do_not_load_reactive_kivy_classes():
         text=True,
         check=False,
     )
+
     assert result.returncode == 0, result.stderr
 
 

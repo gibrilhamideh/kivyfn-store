@@ -9,13 +9,11 @@ from pathlib import Path
 import pytest
 from kivy.properties import BooleanProperty
 
-from kivyfn.store import (
-    HostConfig,
-    Store,
-    StoreClient,
-    StoreHost,
-    state_template,
-)
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.state.template import state_template
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.builder.config import HistoryConfig
 from kivyfn.store.events import StoreCommit

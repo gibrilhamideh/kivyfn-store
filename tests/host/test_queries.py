@@ -4,7 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from kivyfn.store import Query, Store, field
+from kivyfn.store.query import Query, field
+from kivyfn.store.store import Store
 from kivyfn.store.address import Address
 from kivyfn.store.error import InvalidOperationError, StoreStateError
 from kivyfn.store.host.query import HostQueries, HostQuery

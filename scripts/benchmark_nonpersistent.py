@@ -30,7 +30,9 @@ os.environ.setdefault("KIVY_NO_ARGS", "1")
 os.environ.setdefault("KIVY_NO_FILELOG", "1")
 os.environ.setdefault("KIVY_NO_CONSOLELOG", "1")
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder import Branch, Builder, HostConfig
 from kivyfn.store.schema import NumericField, SingleSchema
 from kivyfn.store.state.manager import StateManager

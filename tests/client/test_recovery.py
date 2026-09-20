@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import StoreClient
+from kivyfn.store.client.client import StoreClient
 from kivyfn.store.error import StoreConnectionError, StoreProtocolError
 from kivyfn.store.protocol.message.requests import (
     RequestBatch,
@@ -344,7 +344,8 @@ async def test_recovery_does_not_replay_interrupted_committed_mutation(
 async def test_recovery_from_replacement_host_refreshes_existing_state(
     boundary_stack: BoundaryStack, recovery_clock: RecoveryClock, tmp_path
 ) -> None:
-    from kivyfn.store import Store, StoreHost
+    from kivyfn.store.host.host import StoreHost
+    from kivyfn.store.store.store import Store
     from kivyfn.store.builder import Branch, Builder
     from kivyfn.store.builder.config import HostConfig
 

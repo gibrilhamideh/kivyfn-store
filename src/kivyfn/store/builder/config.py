@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from kivyfn.store.builder.branch import Branch
 from kivyfn.store.builder.initializer import Initializer
 from kivyfn.store.builder.migration import Migration
 from kivyfn.store.builder.policy import BootPolicy
-
-if TYPE_CHECKING:
-    from kivyfn.store.devtools.config import DevToolsConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +26,36 @@ class HistoryConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DevToolsConfig:
+    """Local listener and independently bounded diagnostic capture."""
+
+    host: str = "127.0.0.1"
+    port: int = 18766
+    max_records: int = 1000
+    max_bytes: int = 8 * 1024 * 1024
+    max_payload_bytes: int = 1024 * 1024
+    max_queue_bytes: int = 2 * 1024 * 1024
+    max_queue_messages: int = 256
+    max_request_bytes: int = 1024 * 1024
+    max_pending_captures: int = 256
+    max_pending_commands: int = 64
+    max_sessions: int = 16
+    max_filter_values: int = 64
+
+    def __post_init__(self) -> None:
+        if not ip_address(self.host).is_loopback:
+            raise ValueError("Devtools must bind a loopback IP address")
+        if type(self.port) is not int or not 0 <= self.port <= 65535:
+            raise ValueError("Devtools port must be in 0..65535")
+        for name in self.__dataclass_fields__:
+            if name in {"host", "port"}:
+                continue
+            value = getattr(self, name)
+            if type(value) is not int or value < 1:
+                raise ValueError(f"Devtools {name} must be a positive integer")
+
+
+@dataclass(frozen=True, slots=True)
 class HostConfig:
     """Optional hosting settings; the transport owns endpoint parsing."""
 
@@ -38,11 +65,10 @@ class HostConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.endpoint, str):
             raise TypeError("endpoint must be a string")
-        if type(self.devtools) is not bool:
-            from kivyfn.store.devtools.config import DevToolsConfig
-
-            if not isinstance(self.devtools, DevToolsConfig):
-                raise TypeError("devtools must be bool or DevToolsConfig")
+        if type(self.devtools) is not bool and not isinstance(
+            self.devtools, DevToolsConfig
+        ):
+            raise TypeError("devtools must be bool or DevToolsConfig")
 
 
 @dataclass(frozen=True)

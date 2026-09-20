@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kivyfn.store import Query
+from kivyfn.store.query import Query
 from tests.conftest import StateStack
 from tests.schemas.settings import UserSettingsSchema
 from tests.schemas.users import UserSchema

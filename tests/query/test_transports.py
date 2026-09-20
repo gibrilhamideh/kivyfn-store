@@ -9,14 +9,12 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import (
-    HostConfig,
-    Query,
-    Store,
-    StoreClient,
-    StoreHost,
-    field,
-)
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.query.query import Query
+from kivyfn.store.query.expression import field
+from kivyfn.store.store.store import Store
 from kivyfn.store.protocol.message.responses import QueryResponse
 from kivyfn.store.state.manager import StateManager
 from kivyfn.store.state.transaction.transaction import StateTransaction

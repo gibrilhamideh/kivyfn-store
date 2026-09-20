@@ -9,7 +9,7 @@ from kivy.event import EventDispatcher
 from kivy.lang import Builder
 from kivy.properties import NumericProperty, ObjectProperty
 
-from kivyfn.store import state_template
+from kivyfn.store.state.template import state_template
 from kivyfn.store.client.subscription import SubscriptionUpdate
 from kivyfn.store.protocol.message.event import (
     InsertEventAction,

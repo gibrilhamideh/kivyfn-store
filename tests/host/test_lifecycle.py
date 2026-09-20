@@ -7,8 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from kivyfn.store import Store, StoreClient, StoreHost
 from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.error import StoreInternalError, StoreStateError
 from kivyfn.store.protocol.message.requests import InsertRequestAction
 from tests.conftest import StateStack

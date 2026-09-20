@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import StoreClient
+from kivyfn.store.client.client import StoreClient
 from kivyfn.store.protocol.message.requests import RequestBatch
 from kivyfn.store.protocol.message.responses import ResponseBatch
 from kivyfn.store.transport.client import ClientTransport

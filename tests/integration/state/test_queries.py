@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from kivyfn.store import Query, field
+from kivyfn.store.query import Query, field
 from tests.conftest import StateStack
 from tests.helpers import set_state_value, state_value
 from tests.schemas.settings import UserSettingsSchema

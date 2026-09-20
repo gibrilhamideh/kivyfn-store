@@ -8,9 +8,11 @@ from uuid import uuid4
 import pytest
 from aiohttp import ClientSession
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder.config import HostConfig
-from kivyfn.store.devtools.config import DevToolsConfig
+from kivyfn.store.builder.config import DevToolsConfig
 from tests.schemas import create_builder
 
 

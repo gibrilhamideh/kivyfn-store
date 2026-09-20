@@ -1,9 +1,9 @@
-# src/kivyfn/store/host/host.py
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kivyfn.logging import get_logger
 
@@ -28,10 +28,18 @@ from kivyfn.store.store import Store
 from kivyfn.store.transport.endpoint import create_host_transport
 
 if TYPE_CHECKING:
-    from kivyfn.store.builder.config import HostConfig
-    from kivyfn.store.devtools import DevTools
+    from kivyfn.store.builder.config import DevToolsConfig, HostConfig
 
 logger = get_logger(__name__)
+
+
+class _DevTools(Protocol):
+    @property
+    def url(self) -> str: ...
+
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
 
 
 class StoreHost:
@@ -44,7 +52,7 @@ class StoreHost:
         self.store = store
         self.config = config
         self.endpoint = config.endpoint
-        self.devtools: DevTools | None = None
+        self.devtools: _DevTools | None = None
 
         self.transport = create_host_transport(config.endpoint)
 
@@ -96,16 +104,16 @@ class StoreHost:
                 await self.transport.start(self)
                 self._running = True
                 if self.config.devtools is not False:
-                    from kivyfn.store.devtools import DevTools
-                    from kivyfn.store.devtools.config import DevToolsConfig
+                    from kivyfn.store.builder.config import DevToolsConfig
 
                     config = (
                         DevToolsConfig()
                         if self.config.devtools is True
                         else self.config.devtools
                     )
-                    self.devtools = DevTools(self, config)
-                    await self.devtools.start()
+                    devtools = self._create_devtools(config)
+                    self.devtools = devtools
+                    await devtools.start()
             except BaseException as error:
                 self._failure = error
                 try:
@@ -222,6 +230,25 @@ class StoreHost:
         except Exception:
             logger.exception("Store diagnostic capture failed")
             return None
+
+    def _create_devtools(self, config: DevToolsConfig) -> _DevTools:
+        try:
+            module = import_module("kivyfn.store.devtools")
+        except ModuleNotFoundError as error:
+            if error.name != "kivyfn.store.devtools":
+                raise
+            raise RuntimeError(
+                "Store devtools are enabled but not installed. "
+                "Install kivyfn-store[devtools]."
+            ) from error
+
+        devtools_type = getattr(module, "DevTools", None)
+        if devtools_type is None:
+            raise RuntimeError(
+                "Installed store devtools package does not export DevTools"
+            )
+
+        return cast(_DevTools, devtools_type(self, config))
 
     def _require_running(self) -> None:
         if not self._running:

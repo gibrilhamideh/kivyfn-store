@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from kivy.properties import AliasProperty, BooleanProperty
 
-from kivyfn.store import Query, field, state_template
+from kivyfn.store.query import Query, field
+from kivyfn.store.state.template import state_template
 from kivyfn.store.state.transaction.transaction import StateTransaction
 from kivyfn.store.typing import CollectionStateType, QueryStateType, StateType
 from tests.helpers import intercept_client_requests

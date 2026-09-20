@@ -8,9 +8,9 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import StoreClient
+from kivyfn.store.client.client import StoreClient
 from kivyfn.store.builder.config import HostConfig
-from kivyfn.store.devtools.config import DevToolsConfig
+from kivyfn.store.builder.config import DevToolsConfig
 from kivyfn.store.process import ProcessHandle, StoreProcess
 from tests.schemas import create_builder
 

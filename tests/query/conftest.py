@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from kivyfn.store import Store
+from kivyfn.store.store import Store
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.events import StoreCommit
 from kivyfn.store.protocol.message.requests import (

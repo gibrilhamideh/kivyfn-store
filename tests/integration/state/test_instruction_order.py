@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder import Branch, Builder, HistoryConfig
 from kivyfn.store.operations import OpCode
 from kivyfn.store.protocol.message.requests import (

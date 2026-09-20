@@ -6,16 +6,16 @@ from typing import Any
 
 import pytest
 
-from kivyfn.store import (
-    Branch,
-    Builder,
+from kivyfn.store.builder.branch import Branch
+from kivyfn.store.builder.builder import Builder
+from kivyfn.store.builder.config import (
     DevToolsConfig,
     HistoryConfig,
     HostConfig,
-    Initializer,
-    Store,
     StoreConfig,
 )
+from kivyfn.store.builder.initializer import Initializer
+from kivyfn.store.store.store import Store
 from kivyfn.store.address import Address
 from kivyfn.store.protocol.message.requests import (
     InsertRequestAction,

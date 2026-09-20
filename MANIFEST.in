@@ -1,12 +1,8 @@
-include README.md PLAN.md LICENSE pyproject.toml uv.lock setup.py
-recursive-include scripts *.py
+include README.md LICENSE
+
 recursive-include docs *.md
 recursive-include tests *.py *.md
-recursive-include devtools/frontend *.json *.js *.mjs *.ts *.tsx *.css *.html *.md *.py
-include devtools/frontend/.prettierignore
-recursive-include src/kivyfn/store/devtools/static *
-prune devtools/frontend/node_modules
-prune devtools/frontend/dist
-prune devtools/frontend/test-results
-prune devtools/frontend/playwright-report
+
+prune packages/devtools
+
 global-exclude __pycache__ *.py[cod] .DS_Store

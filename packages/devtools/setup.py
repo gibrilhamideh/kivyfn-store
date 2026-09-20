@@ -1,4 +1,4 @@
-"""Require bundled browser assets without a Node installation at build time."""
+"""Require bundled browser assets for the devtools distribution."""
 
 from pathlib import Path
 from runpy import run_path
@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 
 def check_assets() -> None:
     namespace = run_path(str(ROOT / "scripts" / "build_release.py"))
-    namespace["verify_assets"](ROOT)
+    namespace["verify_assets"](ROOT, source=True)
 
 
 class BuildPython(build_py):

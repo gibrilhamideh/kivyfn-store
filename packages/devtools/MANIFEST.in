@@ -1,0 +1,15 @@
+include pyproject.toml setup.py
+
+recursive-include scripts *.py
+recursive-include frontend *.json *.js *.mjs *.ts *.tsx *.css *.html *.md *.py
+include frontend/.prettierignore
+include frontend/.prettierrc.json
+
+recursive-include src/kivyfn/store/devtools/static *
+
+prune frontend/node_modules
+prune frontend/dist
+prune frontend/test-results
+prune frontend/playwright-report
+
+global-exclude __pycache__ *.py[cod] .DS_Store

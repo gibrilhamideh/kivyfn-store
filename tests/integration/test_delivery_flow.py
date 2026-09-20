@@ -10,7 +10,10 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.error import StoreConnectionError
 from kivyfn.store.protocol.message.event import EventMessage

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from kivyfn.store import StoreClient
+from kivyfn.store.client.client import StoreClient
 from kivyfn.store.transport.direct.client import DirectClientTransport
 from kivyfn.store.transport.direct.host import DirectHostTransport
 from kivyfn.store.transport.endpoint import (

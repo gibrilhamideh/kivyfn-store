@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, assert_type
 
-from kivyfn.store import StateTemplate, state_template
+from kivyfn.store.state.template import StateTemplate, state_template
 from kivyfn.store.query import Query
 from kivyfn.store.schema import Schema
 from kivyfn.store.state.manager import StateManager

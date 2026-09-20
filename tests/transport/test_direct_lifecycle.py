@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder.config import HostConfig
 from kivyfn.store.transport.direct.registry import resolve_host
 from tests.conftest import running_state_stack

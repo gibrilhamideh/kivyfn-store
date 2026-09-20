@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from kivyfn.store import Query
+from kivyfn.store.query import Query
 from kivyfn.store.protocol.message.requests import InsertRequestAction
 from kivyfn.store.protocol.message.responses import (
     QueryResponse,

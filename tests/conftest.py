@@ -13,7 +13,10 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 
-from kivyfn.store import HostConfig, Store, StoreClient, StoreHost
+from kivyfn.store.builder.config import HostConfig
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.state.manager import StateManager
 from tests.schemas import create_builder
 

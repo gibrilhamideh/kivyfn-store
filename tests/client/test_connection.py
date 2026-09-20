@@ -7,7 +7,9 @@ from uuid import uuid4
 
 import pytest
 
-from kivyfn.store import Store, StoreClient, StoreHost
+from kivyfn.store.client.client import StoreClient
+from kivyfn.store.host.host import StoreHost
+from kivyfn.store.store.store import Store
 from kivyfn.store.builder import Branch, Builder
 from kivyfn.store.builder.config import HostConfig
 from kivyfn.store.error import StoreConnectionError
