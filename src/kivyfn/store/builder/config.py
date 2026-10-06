@@ -9,6 +9,7 @@ from kivyfn.store.builder.branch import Branch
 from kivyfn.store.builder.initializer import Initializer
 from kivyfn.store.builder.migration import Migration
 from kivyfn.store.builder.policy import BootPolicy
+from kivyfn.store.builder.relay import RelayConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ class HostConfig:
 
     endpoint: str
     devtools: bool | DevToolsConfig = False
+    relay: RelayConfig | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.endpoint, str):
@@ -69,6 +71,8 @@ class HostConfig:
             self.devtools, DevToolsConfig
         ):
             raise TypeError("devtools must be bool or DevToolsConfig")
+        if self.relay is not None and not isinstance(self.relay, RelayConfig):
+            raise TypeError("relay must be RelayConfig or None")
 
 
 @dataclass(frozen=True)

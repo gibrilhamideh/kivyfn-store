@@ -5,6 +5,17 @@ Applications use the same State API over an in-process Direct connection or
 Socket.IO. The Store owns canonical data, constraints, transactions, queries
 and persistence; State owns reactive properties and optimistic changes.
 
+An optional outward Socket.IO relay connects the same StoreHost to a gateway.
+The gateway authenticates peers and routes each remote client to its own host
+session. See [relay setup](docs/relay.md) and the
+[gateway wire contract](docs/relay-protocol.md).
+
+The same repository also contains a browser/Node TypeScript client at
+[`packages/client`](packages/client/README.md), with optional React/MobX
+integration under `@kivyfn/store/react`. Build it with `npm ci` and
+`npm run build:client`. See the [client gateway contract](docs/client-relay.md)
+and [overlay installation guide](INSTALL-typescript-client.md).
+
 ## Getting started
 
 For a release archive, install the repository and its development tools:
@@ -374,6 +385,5 @@ Frontend checks, browser tests, and installed wheel/sdist checks are described
 in [release verification](docs/release.md).
 
 Updating an existing application? See [the Builder startup migration guide](docs/upgrading-builder.md).
-
 
 

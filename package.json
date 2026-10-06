@@ -1,0 +1,10 @@
+{
+  "name": "kivyfn-store-workspace",
+  "private": true,
+  "workspaces": ["packages/client"],
+  "scripts": {
+    "build:client": "npm run build --workspace=@kivyfn/store",
+    "test:client": "npm test --workspace=@kivyfn/store",
+    "check:client": "npm run check --workspace=@kivyfn/store"
+  }
+}

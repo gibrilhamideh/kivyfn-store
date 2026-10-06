@@ -209,6 +209,7 @@ __marimo__/
 
 # Browser development output
 node_modules/
+kivyfn-store-*.tgz
 devtools/frontend/test-results/
 devtools/frontend/playwright-report/
 src/kivyfn/store/devtools/static/

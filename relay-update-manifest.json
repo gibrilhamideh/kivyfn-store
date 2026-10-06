@@ -1,0 +1,173 @@
+{
+  "format": 1,
+  "feature": "Python outward Socket.IO relay",
+  "base_archive": "kivyfn-store-review(3).zip",
+  "base_archive_sha256": "eb51cf11f836c458972c4a680615fdd1651ef630e679dac629e2363a719c0c16",
+  "store_protocol_version": 3,
+  "relay_protocol_version": 1,
+  "deletions": [],
+  "files": [
+    {
+      "path": "README.md",
+      "action": "modify",
+      "base_sha256": "b0ae5be8a6a33c8466c6972cf6c8eae734115ba78408e24532b9d618d616096f",
+      "sha256": "3c8eb42f39b5a77c31e13171a454a6a0f4faf028151ec3dd0b6034829d989c6a"
+    },
+    {
+      "path": "RELAY-UPDATE.md",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "8481a65697938cda0f6e29da5348ce5129a2e920c19ca888089fd66d9f0eeae8"
+    },
+    {
+      "path": "docs/index.md",
+      "action": "modify",
+      "base_sha256": "7127682c0c9b6f61a6043be88a01239ae4da0b8bc58ce3e1869311f3ade3b4a8",
+      "sha256": "7791d6c32062c18a21596b51607b2ce3eb21d061820349c63f93cdc41c610504"
+    },
+    {
+      "path": "docs/relay-protocol.md",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "1bc3c7863dcf8d58cc724412f9d9836299584856ceafb769270ce5c0c4e7c512"
+    },
+    {
+      "path": "docs/relay-validation.md",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "2078fcbbe49a45145ccc844310b26f3beddb3672fba10f16fe1626fd7f611d18"
+    },
+    {
+      "path": "docs/relay.md",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "e590c380e855f55ec21bede958a4d6be19609c884e22608687b9406e0491789c"
+    },
+    {
+      "path": "src/kivyfn/store/builder/__init__.py",
+      "action": "modify",
+      "base_sha256": "1bbbef6f00e319f61bccd2de30f25fb348ac73c425264bffc2a31867cfd24c32",
+      "sha256": "1da81e962fb32c61f920ac48c85273aed42646c6e66538e0e4f41bf9690d9a05"
+    },
+    {
+      "path": "src/kivyfn/store/builder/config.py",
+      "action": "modify",
+      "base_sha256": "1a89caf155cda2e8e85f110bb73d81ead8e5935bf726911ce7682bd922cb31e7",
+      "sha256": "5a7fa7c91824e7649965780a157b14990ce5ea8895897631f6ef865303bf160a"
+    },
+    {
+      "path": "src/kivyfn/store/builder/relay.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "7d1840d616b1e0cd7feb6955ec5f76ebde7b9838cd72f7e22b743e7e02776e8d"
+    },
+    {
+      "path": "src/kivyfn/store/host/client.py",
+      "action": "modify",
+      "base_sha256": "3caf8327d9c92e5a1aec1deeb19d2115d167e4c5f0fe2852873da3330f655ac4",
+      "sha256": "c0398aafff17453992f35461b8d66b19e4afdbd4e909679dd85778f46f602557"
+    },
+    {
+      "path": "src/kivyfn/store/host/host.py",
+      "action": "modify",
+      "base_sha256": "a290358fe758a70ceecc0d35e9759ac9f8177cc13adfd63e0c0de1dc8f5ce1ca",
+      "sha256": "52b90dd8f0009180a0c9e7a8838897917a6ff2904b4a8c42fd6754e097624a91"
+    },
+    {
+      "path": "src/kivyfn/store/transport/relay/__init__.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "d5ed3037f3af8710cd9a059761e4603f87fda4ac0f315ca85c3cb518317c7bae"
+    },
+    {
+      "path": "src/kivyfn/store/transport/relay/adapter.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "2893a9fa55337abd502fc5e80c6bc79029a88e74ec5ef31d3eec1269e89c9af0"
+    },
+    {
+      "path": "src/kivyfn/store/transport/relay/channel.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "872c7afdfbe61a38d7cf4b573e7c55de3c38f387833eb3cabe8f8b97c25419db"
+    },
+    {
+      "path": "src/kivyfn/store/transport/relay/protocol.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "941eb0ecb56a3420d4dbc71636d8dfec3d3174d3ff94ac53206d7e89738a1194"
+    },
+    {
+      "path": "src/kivyfn/store/transport/relay/session.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "4bdce16b02925dde40ced00140a02e937ab6059f6edb595fa66ee063119c0f3f"
+    },
+    {
+      "path": "tests/relay/__init__.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tests/relay/conftest.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "be79d5c3aa36ca665b11a6bd2cb00cc3512339771abfcb9961b1bbb1ef4784ea"
+    },
+    {
+      "path": "tests/relay/fixtures/store-v3.json",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "d22eeb01a1119895b890c3c503470644d57c3344fb5399f68bdaa17f01bcfe62"
+    },
+    {
+      "path": "tests/relay/helpers.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "fbb4d6fc2e45199dff54547a2612e998c4d3dcfcc4019cb4a20a1dd4333e6da4"
+    },
+    {
+      "path": "tests/relay/test_config.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "0330c1fed3100473633ef8879547bea0c94df17b073336ee2b4612561d8462ff"
+    },
+    {
+      "path": "tests/relay/test_lifecycle.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "7f16d8865ece7c965830434da3e198881bc70df16c9e732a473857d574d1da13"
+    },
+    {
+      "path": "tests/relay/test_limits.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "5f4783a12d13ec7669d424ad2995760f12f7af4b1fb177bb6e59a620672a263b"
+    },
+    {
+      "path": "tests/relay/test_protocol.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "c2fe5be6abe7ff2f74e6ce11444e23e1c8ad9cf279311c03884f1ae47c1c2bdb"
+    },
+    {
+      "path": "tests/relay/test_recovery.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "51635faef74870848dbae89fea3d674356309d322d27c72862a32a3c1ab17623"
+    },
+    {
+      "path": "tests/relay/test_routing.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "f093af3af14bb5631c47ef1e1dfb293521f6a49bfced7454609696413874f9c1"
+    },
+    {
+      "path": "tests/relay/test_wire_fixtures.py",
+      "action": "add",
+      "base_sha256": null,
+      "sha256": "1e6f76d7c5bcc2d0d758f377be43ba4655f4de5cc13c9a21e194868e70a8ef57"
+    }
+  ]
+}

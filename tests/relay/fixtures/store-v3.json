@@ -1,0 +1,214 @@
+{
+  "relay_version": 1,
+  "protocol_version": 3,
+  "requests": [
+    {
+      "requests": [
+        {
+          "type": "subscribe_single",
+          "schema": "RelayRoot"
+        }
+      ]
+    },
+    {
+      "requests": [
+        {
+          "type": "transaction",
+          "transaction_id": "relay:GENERATION:1:update",
+          "actions": [
+            {
+              "type": "set",
+              "schema": "RelayRoot",
+              "values": {
+                "value": 5
+              }
+            },
+            {
+              "type": "signal",
+              "schema": "RelayRoot",
+              "signal": "ping",
+              "data": {
+                "source": "fixture"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "requests": [
+        {
+          "type": "transaction",
+          "transaction_id": "relay:GENERATION:1:invalid",
+          "actions": [
+            {
+              "type": "set",
+              "schema": "RelayRoot",
+              "values": {
+                "value": -1
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "requests": [
+        {
+          "type": "transaction",
+          "transaction_id": "relay:GENERATION:1:noop",
+          "actions": [
+            {
+              "type": "set",
+              "schema": "RelayRoot",
+              "values": {
+                "value": 5
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "frames": [
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 0,
+      "type": "opened",
+      "payload": {
+        "protocol_version": 3,
+        "transaction_prefix": "relay:GENERATION:1:"
+      }
+    },
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 1,
+      "type": "response",
+      "payload": {
+        "responses": [
+          {
+            "type": "subscribe_single",
+            "subscription_id": "SUBSCRIPTION",
+            "store_instance_id": "STORE_INSTANCE",
+            "revision": 0,
+            "values": {
+              "value": 0
+            }
+          }
+        ]
+      },
+      "request_sequence": 1
+    },
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 2,
+      "type": "event",
+      "payload": {
+        "event": {
+          "store_instance_id": "STORE_INSTANCE",
+          "transaction_id": "relay:GENERATION:1:update",
+          "events": [
+            {
+              "subscription_id": "SUBSCRIPTION",
+              "revisions": {
+                "RelayRoot": 1
+              },
+              "actions": [
+                {
+                  "type": "set",
+                  "values": {
+                    "value": 5
+                  }
+                },
+                {
+                  "type": "signal",
+                  "signal": "ping",
+                  "data": {
+                    "source": "fixture"
+                  },
+                  "occurrence_id": 0
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 3,
+      "type": "response",
+      "payload": {
+        "responses": [
+          {
+            "type": "transaction",
+            "transaction_id": "relay:GENERATION:1:update"
+          }
+        ]
+      },
+      "request_sequence": 2
+    },
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 4,
+      "type": "response",
+      "payload": {
+        "responses": [
+          {
+            "type": "transaction_failure",
+            "transaction_id": "relay:GENERATION:1:invalid",
+            "failure": {
+              "code": "field_validation_failed",
+              "category": "field",
+              "status": "invalid",
+              "message": "Value must be greater than or equal to 0",
+              "detail": {
+                "schema": "RelayRoot",
+                "field": "value",
+                "value": -1,
+                "rule": "ge",
+                "expected": null,
+                "minimum": 0,
+                "maximum": null,
+                "allow_none": null,
+                "type": "field"
+              },
+              "context": {
+                "stage": "compile",
+                "schema": "RelayRoot",
+                "address": [],
+                "opcode": "SET",
+                "source": "command",
+                "row_id": null,
+                "field": "value",
+                "value": -1,
+                "instruction_index": null
+              }
+            }
+          }
+        ]
+      },
+      "request_sequence": 3
+    },
+    {
+      "generation": "GENERATION",
+      "channel_id": 1,
+      "sequence": 5,
+      "type": "response",
+      "payload": {
+        "responses": [
+          {
+            "type": "transaction",
+            "transaction_id": "relay:GENERATION:1:noop"
+          }
+        ]
+      },
+      "request_sequence": 4
+    }
+  ]
+}

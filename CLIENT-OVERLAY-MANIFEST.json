@@ -1,0 +1,178 @@
+{
+  "package": "@kivyfn/store",
+  "version": "0.1.0",
+  "base": "Supplied repository with kivyfn-store-python-relay.zip applied",
+  "install": "Extract at the repository root; see INSTALL-typescript-client.md",
+  "files": [
+    {
+      "path": ".gitignore",
+      "sha256": "d2351449a9c3fd85ed83f4c0d3e6798996771f7983f89286aa9cf7326fc75dcc",
+      "bytes": 4869
+    },
+    {
+      "path": "INSTALL-typescript-client.md",
+      "sha256": "dd9aa4339cf3d62f8ca73a93b52872ff38d050515b99a1492609669f3eaecd6c",
+      "bytes": 1531
+    },
+    {
+      "path": "README.md",
+      "sha256": "61739d04fa8946da53241e3444ffd011d0692fc3760675f69479bff1fd66adfb",
+      "bytes": 17881
+    },
+    {
+      "path": "docs/client-relay.md",
+      "sha256": "8be3bcd8d476cbfdc861bff960f5cef64ef82223d866672c5b4c434686962247",
+      "bytes": 8381
+    },
+    {
+      "path": "docs/client-validation.md",
+      "sha256": "ea9f65048fcf365cf6b35a014dc0e2d7952872efdd6e03c1a601d76c812dc966",
+      "bytes": 4338
+    },
+    {
+      "path": "docs/index.md",
+      "sha256": "413cb9045433283f1316403febbce92cd69c5e3c9b1d42116de36efc9201902d",
+      "bytes": 3321
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "3c7adfb7d38424a0feb993ed47caf632158cbd2bd62d59e4bbfadff1e6fccaea",
+      "bytes": 87819
+    },
+    {
+      "path": "package.json",
+      "sha256": "642d60f3e268b1dd9ff7db5f3d0b4f914d311623bb36afa782310afaa73d3f3d",
+      "bytes": 297
+    },
+    {
+      "path": "packages/client/.prettierrc.json",
+      "sha256": "0adcaddeee61b2f77b1109c05638ea497f81b1cdd78ed0e3321a6703ef2b75cf",
+      "bytes": 19
+    },
+    {
+      "path": "packages/client/README.md",
+      "sha256": "47b7c3211d127e4b1a28af48f9092904a1aea16bf399075021853a60fbefc4b2",
+      "bytes": 15045
+    },
+    {
+      "path": "packages/client/package.json",
+      "sha256": "9d07443f9e258c2af2e5ef1d64136f9c80c057f8b3d9ab73698aabd1e3ea38b8",
+      "bytes": 1615
+    },
+    {
+      "path": "packages/client/scripts/verify-package.mjs",
+      "sha256": "b5a52425b5ca5ad24ab404eff740928c589d473a7a04e2e783c8600ec79ae6d6",
+      "bytes": 5285
+    },
+    {
+      "path": "packages/client/src/client.ts",
+      "sha256": "084d95eb7a01b673307e1f4a5df549bff7ad16145839d89da222da036e999c37",
+      "bytes": 21672
+    },
+    {
+      "path": "packages/client/src/errors.ts",
+      "sha256": "aaccc0e5ef9c4b1db2f0111015a1d3e294ecd6c6078a435054a2e3536fa79e7b",
+      "bytes": 1157
+    },
+    {
+      "path": "packages/client/src/gateway.ts",
+      "sha256": "297232cbb56370f98669f51567e7fec606cb8d99f443d6290fc40c2e075caafa",
+      "bytes": 1016
+    },
+    {
+      "path": "packages/client/src/index.ts",
+      "sha256": "a05a4d479bd4fd0fdd65a070c38a139e86c4f72ea5306e124b9fc3167f6dd31d",
+      "bytes": 1445
+    },
+    {
+      "path": "packages/client/src/internal.ts",
+      "sha256": "246fa7ab2bc85756db0784d3399b5779a75cabe476e2608b0d4e49d621c66b8c",
+      "bytes": 4447
+    },
+    {
+      "path": "packages/client/src/protocol.ts",
+      "sha256": "09cfee1d214fecff52a599319ecf1437350c15b5ed55c827aa3755060aed962c",
+      "bytes": 11300
+    },
+    {
+      "path": "packages/client/src/react.ts",
+      "sha256": "07da9adae62355a1f016f2d01103238f9c566e4b857ad247b5643ae5a566bc66",
+      "bytes": 1475
+    },
+    {
+      "path": "packages/client/src/schema.ts",
+      "sha256": "584b1128730ebfd848b91f56f31455f9d2c813f3ef3dbaeac679c7df058a9141",
+      "bytes": 4571
+    },
+    {
+      "path": "packages/client/src/state.ts",
+      "sha256": "bd7faaafadb062fa01316b1320f7c33f39ba475b87384eaaeb94dbc6351393b0",
+      "bytes": 24925
+    },
+    {
+      "path": "packages/client/src/transaction.ts",
+      "sha256": "af42b7f74faedd935cef1a42f4a6b663461e2d690735b21e7578cf957af6a632",
+      "bytes": 3168
+    },
+    {
+      "path": "packages/client/src/transport.ts",
+      "sha256": "312c2d83a81b5c202db0cab5c95857784338163716060ccaf30b6e139fd08cd0",
+      "bytes": 13578
+    },
+    {
+      "path": "packages/client/tests/client.test.ts",
+      "sha256": "d9c4ac95c52c9b60ee82497814ab67d109bb1d6a25abc127a2a09875ea8c21fe",
+      "bytes": 13055
+    },
+    {
+      "path": "packages/client/tests/fake.ts",
+      "sha256": "0fdb5ba040ce3ee9f9edf67da6f665c5c94e2e0d9443677543e51f91e5ec2c93",
+      "bytes": 3642
+    },
+    {
+      "path": "packages/client/tests/gateway.ts",
+      "sha256": "8f01aed36df8777de5d92a96b8b993e72e35d90e88fd8647956e49f5c87d0a64",
+      "bytes": 6615
+    },
+    {
+      "path": "packages/client/tests/interop.test.ts",
+      "sha256": "52fe9e2fd0b7cd54e835550d588901b7003f166292b3d3613470b6c095638798",
+      "bytes": 10236
+    },
+    {
+      "path": "packages/client/tests/python.ts",
+      "sha256": "171ad51d7c6cfbd5fc71bcc8b1d7699a04ff490939e5756fb4f692e8992034b7",
+      "bytes": 3584
+    },
+    {
+      "path": "packages/client/tests/python_host.py",
+      "sha256": "0ee8edfa13361199766f9944ea88961ffcbae8ea7a71a934c7e42b3f9c389453",
+      "bytes": 2953
+    },
+    {
+      "path": "packages/client/tests/react.test.tsx",
+      "sha256": "fbece3ff581eace69637cfb557bd81f4080f1b48dd877fd33fb7ee3d4e8b30c6",
+      "bytes": 5237
+    },
+    {
+      "path": "packages/client/tests/robustness.test.ts",
+      "sha256": "c1b4eb5eaa4cb25eded9e3bacf271c68ecbd985ac5d5d3f2d922357a82c2efd9",
+      "bytes": 9269
+    },
+    {
+      "path": "packages/client/tsconfig.build.json",
+      "sha256": "27b308da61356ebd9a1200738044635cb90d654f67d975015ca862fc9bb28de5",
+      "bytes": 272
+    },
+    {
+      "path": "packages/client/tsconfig.json",
+      "sha256": "fe5c5e9e67d84bcda058827f480abe1ef1c560f62a3f1a970e6556733b68706f",
+      "bytes": 363
+    },
+    {
+      "path": "packages/client/vitest.config.ts",
+      "sha256": "e727f18f63399f666db3afd552d7acde3fbd05c2b0d478b1dcdeb8882f51d093",
+      "bytes": 204
+    }
+  ]
+}

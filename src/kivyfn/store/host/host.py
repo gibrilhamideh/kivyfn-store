@@ -26,6 +26,7 @@ from kivyfn.store.protocol.message.responses import ResponseBatch
 from kivyfn.store.protocol.version import PROTOCOL_VERSION
 from kivyfn.store.store import Store
 from kivyfn.store.transport.endpoint import create_host_transport
+from kivyfn.store.transport.relay import SocketIORelay
 
 if TYPE_CHECKING:
     from kivyfn.store.builder.config import DevToolsConfig, HostConfig
@@ -55,6 +56,9 @@ class StoreHost:
         self.devtools: _DevTools | None = None
 
         self.transport = create_host_transport(config.endpoint)
+        self.relay = (
+            None if config.relay is None else SocketIORelay(config.relay)
+        )
 
         self.queries = HostQueries(store)
         self.subscriptions = HostSubscriptions(store, self.queries)
@@ -114,6 +118,8 @@ class StoreHost:
                     devtools = self._create_devtools(config)
                     self.devtools = devtools
                     await devtools.start()
+                if self.relay is not None:
+                    await self.relay.start(self)
             except BaseException as error:
                 self._failure = error
                 try:
@@ -171,6 +177,7 @@ class StoreHost:
         send: HostEventSender | None = None,
         close: HostCloseHandler | None = None,
         protocol_version: int | None = None,
+        max_pending: int | None = None,
     ) -> None:
         self._require_running()
         if (
@@ -187,6 +194,7 @@ class StoreHost:
             client_id,
             send=self.transport.emit if send is None else send,
             close=self.transport.disconnect if close is None else close,
+            max_pending=max_pending,
         )
         self._capture("lifecycle", client_id, "connected")
 
@@ -279,15 +287,21 @@ class StoreHost:
                     self.devtools = None
         finally:
             try:
-                await self.clients.clear()
+                if self.relay is not None:
+                    await self.relay.stop()
             finally:
                 try:
-                    await self.transport.stop()
+                    await self.clients.clear()
                 finally:
-                    pending = tuple(self._client_closures)
-                    if pending:
-                        await asyncio.gather(*pending, return_exceptions=True)
-                    self.store.release_host(self)
+                    try:
+                        await self.transport.stop()
+                    finally:
+                        pending = tuple(self._client_closures)
+                        if pending:
+                            await asyncio.gather(
+                                *pending, return_exceptions=True
+                            )
+                        self.store.release_host(self)
 
     def _finish_close(self) -> None:
         closed = self._closed

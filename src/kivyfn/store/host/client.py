@@ -147,7 +147,10 @@ class HostClients:
         *,
         send: HostEventSender | None = None,
         close: HostCloseHandler | None = None,
+        max_pending: int | None = None,
     ) -> HostClient:
+        if max_pending is not None and max_pending < 1:
+            raise ValueError("max_pending must be positive")
         client = self._clients.get(client_id)
         if client is None or client.closed:
             client = HostClient(
@@ -155,7 +158,7 @@ class HostClients:
                 self._send if send is None else send,
                 self._prepare,
                 self._on_error,
-                self._max_pending,
+                self._max_pending if max_pending is None else max_pending,
                 close,
             )
             self._clients[client_id] = client

@@ -13,6 +13,15 @@ reactive Kivy State API over Direct or Socket.IO transport.
   types, expected rejection, infrastructure failure and ambiguous outcomes.
 - [History](history.md): selection, undo/redo, signals, grouping, bounds,
   restoration conflicts, and worker ownership.
+- [Outward relay](relay.md): configuration, authentication providers, lifecycle,
+  process integration, and recovery.
+- [Relay protocol](relay-protocol.md): the gateway integration contract,
+  session ownership, ordering, receipts, and cross-language fixtures.
+- [TypeScript and React client](../packages/client/README.md): typed references,
+  observable state, transactions, subscriptions, recovery and package builds.
+- [Client relay contract](client-relay.md): the user-facing Socket.IO leg and
+  gateway authentication interfaces, routing, ordering and flow control.
+- [Client validation](client-validation.md): compatibility and package checks.
 - [Browser devtools](devtools.md): inspection, commands, recording, preview,
   sessions, and diagnostic limits.
 - [Release verification](release-verification.md): exact results, architecture
