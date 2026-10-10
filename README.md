@@ -186,6 +186,52 @@ An initializer exception fails startup without invoking storage erasure. See
 [configuration and initialization](docs/architecture.md#configuration-and-startup)
 for the class contract and recovery behavior.
 
+## Ensured related records
+
+A unique foreign key can require one child record for every parent:
+
+```python
+from kivyfn.store.schema import (
+    ForeignKeyField,
+    ForeignKeyPolicy,
+    ManySchema,
+    NumericField,
+)
+
+
+class Runtime(ManySchema):
+    uniques = [("parent_id",)]
+
+    parent_id = ForeignKeyField(
+        "Parents", ensure=True, on_delete=ForeignKeyPolicy.CASCADE
+    )
+    reading = NumericField(default=0)
+```
+
+`Parents` must be a registered `ManySchema`. Boot fills missing children after
+initialization and saved-data recovery. During transactions, ensure runs after
+explicit operations, triggers and cascades have drained. A child already
+created by any of them satisfies the rule, regardless of its row ID. Existing
+values are preserved; new rows use generated IDs and schema defaults.
+
+Add `ensure_where=field("level") >= 2`, importing `field` from
+`kivyfn.store.query`, to limit the rule to matching parent rows. Parent changes
+are evaluated using the final staged values. A parent that stops matching
+keeps its existing child. The filter supports direct parent fields and the
+existing query comparison, membership and logical expressions.
+
+`ensure=True` requires a single-field unique constraint; a composite unique
+constraint is insufficient. Ensured relationship cycles are rejected. Removing
+or unlinking a required child is rejected unless the same transaction supplies
+a replacement or removes the requirement. Parent deletion retains its declared
+`on_delete` behavior.
+
+This can replace an initializer and insert trigger that only create default
+related rows. Adding such a schema fills missing records without a dedicated
+backfill migration. General initialization, custom triggers and data-conversion
+migrations remain available. See [ensure behavior](docs/architecture.md#ensured-relationships)
+for boot, failure and history details.
+
 ## Mutations and transactions
 
 | API | Visibility before confirmation | Result |

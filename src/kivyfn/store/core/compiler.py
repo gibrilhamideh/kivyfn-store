@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, assert_never
 
 from kivyfn.store.core.delta import Delta
+from kivyfn.store.core.ensure import EnsurePolicy
 from kivyfn.store.core.instruction import (
     InsertInstruction,
     Instruction,
@@ -62,7 +63,13 @@ class Compiler:
         self._policy_deleted: set[tuple[Node, str]] = set()
 
     def compile(self) -> list[Operation]:
-        while self.pending:
+        ensure = EnsurePolicy(self.engine)
+        while True:
+            if not self.pending:
+                ensured = ensure.next_insert(self.delta)
+                if ensured is None:
+                    break
+                self.pending.append(ensured)
             instruction = self.pending.popleft()
             if isinstance(instruction, _CascadeBoundary):
                 policies = self._collect_policies(

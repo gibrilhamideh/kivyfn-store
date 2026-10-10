@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from kivyfn.store.core.ensure import EnsurePolicy
 from kivyfn.store.error import (
     ConstraintErrorDetail,
     ForeignKeyNotFoundError,
@@ -28,6 +29,7 @@ class ConstraintGuard:
     def validate(self, delta: Delta) -> None:
         self._validate_restrict(delta)
         self._validate_foreign_keys(delta)
+        EnsurePolicy(self.engine).validate(delta)
 
     def _validate_foreign_keys(self, delta: Delta) -> None:
         for node in delta.touched_nodes:

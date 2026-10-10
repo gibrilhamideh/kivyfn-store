@@ -114,6 +114,54 @@ operation shape and row existence; ConstraintGuard owns relationships; final
 index preparation owns uniqueness. State's local field checks provide
 immediate UI feedback but never replace the Store's authoritative checks.
 
+### Ensured relationships
+
+`ForeignKeyField("Parents", ensure=True)` on a `ManySchema` declares one
+required child per parent. Its foreign-key field must have its own unique
+constraint, such as `uniques = [("parent_id",)]`; a composite constraint does
+not qualify. Ordinary nullable foreign keys and their deletion policies retain
+their existing behavior. Both the source and target must be collections.
+
+`ensure_where` optionally accepts the existing query `Expression`, evaluated
+against the referenced parent row. It requires `ensure=True`. Only direct
+parent field names are supported; joins are not part of an ensure predicate.
+Parent field names are validated when Store metadata is built. Comparisons,
+membership, `&`, `|` and `~` use the same evaluator as queries. A parent that
+stops matching is no longer required to have a child; an existing child is kept.
+
+Boot loads, migrates, initializes, builds and recovers saved data first. Ensure
+then fills missing children in parent-to-child dependency order before the
+successful generation is saved. The graph of ensured relationships must be
+acyclic, even if conditional; ordinary foreign-key cycles remain supported.
+Startup ensure runs no application triggers, signals or history actions, and
+leaves revisions at zero. Both persistent and nonpersistent children can be
+ensured; only persistent values are saved. Invalid generated defaults or
+conflicting unique values fail startup without invoking an ERASE fallback.
+
+At runtime the compiler drains explicit instructions, triggers and cascades
+before finding missing relationships in Delta. It schedules one policy insert
+at a time, allowing that insert's triggers to finish before checking again.
+This avoids stale insert plans when one child's trigger creates another child.
+The lookup uses foreign-key values, never an assumed equality of row IDs.
+Generated children receive normal UUIDs, their parent reference and schema
+defaults. Other required fields and unique constraints must accept those
+defaults. Existing rows retain their IDs and values.
+
+A live required child cannot be removed or unlinked without a replacement or
+removing its requirement in the same transaction. The final relationship check
+rejects that change with `ForeignKeyRestrictedError`; ensure does not silently
+reset the child's settings. Deleting and reinserting a parent establishes a new
+lifetime, so its declared CASCADE can remove the old child and ensure can create
+a new one. Normal RESTRICT and uniqueness checks still apply.
+
+Generated inserts use `OperationSource.POLICY`, join the same atomic commit,
+and count toward the existing compiler operation limit. Ordinary history
+selection captures their effects with the transaction. Undo/redo restores the
+recorded IDs and values without rerunning ensure or triggers, and still checks
+the required relationships against the final restored state. Runtime checks
+consider newly inserted parents, filtered-parent updates and removed or changed
+child links; unrelated field writes do not require a full-store repair pass.
+
 ## Atomic execution
 
 One transaction follows these steps:
@@ -125,6 +173,8 @@ One transaction follows these steps:
    instruction. A deletion evaluates its cascade boundary after its trigger
    commands. Generated policy deletions are deduplicated across paths and
    cycles; they can satisfy a later explicit removal of the same row.
+   Once this queue drains, ensure adds missing default children as policy
+   inserts, draining their triggers before checking for further missing rows.
 4. ConstraintGuard checks the logical relationships. Nodes prepare indexes
    from the final values, so valid unique-value swaps do not fail on an
    intermediate collision. Store validates signal targets in that same view.

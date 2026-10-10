@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from kivyfn.logging import get_logger
 
 from kivyfn.store.builder.policy import BootPolicy
+from kivyfn.store.core.ensure import EnsurePolicy
 from kivyfn.store.error import (
     ConstraintErrorDetail,
     ForeignKeyNotFoundError,
@@ -55,6 +56,9 @@ class StoreBoot:
                 if self.engine.config.boot_policy is not BootPolicy.ERASE:
                     raise
                 self._erase_and_boot_empty()
+
+        # Invalid ensure defaults are declaration faults, not corrupt data.
+        EnsurePolicy(self.engine).boot()
 
         # Disk failures must not trigger an ERASE fallback or cleanup.
         self._save_nodes()

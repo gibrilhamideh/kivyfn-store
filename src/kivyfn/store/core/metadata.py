@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from kivyfn.store.address import Address
 from kivyfn.store.error import NodeErrorDetail, NodeNotFoundError
+from kivyfn.store.query.expression import Expression, iter_field_paths
 from kivyfn.store.schema import ManySchema, SingleSchema
 from kivyfn.store.schema.policy import ForeignKeyPolicy
 
@@ -24,6 +25,8 @@ class ForeignKey:
     field: str
     reference: str
     on_delete: ForeignKeyPolicy
+    ensure: bool
+    ensure_where: Expression | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,7 @@ class EngineMetadata:
     nodes_by_address: Mapping[Address, Node]
     nodes_by_schema: Mapping[str, Node]
     persistent_nodes: frozenset[Node]
+    ensured_foreign_keys: tuple[ForeignKey, ...]
     _foreign_keys_by_schema: Mapping[str, tuple[ForeignKey, ...]]
     _referenced_by_schema: Mapping[str, tuple[ForeignKey, ...]]
 
@@ -59,6 +63,7 @@ class EngineMetadata:
             nodes_by_address=MappingProxyType(nodes_by_address),
             nodes_by_schema=MappingProxyType(nodes_by_schema),
             persistent_nodes=frozenset(persistent_nodes),
+            ensured_foreign_keys=_order_ensures(foreign_keys_by_schema),
             _foreign_keys_by_schema=MappingProxyType(foreign_keys_by_schema),
             _referenced_by_schema=MappingProxyType(referenced_by_schema),
         )
@@ -159,11 +164,35 @@ def _build_foreign_keys(
                     "a ManySchema source; singleton records cannot be deleted"
                 )
 
+            if field.ensure:
+                if not isinstance(node.schema, ManySchema):
+                    raise ValueError(
+                        f"Foreign key {schema_name}.{field_name}: "
+                        "ensure requires a ManySchema source"
+                    )
+                if (field_name,) not in node.schema.unique_keys():
+                    raise ValueError(
+                        f"Foreign key {schema_name}.{field_name}: ensure "
+                        "requires a single-field unique constraint"
+                    )
+                if field.ensure_where is not None:
+                    for path in iter_field_paths(field.ensure_where):
+                        if len(path.parts) != 1:
+                            raise ValueError(
+                                "ensure_where supports direct parent fields "
+                                f"only: {schema_name}.{field_name}"
+                            )
+                        nodes_by_schema[reference].schema.get_field(
+                            path.parts[0]
+                        )
+
             foreign_key = ForeignKey(
                 schema=schema_name,
                 field=field_name,
                 reference=reference,
                 on_delete=field.on_delete,
+                ensure=field.ensure,
+                ensure_where=field.ensure_where,
             )
 
             by_schema[schema_name].append(foreign_key)
@@ -180,3 +209,34 @@ def _build_foreign_keys(
             for (schema, foreign_keys) in referenced_by.items()
         },
     )
+
+
+def _order_ensures(
+    foreign_keys: Mapping[str, tuple[ForeignKey, ...]],
+) -> tuple[ForeignKey, ...]:
+    """Order parent-to-child creation and reject unbounded ensure cycles."""
+    dependents: defaultdict[str, list[ForeignKey]] = defaultdict(list)
+    for fields in foreign_keys.values():
+        for field in fields:
+            if field.ensure:
+                dependents[field.reference].append(field)
+
+    ordered: list[ForeignKey] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(schema: str) -> None:
+        if schema in visiting:
+            raise ValueError(f"Cyclic ensure relationships include {schema}")
+        if schema in visited:
+            return
+        visiting.add(schema)
+        for field in dependents.get(schema, ()):
+            visit(field.schema)
+            ordered.append(field)
+        visiting.remove(schema)
+        visited.add(schema)
+
+    for schema in dependents:
+        visit(schema)
+    return tuple(reversed(ordered))
